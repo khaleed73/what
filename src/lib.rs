@@ -35,3 +35,4 @@ pub mod rebalance_matrix;
 pub mod zero_alloc_signer;
 pub mod zero_lag_stream;
 pub mod cross_exchange_executor;
+pub mod order_feed;

@@ -42,6 +42,7 @@ mod rebalance_matrix;
 mod zero_alloc_signer;
 mod zero_lag_stream;
 mod cross_exchange_executor;
+mod order_feed;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;

@@ -252,6 +252,60 @@ impl LocalCapitalAllocator {
         }
         fp_to_decimal(total_fp)
     }
+
+    /// Returns the available balance of a specific token on a specific exchange.
+    /// This is an alias for `get_balance_atomic` with clearer naming for strategy use.
+    pub fn get_available_balance(&self, exchange_id: usize, token_id: usize) -> Decimal {
+        self.get_balance_atomic(exchange_id, token_id)
+    }
+
+    /// Calculates the trade allocation amount based on strategy type.
+    ///
+    /// # Arguments
+    /// * `exchange_id` - The exchange to calculate allocation for
+    /// * `token_id` - The token (usually USDT) to base the calculation on
+    /// * `is_cross_exchange` - If true, uses cross-exchange allocation pct; if false, uses triangular
+    /// * `cross_alloc_pct` - Per-trade allocation percentage for cross-exchange (e.g., 0.10 = 10%)
+    /// * `tri_alloc_pct` - Per-trade allocation percentage for triangular (e.g., 0.05 = 5%)
+    /// * `max_position_pct` - Maximum single position as fraction of total (e.g., 0.15 = 15%)
+    ///
+    /// # Returns
+    /// The dollar amount to allocate for this trade, capped by:
+    ///   1. Strategy-specific percentage of available balance
+    ///   2. Maximum single position cap
+    pub fn calculate_trade_allocation(
+        &self,
+        exchange_id: usize,
+        token_id: usize,
+        is_cross_exchange: bool,
+        cross_alloc_pct: Decimal,
+        tri_alloc_pct: Decimal,
+        max_position_pct: Decimal,
+    ) -> Decimal {
+        let available = self.get_balance_atomic(exchange_id, token_id);
+        if available <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        let alloc_pct = if is_cross_exchange {
+            cross_alloc_pct
+        } else {
+            tri_alloc_pct
+        };
+
+        // Calculate strategy allocation
+        let strategy_alloc = available * alloc_pct;
+
+        // Cap by maximum single position
+        let position_cap = available * max_position_pct;
+
+        // Return the smaller of the two
+        if strategy_alloc <= position_cap {
+            strategy_alloc
+        } else {
+            position_cap
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,5 +453,67 @@ mod tests {
         // Sum: 33.333333 + 33.333333 + 33.333334 = 100.000000
         let total = alloc.get_total_balance(1);
         assert_eq!(total, dec!(100.0));
+    }
+
+    #[test]
+    fn test_get_available_balance() {
+        let alloc = LocalCapitalAllocator::new(2, 16);
+        alloc.register_token(3, "USDT", CAT_STABLE);
+        alloc.update_balance_atomic(0, 3, dec!(2500.0));
+        assert_eq!(alloc.get_available_balance(0, 3), dec!(2500.0));
+        assert_eq!(alloc.get_available_balance(1, 3), Decimal::ZERO);
+    }
+
+    #[test]
+    fn test_calculate_trade_allocation_cross_exchange() {
+        let alloc = LocalCapitalAllocator::new(2, 16);
+        alloc.register_token(3, "USDT", CAT_STABLE);
+        alloc.update_balance_atomic(0, 3, dec!(2500.0));
+
+        // 10% of $2500 = $250
+        let cross_size = alloc.calculate_trade_allocation(
+            0, 3, true,
+            dec!(0.10), dec!(0.05), dec!(0.15),
+        );
+        assert_eq!(cross_size, dec!(250.0));
+    }
+
+    #[test]
+    fn test_calculate_trade_allocation_triangular() {
+        let alloc = LocalCapitalAllocator::new(2, 16);
+        alloc.register_token(3, "USDT", CAT_STABLE);
+        alloc.update_balance_atomic(0, 3, dec!(2500.0));
+
+        // 5% of $2500 = $125
+        let tri_size = alloc.calculate_trade_allocation(
+            0, 3, false,
+            dec!(0.10), dec!(0.05), dec!(0.15),
+        );
+        assert_eq!(tri_size, dec!(125.0));
+    }
+
+    #[test]
+    fn test_calculate_allocation_capped_by_max_position() {
+        let alloc = LocalCapitalAllocator::new(2, 16);
+        alloc.register_token(3, "USDT", CAT_STABLE);
+        alloc.update_balance_atomic(0, 3, dec!(1000.0));
+
+        // 10% strategy = $100, but max position 5% = $50 → should cap at $50
+        let size = alloc.calculate_trade_allocation(
+            0, 3, true,
+            dec!(0.10), dec!(0.05), dec!(0.05),
+        );
+        assert_eq!(size, dec!(50.0));
+    }
+
+    #[test]
+    fn test_calculate_allocation_zero_balance() {
+        let alloc = LocalCapitalAllocator::new(2, 16);
+        alloc.register_token(3, "USDT", CAT_STABLE);
+        let size = alloc.calculate_trade_allocation(
+            0, 3, true,
+            dec!(0.10), dec!(0.05), dec!(0.15),
+        );
+        assert_eq!(size, Decimal::ZERO);
     }
 }
