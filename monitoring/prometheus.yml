@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "rust-hft-arb"
+    static_configs:
+      - targets: ["rust-hft-arb:9090"]
+    metrics_path: "/metrics"

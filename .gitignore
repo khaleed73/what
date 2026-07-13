@@ -1,0 +1,5 @@
+.env
+.env.*
+config.toml
+state.json
+target/
