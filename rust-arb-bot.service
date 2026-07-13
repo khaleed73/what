@@ -1,0 +1,40 @@
+[Unit]
+Description=Rust HFT Arbitrage Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/rust-hft-arb
+ExecStart=/opt/rust-hft-arb/target/release/rust-hft-arb
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rust-arb-bot
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rust-hft-arb
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# CPU pinning — pin to core 0 for maximum speed
+# Uncomment and adjust for your VPS:
+# CPUAffinity=0
+
+# Memory limit (8GB VPS)
+MemoryMax=7G
+
+# Environment
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+
+[Install]
+WantedBy=multi-user.target

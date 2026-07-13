@@ -1,6 +1,8 @@
 //! rust-hft-arb — High-Frequency Cross-Exchange & Triangular Arbitrage Bot
 //!
 //! Master bootstrapper. Pins computation to a dedicated CPU core, loads
+
+#![allow(unused_imports)]
 //! configuration, wires every subsystem together, and either starts live
 //! WebSocket feeds or runs the built-in integration smoke-test.
 
@@ -29,6 +31,17 @@ mod subaccount;
 mod withdrawal;
 mod live_order_tracker;
 mod balance_sync;
+mod risk_shield;
+mod safety_execution;
+mod exchange_constraints;
+mod atomic_orderbook;
+mod circuit_breaker;
+mod core_execution_shield;
+mod ring_buffer_logger;
+mod rebalance_matrix;
+mod zero_alloc_signer;
+mod zero_lag_stream;
+mod cross_exchange_executor;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -55,6 +68,16 @@ use signer::PrivateExchangeClient;
 use paper_trading::PaperTradingPipeline;
 use persistence::{AsyncPersistenceWorker, PersistentState};
 use protections::RiskManager;
+use circuit_breaker::EngineCircuitBreaker;
+use risk_shield::{RiskShield, CrossExchangeRiskShield, MarketTicker};
+use safety_execution::SafetyExecutionEngine;
+use exchange_constraints::{ExchangeConstraints, AbsoluteMathEngine, MarketDepth, DepthLevel};
+use atomic_orderbook::FixedOrderBook;
+use core_execution_shield::CoreExecutionShield;
+use ring_buffer_logger::RingBufferLogger;
+use rebalance_matrix::RebalanceMatrixEngine;
+use zero_lag_stream::ZeroLagStreamManager;
+use cross_exchange_executor::CrossExchangeExecutor;
 use rebalancer::{AutoCapitalRebalancer, create_rebalance_channel};
 use stablecoin::StablecoinMonitor;
 use subaccount::SubAccountManager;
