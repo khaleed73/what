@@ -803,6 +803,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         forced_paper, // true if any exchange has no real keys
     );
 
+    // Wire the configurable daily loss limit (USD → cents) from config.
+    let daily_loss_cents = (config.risk.daily_loss_limit_usd * Decimal::from(100u32))
+        .to_u64()
+        .unwrap_or(10_000); // fallback to $100 if conversion overflows
+    engine.set_daily_loss_limit_cents(daily_loss_cents);
+
     // In live mode, attach the cancellation infrastructure so the engine
     // can cancel unfilled orders on the actual exchange.
     if !forced_paper {
@@ -1205,7 +1211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The callback finds the exchange with the highest USDT balance and
     // sends a RebalanceRequest to transfer $500 from that exchange to
     // the starved one.  This replaces the old hard-coded check.
-    let starvation_threshold = config.risk.min_single_position_pct * live_capital;
+    let starvation_threshold = config.risk.max_single_position_pct * live_capital;
     let starvation_threshold = if starvation_threshold < Decimal::from(50) {
         Decimal::from(50) // floor at $50
     } else {

@@ -119,6 +119,11 @@ pub struct RawRiskLimits {
     pub exchange_failure_threshold: u32,
     pub exchange_pause_duration_seconds: i64,
     pub stablecoin_depeg_threshold: String,
+    /// Maximum daily loss in USD (as a string decimal, e.g. "100.00").
+    /// The execution engine halts trading for the rest of the UTC day once
+    /// cumulative realised losses reach this amount.  Default: 100.00 ($100).
+    #[serde(default = "default_daily_loss_limit")]
+    pub daily_loss_limit_usd: String,
 }
 
 // ── Stablecoin depeg monitoring ─────────────────────────────────────────
@@ -161,6 +166,7 @@ pub struct RawFrictionProtections {
 fn default_gas_fee() -> String { "2.00".to_string() }
 fn default_true() -> bool { true }
 fn default_taker_fee() -> String { "0.0010".to_string() }
+fn default_daily_loss_limit() -> String { "100.00".to_string() }
 
 impl Default for RawFrictionProtections {
     fn default() -> Self {
@@ -206,6 +212,10 @@ pub struct ValidatedRiskConfig {
     pub exchange_failure_threshold: u32,
     pub exchange_pause_duration_seconds: i64,
     pub stablecoin_depeg_threshold: Decimal,
+    /// Maximum daily loss in USD.  The execution engine converts this to
+    /// cents at boot and halts trading once the daily loss counter reaches
+    /// this threshold.
+    pub daily_loss_limit_usd: Decimal,
 }
 
 #[derive(Debug, Clone)]
@@ -507,6 +517,11 @@ impl EngineConfig {
             validate_positive(stablecoin_depeg_threshold,
                 "risk_limits.stablecoin_depeg_threshold")?;
 
+            let daily_loss_limit_usd = parse_decimal(&r.daily_loss_limit_usd,
+                "risk_limits.daily_loss_limit_usd")?;
+            validate_positive(daily_loss_limit_usd,
+                "risk_limits.daily_loss_limit_usd")?;
+
             ValidatedRiskConfig {
                 min_net_profit_pct,
                 max_equity_staleness_seconds: r.max_equity_staleness_seconds,
@@ -518,6 +533,7 @@ impl EngineConfig {
                 exchange_failure_threshold: r.exchange_failure_threshold,
                 exchange_pause_duration_seconds: r.exchange_pause_duration_seconds,
                 stablecoin_depeg_threshold,
+                daily_loss_limit_usd,
             }
         };
 

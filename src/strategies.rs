@@ -174,11 +174,16 @@ impl MarketArena {
     // -----------------------------------------------------------------------
 
     /// Allocates the flat arrays and pre-initialises every slot to zero.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `total_exchanges > 64`.  Exchange IDs are used as bit
+    /// positions in `u64` bitmasks throughout `evaluate_tick` and
+    /// `build_cross_exchange_targets`; shifting a `u64` by >= 64 is
+    /// undefined behaviour in Rust, so this must be checked in both debug
+    /// and release builds.
     pub fn new(total_exchanges: usize, total_tokens: usize) -> Self {
-        // SAFETY: exchange IDs are used as bit positions in u64 bitmasks
-        // throughout evaluate_tick and build_cross_exchange_targets.
-        // Shifting u64 by >= 64 is undefined behaviour in Rust.
-        debug_assert!(
+        assert!(
             total_exchanges <= 64,
             "total_exchanges ({}) must be <= 64 for u64 bitmask-based filtering",
             total_exchanges,

@@ -404,6 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         exchange_failure_threshold: 5,
         exchange_pause_duration_seconds: 60,
         stablecoin_depeg_threshold: dec!(5.0),
+        daily_loss_limit_usd: dec!(100.0),
     };
     let risk_manager = Arc::new(RiskManager::new(risk_config));
     risk_manager.update_equity(10_000_000_000);

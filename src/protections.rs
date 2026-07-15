@@ -663,6 +663,7 @@ mod tests {
             exchange_failure_threshold: 3,
             exchange_pause_duration_seconds: 30,
             stablecoin_depeg_threshold: dec!(0.02),    // 2 %
+            daily_loss_limit_usd: dec!(100.0),
         }
     }
 

@@ -374,12 +374,42 @@ pub fn spawn_feed_workers(
     handles
 }
 
+/// Known quote currencies ordered longest-first so that `USDT` is tried
+/// before `USDC` / `BUSD`, preventing greedy mis-splits.
+const KNOWN_QUOTES: &[&str] = &["USDT", "USDC", "BUSD", "BTC", "ETH", "BNB"];
+
+/// Split a concatenated symbol (e.g. `BTCUSDT`) into `(base, quote)`.
+///
+/// Probes `KNOWN_QUOTES` from longest to shortest and splits at the first
+/// match found at the **end** of the symbol.  Falls back to `(symbol, "")`
+/// when no known quote matches (the caller can then use the symbol unchanged).
+#[inline]
+fn split_base_quote(symbol: &str) -> (&str, &str) {
+    for &quote in KNOWN_QUOTES {
+        if symbol.ends_with(quote) {
+            let base = &symbol[..symbol.len() - quote.len()];
+            if !base.is_empty() {
+                return (base, quote);
+            }
+        }
+    }
+    (symbol, "")
+}
+
 /// Build a subscription message for the exchange.
 /// Returns None for exchanges that don't require subscription (e.g. KuCoin REST token).
 ///
 /// `symbols` is a dynamic list of ticker symbols (e.g. `["BTCUSDT", "ETHUSDT"]`).
 /// Falls back to `["BTCUSDT", "ETHUSDT"]` if the list is empty.
 /// GateIO uses a live timestamp to avoid signature rejection.
+///
+/// # Symbol splitting
+///
+/// Several exchanges require the base/quote to be separated (e.g. `BTC-USDT`
+/// instead of `BTCUSDT`).  Rather than assuming a fixed 3-character quote, we
+/// probe a set of known quote currencies (`USDT`, `USDC`, `BUSD`, `BTC`,
+/// `ETH`, `BNB`) and split at the longest match.  If no known quote is found
+/// the symbol is passed through unchanged.
 fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<String> {
     // Accepts a dynamic symbol list; falls back to BTC/ETH if empty.
     // The coin finder populates additional pairs after boot.
@@ -403,10 +433,11 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
         // OKX — hyphen separator (BTCUSDT -> BTC-USDT)
         2 => {
             let args: Vec<serde_json::Value> = syms.iter().map(|s| {
-                let inst_id = if s.len() > 3 {
-                    format!("{}-{}", &s[..s.len()-3], &s[s.len()-3..])
-                } else {
+                let (base, quote) = split_base_quote(s);
+                let inst_id = if quote.is_empty() {
                     s.to_string()
+                } else {
+                    format!("{}-{}", base, quote)
                 };
                 serde_json::json!({"channel": "tickers", "instId": inst_id})
             }).collect();
@@ -419,10 +450,11 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
             let payload: Vec<String> = syms.iter().map(|s| {
-                if s.len() > 3 {
-                    format!("{}_{}", &s[..s.len()-3], &s[s.len()-3..])
-                } else {
+                let (base, quote) = split_base_quote(s);
+                if quote.is_empty() {
                     s.to_string()
+                } else {
+                    format!("{}_{}", base, quote)
                 }
             }).collect();
             Some(format!(r#"{{"time":{},"channel":"spot.tickers","event":"subscribe","payload":{:?}}}"#, ts, payload))
@@ -434,10 +466,11 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
             // Bitfinex uses channel ID based subscriptions
             // Format: { "event": "subscribe", "channel": "ticker", "symbol": "tBTCUSD" }
             let subs: Vec<serde_json::Value> = syms.iter().map(|s| {
-                let sym = if s.len() > 3 {
-                    format!("t{}_{}", &s[..s.len()-3], &s[s.len()-3..])
-                } else {
+                let (base, quote) = split_base_quote(s);
+                let sym = if quote.is_empty() {
                     format!("t{}", s)
+                } else {
+                    format!("t{}_{}", base, quote)
                 };
                 serde_json::json!({"event": "subscribe", "channel": "ticker", "symbol": sym})
             }).collect();
@@ -459,10 +492,11 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
         // Exchange 8 → Coinbase: subscribe to ticker channel
         8 => {
             let product_ids: Vec<String> = syms.iter().map(|s| {
-                if s.len() > 3 {
-                    format!("{}-{}", &s[..s.len()-3], &s[s.len()-3..])
-                } else {
+                let (base, quote) = split_base_quote(s);
+                if quote.is_empty() {
                     s.to_string()
+                } else {
+                    format!("{}-{}", base, quote)
                 }
             }).collect();
             let sub_msg = serde_json::json!({
@@ -591,5 +625,22 @@ mod tests {
         let payload = b"{\"t\":7}";
         let result = parse_raw_bytes_fast(payload);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_split_base_quote() {
+        // Standard USDT pairs
+        assert_eq!(split_base_quote("BTCUSDT"), ("BTC", "USDT"));
+        assert_eq!(split_base_quote("ETHUSDT"), ("ETH", "USDT"));
+        // USDC pairs (also 4 chars, but different quote)
+        assert_eq!(split_base_quote("BTCUSDC"), ("BTC", "USDC"));
+        // BUSD pairs
+        assert_eq!(split_base_quote("ETHBUSD"), ("ETH", "BUSD"));
+        // Short symbol — no match
+        assert_eq!(split_base_quote("BTC"), ("BTC", ""));
+        // Unknown quote — passed through
+        assert_eq!(split_base_quote("DOGEUSDT"), ("DOGE", "USDT"));
+        // Edge: symbol that ends with USDT but is short
+        assert_eq!(split_base_quote("AUSDT"), ("A", "USDT"));
     }
 }

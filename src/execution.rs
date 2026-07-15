@@ -511,6 +511,9 @@ pub struct HighFrequencyExecutionEngine {
     pub daily_profit_cents: AtomicU64,
     /// The UTC day (ordinal) when the daily counters were last reset.
     pub daily_reset_day: std::sync::Mutex<u32>,
+    /// Maximum daily loss in cents.  Configurable via `risk_limits.daily_loss_limit_usd`
+    /// in `config.toml`.  Default: $100.00 = 10 000 cents.
+    pub daily_loss_limit_cents: AtomicU64,
 }
 
 impl HighFrequencyExecutionEngine {
@@ -540,6 +543,7 @@ impl HighFrequencyExecutionEngine {
             daily_loss_cents: AtomicU64::new(0),
             daily_profit_cents: AtomicU64::new(0),
             daily_reset_day: std::sync::Mutex::new(0),
+            daily_loss_limit_cents: AtomicU64::new(10_000), // $100.00 default
         }
     }
 
@@ -605,9 +609,15 @@ impl HighFrequencyExecutionEngine {
         (self.daily_loss_cents.load(Ordering::Relaxed), self.daily_profit_cents.load(Ordering::Relaxed))
     }
 
+    /// Set the daily loss limit (in cents).  Called once at boot from config.
+    pub fn set_daily_loss_limit_cents(&self, cents: u64) {
+        self.daily_loss_limit_cents.store(cents, Ordering::Relaxed);
+    }
+
     /// Check daily loss limit.  Returns Err if the daily loss exceeds
-    /// the configured maximum (in cents).  Default: $1.00 = 100 cents.
-    fn check_daily_loss_limit(&self, max_loss_cents: u64) -> Result<(), String> {
+    /// the configured maximum (in cents).
+    fn check_daily_loss_limit(&self) -> Result<(), String> {
+        let max_loss_cents = self.daily_loss_limit_cents.load(Ordering::Relaxed);
         let (daily_loss, _) = self.check_daily_reset();
         if daily_loss >= max_loss_cents {
             return Err(format!(
@@ -702,8 +712,8 @@ impl HighFrequencyExecutionEngine {
             return Err("aborted: volatility circuit breaker is active (flash crash detected)".into());
         }
 
-        // 0c. Daily loss limit check (default: $1.00 = 100 cents).
-        self.check_daily_loss_limit(100)?;
+        // 0c. Daily loss limit check (configurable via risk_limits.daily_loss_limit_usd).
+        self.check_daily_loss_limit()?;
 
         // 1. Risk gate. Convert Decimal qty to fixed-point u64 (dollars * 1_000_000).
         let size_fp = decimal_to_fp(leg_a.qty * leg_a.price);
@@ -898,8 +908,10 @@ impl HighFrequencyExecutionEngine {
             let buy_notional = total_result.0.filled_qty * total_result.0.avg_price;
             let sell_notional = total_result.1.filled_qty * total_result.1.avg_price;
             let profit = sell_notional - buy_notional;
-            let profit_cents = (profit * Decimal::from(100u64)).to_string()
-                .split('.').next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+            let profit_cents = (profit * Decimal::from(100u64))
+                .trunc()
+                .to_i64()
+                .unwrap_or(0);
             self.record_daily_pnl(profit_cents);
         }
 
@@ -930,8 +942,8 @@ impl HighFrequencyExecutionEngine {
             return Err("aborted: volatility circuit breaker is active (flash crash detected)".into());
         }
 
-        // 0c. Daily loss limit check (default: $1.00 = 100 cents).
-        self.check_daily_loss_limit(100)?;
+        // 0c. Daily loss limit check (configurable via risk_limits.daily_loss_limit_usd).
+        self.check_daily_loss_limit()?;
 
         // 1. Risk gate. Convert Decimal notional to fixed-point u64.
         let size_fp = decimal_to_fp(legs[0].qty * legs[0].price);
@@ -1311,6 +1323,7 @@ mod tests {
             exchange_failure_threshold: 3,
             exchange_pause_duration_seconds: 30,
             stablecoin_depeg_threshold: Decimal::new(5, 3), // 0.005
+            daily_loss_limit_usd: Decimal::from(100),
         };
         let risk_manager = Arc::new(RiskManager::new(risk_config));
         risk_manager.update_equity(100_000_000_000u64);
@@ -1440,6 +1453,7 @@ mod tests {
             exchange_failure_threshold: 3,
             exchange_pause_duration_seconds: 30,
             stablecoin_depeg_threshold: Decimal::new(5, 3),
+            daily_loss_limit_usd: Decimal::from(100),
         };
         let risk_manager = Arc::new(RiskManager::new(risk_config));
         let depeg_circuit = Arc::new(StablecoinMonitor::new(crate::stablecoin::StablecoinConfig::default()));
@@ -1486,6 +1500,7 @@ mod tests {
             exchange_failure_threshold: 3,
             exchange_pause_duration_seconds: 30,
             stablecoin_depeg_threshold: Decimal::new(5, 3),
+            daily_loss_limit_usd: Decimal::from(100),
         };
         let risk_manager = Arc::new(RiskManager::new(risk_config));
         let depeg_circuit = Arc::new(StablecoinMonitor::new(crate::stablecoin::StablecoinConfig::default()));
@@ -1528,6 +1543,7 @@ mod tests {
             exchange_failure_threshold: 3,
             exchange_pause_duration_seconds: 30,
             stablecoin_depeg_threshold: Decimal::new(5, 3),
+            daily_loss_limit_usd: Decimal::from(100),
         };
         let risk_manager = Arc::new(RiskManager::new(risk_config));
         let depeg_circuit = Arc::new(StablecoinMonitor::new(crate::stablecoin::StablecoinConfig::default()));

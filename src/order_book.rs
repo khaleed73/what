@@ -2051,6 +2051,16 @@ impl L2OrderBookListener {
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                                // DESIGN NOTE: Each L2 WS listener is intended to
+                                // subscribe to a single symbol.  We take `.first()`
+                                // from the watch channel as the target symbol for
+                                // `apply_delta`.  The exchange-specific parsers inside
+                                // `parse_orderbook_update` also extract the symbol from
+                                // the message payload itself, but `OrderBookDelta` does
+                                // not carry a symbol field — so the outer symbol is used
+                                // as the book key.  For multi-symbol book support, a
+                                // separate listener task per symbol (or a muxed parser)
+                                // would be needed.
                                 let symbol = self
                                     .symbol_watch
                                     .borrow()

@@ -212,7 +212,7 @@ pub mod okx {
         fn timestamp_millis() -> String {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("system clock before UNIX epoch")
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_millis()
                 .to_string()
         }
@@ -544,7 +544,7 @@ pub mod gateio {
         fn timestamp_secs() -> String {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("system clock before UNIX epoch")
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_secs()
                 .to_string()
         }
@@ -1037,7 +1037,7 @@ pub mod coinbase {
         fn timestamp_secs() -> String {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("system clock before UNIX epoch")
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_secs()
                 .to_string()
         }
@@ -1694,7 +1694,7 @@ pub mod bitget {
         fn timestamp_millis() -> String {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("system clock before UNIX epoch")
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_millis()
                 .to_string()
         }
@@ -2257,7 +2257,9 @@ pub mod bitfinex {
             // Parse array-format order:
             // [0] id, [6] amount (original, signed), [13] status,
             // [15] executed_amount, [17] avg_price
-            let arr = o.as_array().unwrap();
+            let arr = o.as_array().ok_or_else(|| {
+                format!("Bitfinex: expected array-format order for id {}, got non-array value", order_id)
+            })?;
             let executed_qty = parse_json_decimal(
                 arr.get(15).unwrap_or(&Value::Null),
             );
