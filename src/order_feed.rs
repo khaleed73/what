@@ -121,14 +121,15 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                             }
                         }
                     }
-                    b'L'
+                    b'L' => {
                         // Skip fill price
-                        if payload[i] == b'"' => {
+                        if payload[i] == b'"' {
                             i += 1;
                             while i < len && payload[i] != b'"' {
                                 i += 1;
                             }
                         }
+                    }
                     _ => {}
                 }
             }
