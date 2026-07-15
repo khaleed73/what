@@ -13,7 +13,7 @@
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Atomic depeg detection circuit for a single stablecoin symbol.
 ///
@@ -34,6 +34,10 @@ pub struct StablecoinProtectionCircuit {
     threshold: Decimal,
     /// Last known price of the stablecoin.
     last_price: std::sync::atomic::AtomicU64,
+    /// Volatility multiplier in fixed-point (10000 = 1.0x). The effective
+    /// threshold is `base_threshold * volatility_multiplier`. Allows callers
+    /// to increase sensitivity during high-volatility periods.
+    volatility_multiplier: AtomicU64,
 }
 
 impl StablecoinProtectionCircuit {
@@ -47,6 +51,7 @@ impl StablecoinProtectionCircuit {
             is_depegged: AtomicBool::new(false),
             threshold: dec!(0.005),
             last_price: std::sync::atomic::AtomicU64::new(1_000_000u64), // $1.00 in fixed-point (6 decimals)
+            volatility_multiplier: AtomicU64::new(10_000), // 1.0x in fixed-point
         }
     }
 
@@ -58,6 +63,7 @@ impl StablecoinProtectionCircuit {
             is_depegged: AtomicBool::new(false),
             threshold,
             last_price: std::sync::atomic::AtomicU64::new(1_000_000u64),
+            volatility_multiplier: AtomicU64::new(10_000), // 1.0x in fixed-point
         }
     }
 
@@ -104,7 +110,12 @@ impl StablecoinProtectionCircuit {
             Decimal::ONE - price
         };
 
-        let should_depeg = deviation > self.threshold;
+        // Effective threshold = base_threshold * volatility_multiplier
+        let multiplier_fp = self.volatility_multiplier.load(Ordering::SeqCst);
+        let effective_threshold =
+            self.threshold * Decimal::from(multiplier_fp) / Decimal::from(10_000u64);
+
+        let should_depeg = deviation > effective_threshold;
         let was_depegged = self.is_depegged.load(Ordering::SeqCst);
 
         if should_depeg && !was_depegged {
@@ -145,6 +156,33 @@ impl StablecoinProtectionCircuit {
     #[inline]
     pub fn threshold(&self) -> Decimal {
         self.threshold
+    }
+
+    /// Updates the volatility multiplier. This scales the effective depeg
+    /// threshold: `effective = base_threshold * multiplier`.
+    ///
+    /// # Arguments
+    /// * `multiplier` — A float where 1.0 means no change, 2.0 doubles the
+    ///   threshold (more lenient), 0.5 halves it (more sensitive).
+    ///   Stored internally as fixed-point (10000 = 1.0x).
+    #[inline]
+    pub fn update_volatility_multiplier(&self, multiplier: f64) {
+        let fp = (multiplier * 10_000.0).round() as u64;
+        self.volatility_multiplier.store(fp, Ordering::SeqCst);
+    }
+
+    /// Returns the current volatility multiplier as an f64.
+    #[inline]
+    pub fn volatility_multiplier(&self) -> f64 {
+        let fp = self.volatility_multiplier.load(Ordering::SeqCst);
+        fp as f64 / 10_000.0
+    }
+
+    /// Returns the effective (multiplier-scaled) depeg threshold.
+    #[inline]
+    pub fn effective_threshold(&self) -> Decimal {
+        let multiplier_fp = self.volatility_multiplier.load(Ordering::SeqCst);
+        self.threshold * Decimal::from(multiplier_fp) / Decimal::from(10_000u64)
     }
 }
 

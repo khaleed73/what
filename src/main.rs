@@ -1029,7 +1029,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (id, name, maker, taker) in &summary {
                 println!("  {} (ID {}): maker={} bps, taker={} bps", name, id, maker, taker);
             }
-            fm.refresh_periodically(300).await;
+            fm.refresh_periodically(30).await;
         });
     }
 

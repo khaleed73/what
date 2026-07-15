@@ -9,6 +9,7 @@
 
 use rust_decimal::Decimal;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// A detected starvation event.
 #[derive(Debug, Clone)]
@@ -35,6 +36,10 @@ pub struct CapitalStarvationDetector {
     is_starved: AtomicBool,
     /// Last detected starvation event.
     last_event: std::sync::Mutex<Option<StarvationEvent>>,
+    /// Optional callback invoked when starvation is detected for an exchange.
+    /// Receives the exchange ID as a `u16`. The caller (e.g. main.rs) can
+    /// wire this to trigger the rebalancer.
+    starvation_callback: Option<Arc<dyn Fn(u16) + Send + Sync>>,
 }
 
 impl CapitalStarvationDetector {
@@ -46,6 +51,7 @@ impl CapitalStarvationDetector {
             min_threshold,
             is_starved: AtomicBool::new(false),
             last_event: std::sync::Mutex::new(None),
+            starvation_callback: None,
         }
     }
 
@@ -84,6 +90,11 @@ impl CapitalStarvationDetector {
                 "CAPITAL STARVATION detected — rebalance required"
             );
 
+            // Invoke the starvation callback if one is registered.
+            if let Some(ref cb) = self.starvation_callback {
+                cb(exchange_id as u16);
+            }
+
             return Some(event);
         }
 
@@ -106,6 +117,13 @@ impl CapitalStarvationDetector {
     /// Returns the last starvation event, if any.
     pub fn last_event(&self) -> Option<StarvationEvent> {
         self.last_event.lock().unwrap().clone()
+    }
+
+    /// Registers a callback that is invoked whenever starvation is detected
+    /// for an exchange. The callback receives the exchange ID as `u16`.
+    /// This allows the caller to wire starvation detection to the rebalancer.
+    pub fn set_starvation_callback(&mut self, callback: Arc<dyn Fn(u16) + Send + Sync>) {
+        self.starvation_callback = Some(callback);
     }
 }
 

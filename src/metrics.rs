@@ -5,9 +5,10 @@
 // is read-only and lock-free — it samples atomic counters from
 // `HealthMonitor`, `RiskManager`, and `HighFrequencyExecutionEngine`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, RwLock};
 
 use crate::health::HealthMonitor;
 use crate::protections::RiskManager;
@@ -39,6 +40,36 @@ pub struct MetricsState {
     pub execution: Option<Arc<HighFrequencyExecutionEngine>>,
 }
 
+/// Default sample rate: only recompute full metrics on every Nth scrape.
+const DEFAULT_SAMPLE_RATE: u64 = 10;
+
+/// Internal sampling state shared across connection handlers.
+struct MetricsSampling {
+    /// Incremented on every `/metrics` request.
+    counter: AtomicU64,
+    /// Record 1 in `rate` requests.  Default: `DEFAULT_SAMPLE_RATE`.
+    rate: u64,
+    /// Cached Prometheus output from the last sampled render.
+    cache: RwLock<String>,
+}
+
+impl MetricsSampling {
+    fn new(sample_rate: u64) -> Self {
+        Self {
+            counter: AtomicU64::new(0),
+            rate: sample_rate,
+            cache: RwLock::new(String::new()),
+        }
+    }
+
+    /// Returns `true` if this call should perform a full recompute.
+    #[inline]
+    fn should_sample(&self) -> bool {
+        let count = self.counter.fetch_add(1, Ordering::Relaxed);
+        count % self.rate == 0
+    }
+}
+
 /// Spawn the Prometheus metrics server.
 ///
 /// Returns a `oneshot::Sender` that, when dropped, signals the server to shut
@@ -48,6 +79,7 @@ pub fn spawn_metrics_server(
     state: Arc<MetricsState>,
 ) -> (tokio::task::JoinHandle<()>, oneshot::Sender<()>) {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+    let sampling = Arc::new(MetricsSampling::new(DEFAULT_SAMPLE_RATE));
 
     let handle = tokio::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(&config.bind_addr).await {
@@ -67,8 +99,9 @@ pub fn spawn_metrics_server(
                     match accepted {
                         Ok((stream, _addr)) => {
                             let state = Arc::clone(&state);
+                            let sampling = Arc::clone(&sampling);
                             tokio::spawn(async move {
-                                handle_connection(stream, &state).await;
+                                handle_connection(stream, &state, &sampling).await;
                             });
                         }
                         Err(e) => {
@@ -91,6 +124,7 @@ pub fn spawn_metrics_server(
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     state: &MetricsState,
+    sampling: &MetricsSampling,
 ) {
     use tokio::io::AsyncWriteExt;
 
@@ -109,11 +143,26 @@ async fn handle_connection(
         .unwrap_or("/");
 
     let (status, content_type, body) = if path == "/metrics" {
-        (
-            "HTTP/1.1 200 OK",
-            "text/plain; version=0.0.4; charset=utf-8",
-            render_prometheus(state),
-        )
+        // Sampling: only recompute every Nth request; otherwise serve cache.
+        if sampling.should_sample() {
+            let rendered = render_prometheus(state);
+            {
+                let mut cache = sampling.cache.write().await;
+                *cache = rendered.clone();
+            }
+            (
+                "HTTP/1.1 200 OK",
+                "text/plain; version=0.0.4; charset=utf-8",
+                rendered,
+            )
+        } else {
+            let cache = sampling.cache.read().await;
+            (
+                "HTTP/1.1 200 OK",
+                "text/plain; version=0.0.4; charset=utf-8",
+                cache.clone(),
+            )
+        }
     } else {
         (
             "HTTP/1.1 404 Not Found",

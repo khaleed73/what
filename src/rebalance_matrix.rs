@@ -4,7 +4,8 @@
 //! beyond a configurable threshold, and computes the optimal rebalancing action
 //! (which exchange to transfer from/to, how much, and the expected cost).
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
+use std::sync::Mutex;
 use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 
@@ -57,6 +58,39 @@ pub struct RebalanceAction {
     pub target_ratio: Decimal,
 }
 
+/// Returns the current Unix epoch in seconds (cheap, no allocation).
+fn now_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Cheap FNV-1a hash over the serialised bytes of two `Decimal` values.
+/// No heap allocation — `Decimal::serialize()` returns a fixed `[u8; 16]`.
+fn hash_balances(bx: &Decimal, by: &Decimal) -> u64 {
+    let bx_b = bx.serialize();
+    let by_b = by.serialize();
+    let mut h: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+    for &b in &bx_b {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    for &b in &by_b {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Hash balances **and** exchange IDs — the full input key for compute_hedged_rebalance_execution.
+fn hash_compute_input(bx: &Decimal, by: &Decimal, from: u16, to: u16) -> u64 {
+    let mut h = hash_balances(bx, by);
+    h ^= (from as u64) << 32;
+    h ^= to as u64;
+    h
+}
+
 /// Rebalance Matrix Engine — detects balance drift and computes optimal rebalancing.
 pub struct RebalanceMatrixEngine {
     /// Current system state (balanced / imbalanced / rebalancing / error).
@@ -68,9 +102,26 @@ pub struct RebalanceMatrixEngine {
     execution_fee: Decimal,
     /// Minimum transfer amount to justify the rebalancing cost.
     min_transfer_amount: Decimal,
+
+    // --- Per-tick caches (O(1) fast-path, avoids O(n³) recomputation) ---
+    /// FNV-1a hash of the balances that produced the cached audit result.
+    last_audit_hash: AtomicU64,
+    /// Cached boolean result of the last `audit_balance_drift` call.
+    last_audit_result: AtomicBool,
+    /// FNV-1a hash of the full input (balances + exchange IDs) for the cached compute result.
+    last_compute_hash: AtomicU64,
+    /// Cached `RebalanceAction` from the last `compute_hedged_rebalance_execution` call.
+    last_compute_result: Mutex<Option<RebalanceAction>>,
+    /// Unix-epoch seconds of the last actual recomputation.
+    last_compute_time: AtomicI64,
+    /// Minimum wall-clock seconds between successive rebalance computations.
+    min_rebalance_interval_secs: i64,
 }
 
 impl RebalanceMatrixEngine {
+    /// Default minimum interval between rebalance computations (seconds).
+    pub const DEFAULT_MIN_INTERVAL_SECS: i64 = 5;
+
     pub fn new(
         imbalance_threshold: Decimal,
         fee: Decimal,
@@ -81,7 +132,20 @@ impl RebalanceMatrixEngine {
             max_allowed_imbalance_ratio: imbalance_threshold,
             execution_fee: fee,
             min_transfer_amount: min_transfer,
+            // Cache fields — initialised to "empty" sentinels.
+            last_audit_hash: AtomicU64::new(0),
+            last_audit_result: AtomicBool::new(false),
+            last_compute_hash: AtomicU64::new(0),
+            last_compute_result: Mutex::new(None),
+            last_compute_time: AtomicI64::new(0),
+            min_rebalance_interval_secs: Self::DEFAULT_MIN_INTERVAL_SECS,
         }
+    }
+
+    /// Builder-style setter for the minimum recomputation interval.
+    pub fn with_min_interval(mut self, secs: i64) -> Self {
+        self.min_rebalance_interval_secs = secs;
+        self
     }
 
     /// Returns the current system state.
@@ -97,11 +161,21 @@ impl RebalanceMatrixEngine {
     /// Audits the balance drift between two exchanges.
     ///
     /// Returns true if the imbalance exceeds the threshold and rebalancing is needed.
+    /// Uses a cheap FNV-1a hash of the input balances to skip recomputation when
+    /// the inventory has not changed since the last call (O(1) fast-path).
     pub fn audit_balance_drift(&self, inventory: &AccountInventory) -> bool {
+        let h = hash_balances(&inventory.stable_balance_x, &inventory.stable_balance_y);
+        let prev_hash = self.last_audit_hash.load(Ordering::Acquire);
+
+        // Fast-path: inputs unchanged → return cached result (no division, no state write).
+        if h == prev_hash {
+            return self.last_audit_result.load(Ordering::Acquire);
+        }
+
+        // Slow-path: compute from scratch.
         let ratio_x = inventory.ratio_x();
         let ratio_y = inventory.ratio_y();
 
-        // Check if either side exceeds the maximum allowed ratio
         let needs_rebalance = ratio_x > self.max_allowed_imbalance_ratio
             || ratio_y > self.max_allowed_imbalance_ratio;
 
@@ -110,6 +184,9 @@ impl RebalanceMatrixEngine {
         } else {
             self.set_state(STATE_BALANCED);
         }
+
+        self.last_audit_hash.store(h, Ordering::Release);
+        self.last_audit_result.store(needs_rebalance, Ordering::Release);
 
         needs_rebalance
     }
@@ -122,10 +199,59 @@ impl RebalanceMatrixEngine {
     /// 3. Deduct the transfer fee to ensure net transfer achieves the target
     /// 4. Verify the transfer is large enough to justify the fee cost
     ///
+    /// # Caching
+    /// Two cheap gates prevent redundant work on every price tick:
+    /// * **Hash gate** — if the input balances (and exchange IDs) have not changed,
+    ///   the cached `RebalanceAction` is returned immediately (O(1)).
+    /// * **Time gate** — even when inputs change, a minimum wall-clock interval
+    ///   ([`Self::DEFAULT_MIN_INTERVAL_SECS`]) is enforced so the expensive
+    ///   division-heavy path runs at most once per interval.
+    ///
     /// # Returns
     /// * `Some(RebalanceAction)` - Action to take
     /// * `None` - Rebalancing not needed or not cost-effective
     pub fn compute_hedged_rebalance_execution(
+        &self,
+        inventory: &AccountInventory,
+        from_exchange_id: u16,
+        to_exchange_id: u16,
+    ) -> Option<RebalanceAction> {
+        let h = hash_compute_input(
+            &inventory.stable_balance_x,
+            &inventory.stable_balance_y,
+            from_exchange_id,
+            to_exchange_id,
+        );
+        let now = now_epoch_secs();
+        let prev_hash = self.last_compute_hash.load(Ordering::Acquire);
+        let last_time = self.last_compute_time.load(Ordering::Acquire);
+
+        // Fast-path: same inputs OR minimum interval not yet elapsed → return cache.
+        // `prev_hash != 0` ensures we have actually computed at least once.
+        if prev_hash != 0
+            && (h == prev_hash
+                || (now - last_time) < self.min_rebalance_interval_secs)
+        {
+            return self.last_compute_result.lock().unwrap().clone();
+        }
+
+        // --- Slow-path: full recomputation ---
+        let result = self.do_compute(inventory, from_exchange_id, to_exchange_id);
+
+        // Always update cache — including `None` so identical no-op inputs
+        // hit the fast-path on the next tick instead of re-entering here.
+        self.last_compute_hash.store(h, Ordering::Release);
+        self.last_compute_time.store(now, Ordering::Release);
+        {
+            let mut cache = self.last_compute_result.lock().unwrap();
+            *cache = result.clone();
+        }
+
+        result
+    }
+
+    /// Inner computation — separated so the public method can wrap it with caching.
+    fn do_compute(
         &self,
         inventory: &AccountInventory,
         from_exchange_id: u16,

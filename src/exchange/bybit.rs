@@ -24,7 +24,17 @@ pub struct BybitClient {
 }
 
 impl BybitClient {
-    pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
+    pub fn new(name: String, mut config: ExchangeConfig) -> Result<Self> {
+        // Runtime URL override via environment variable.
+        // If BYBIT_BASE_URL is set, it takes precedence over the compile-time
+        // (or config-provided) URL, allowing testnet↔mainnet switches without
+        // recompilation.
+        if let Ok(env_url) = std::env::var("BYBIT_BASE_URL") {
+            let trimmed = env_url.trim_end_matches('/');
+            if !trimmed.is_empty() {
+                config.base_url = trimmed.to_string();
+            }
+        }
         let timeout_secs = config.http_timeout_secs.unwrap_or(30);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {

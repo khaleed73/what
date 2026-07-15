@@ -68,15 +68,38 @@ impl OrderBook {
     ///
     /// * If `is_snapshot` is true the book is **replaced** entirely.
     /// * Otherwise each level is upserted (zero-quantity entries are removed).
+    ///
+    /// For incremental updates, a price sanity check is applied: any new price
+    /// that is > 10× or < 0.1× the current best price on the same side is
+    /// rejected as a likely corrupted WebSocket message. Removals (zero-qty)
+    /// and snapshots bypass this check.
     pub fn apply_delta(&mut self, delta: &OrderBookDelta) {
         if delta.is_snapshot {
             self.bids.clear();
             self.asks.clear();
         }
 
+        // For incremental updates, get reference prices for sanity checks.
+        let best_bid_ref = if !delta.is_snapshot {
+            self.bids.last_key_value().map(|(p, _)| *p)
+        } else {
+            None
+        };
+        let best_ask_ref = if !delta.is_snapshot {
+            self.asks.first_key_value().map(|(p, _)| *p)
+        } else {
+            None
+        };
+
         for (price, qty) in &delta.bid_updates {
             if *qty <= Decimal::ZERO {
                 self.bids.remove(price);
+            } else if !Self::is_price_sane(*price, best_bid_ref) {
+                warn!(
+                    price = %price,
+                    best_bid = %best_bid_ref.unwrap_or(Decimal::ZERO),
+                    "Order book bid price failed sanity check (outside 0.1x–10x of best bid) — rejected"
+                );
             } else {
                 self.bids.insert(*price, *qty);
             }
@@ -85,6 +108,12 @@ impl OrderBook {
         for (price, qty) in &delta.ask_updates {
             if *qty <= Decimal::ZERO {
                 self.asks.remove(price);
+            } else if !Self::is_price_sane(*price, best_ask_ref) {
+                warn!(
+                    price = %price,
+                    best_ask = %best_ask_ref.unwrap_or(Decimal::ZERO),
+                    "Order book ask price failed sanity check (outside 0.1x–10x of best ask) — rejected"
+                );
             } else {
                 self.asks.insert(*price, *qty);
             }
@@ -94,6 +123,23 @@ impl OrderBook {
             self.last_update_id = delta.last_update_id;
         }
         self.last_update_ns = delta.last_update_ns;
+    }
+
+    /// Checks whether a price is within 0.1×–10× of a reference price.
+    /// Returns `true` if the price is sane (or if there is no reference price
+    /// to compare against, e.g. the book is empty).
+    #[inline]
+    fn is_price_sane(price: Decimal, reference: Option<Decimal>) -> bool {
+        let ref_price = match reference {
+            Some(r) if r > Decimal::ZERO => r,
+            _ => return true, // No valid reference — allow everything
+        };
+        if price <= Decimal::ZERO {
+            return true; // Zero-price removals are handled elsewhere
+        }
+        let upper = ref_price * Decimal::from(10u32);
+        let lower = ref_price / Decimal::from(10u32);
+        price >= lower && price <= upper
     }
 
     /// Trim the book to keep only the top `max_levels` on each side.

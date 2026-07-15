@@ -24,6 +24,10 @@ pub struct TimestampSynchronizer {
     last_sync: std::sync::Mutex<Instant>,
     /// Sync interval.
     sync_interval: Duration,
+    /// Maximum allowed single-jump drift (ms). If a new offset differs from
+    /// the stored offset by more than this, the update is rejected as a
+    /// likely corrupted NTP response. Default: 5000 ms.
+    max_drift_ms: i64,
 }
 
 impl TimestampSynchronizer {
@@ -40,6 +44,7 @@ impl TimestampSynchronizer {
             max_drift_fatal_ms,
             last_sync: std::sync::Mutex::new(Instant::now()),
             sync_interval,
+            max_drift_ms: 5000,
         }
     }
 
@@ -58,6 +63,21 @@ impl TimestampSynchronizer {
     pub fn update_offset(&self, server_time_ms: i64) {
         let local_ms = chrono::Utc::now().timestamp_millis();
         let offset = server_time_ms - local_ms;
+
+        // Guard against non-linear drift: reject if the jump from the
+        // currently stored offset exceeds `max_drift_ms`.  The first
+        // update (stored offset == 0) is always accepted.
+        let current = self.offset_ms.load(Ordering::SeqCst);
+        if current != 0 && (offset - current).abs() > self.max_drift_ms {
+            tracing::warn!(
+                exchange = %self.exchange_name,
+                old_offset_ms = current,
+                new_offset_ms = offset,
+                max_jump_ms = self.max_drift_ms,
+                "Rejected offset update: jump exceeds max_drift_ms (possible corrupted NTP response)"
+            );
+            return; // do NOT update the stored offset
+        }
 
         self.offset_ms.store(offset, Ordering::SeqCst);
         *self.last_sync.lock().unwrap() = Instant::now();
@@ -118,6 +138,18 @@ impl TimestampSynchronizer {
     pub fn exchange_name(&self) -> &str {
         &self.exchange_name
     }
+
+    /// Sets the maximum allowed single-jump drift (ms).
+    /// Updates to `update_offset` that would shift the clock by more than
+    /// this value from the current offset are silently rejected.
+    pub fn set_max_drift_ms(&mut self, max_drift_ms: i64) {
+        self.max_drift_ms = max_drift_ms;
+    }
+
+    /// Returns the current max single-jump drift threshold (ms).
+    pub fn max_drift_ms(&self) -> i64 {
+        self.max_drift_ms
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +202,35 @@ mod tests {
 
         sync.offset_ms.store(6000, Ordering::SeqCst); // 6s drift — exceeds 5s fatal
         assert!(!sync.is_within_bounds());
+    }
+
+    #[test]
+    fn test_rejects_large_offset_jump() {
+        let mut sync = TimestampSynchronizer::with_defaults("binance");
+        sync.set_max_drift_ms(5000);
+
+        // First update always accepted.
+        let local_ms = chrono::Utc::now().timestamp_millis();
+        sync.update_offset(local_ms + 50);
+        assert_eq!(sync.offset_ms(), 50);
+
+        // A jump of 6000ms exceeds max_drift_ms=5000 → rejected.
+        sync.update_offset(local_ms + 6050);
+        // Offset should remain at ~50 (the first accepted value).
+        let offset = sync.offset_ms();
+        assert!(offset.abs() < 100, "offset should not have jumped, got {}", offset);
+    }
+
+    #[test]
+    fn test_allows_small_offset_jump() {
+        let sync = TimestampSynchronizer::with_defaults("binance");
+        let local_ms = chrono::Utc::now().timestamp_millis();
+        sync.update_offset(local_ms + 50);
+
+        // A jump of 100ms is well within the 5000ms threshold.
+        sync.update_offset(local_ms + 150);
+        let offset = sync.offset_ms();
+        assert!(offset >= 100 && offset <= 200, "offset should be ~150, got {}", offset);
     }
 
     #[test]

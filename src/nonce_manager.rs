@@ -86,22 +86,24 @@ impl ApiNonceManager {
 
     /// Get the next nonce for an exchange (atomically incrementing).
     ///
-    /// Panics if the exchange is not registered.
+    /// Returns `None` if the exchange is not registered.  Callers MUST handle
+    /// this — sending a request without a valid nonce will be rejected by
+    /// the exchange and may trigger rate-limit bans.
     #[inline(always)]
-    pub fn next_nonce(&self, exchange_id: &str) -> u64 {
+    pub fn next_nonce(&self, exchange_id: &str) -> Option<u64> {
         self.nonces
             .get(&exchange_id.to_lowercase())
-            .expect("Exchange not registered in nonce manager")
-            .next()
+            .map(|n| n.next())
     }
 
     /// Peek at the current nonce without incrementing.
+    ///
+    /// Returns `None` if the exchange is not registered.
     #[inline]
-    pub fn current_nonce(&self, exchange_id: &str) -> u64 {
+    pub fn current_nonce(&self, exchange_id: &str) -> Option<u64> {
         self.nonces
             .get(&exchange_id.to_lowercase())
-            .expect("Exchange not registered in nonce manager")
-            .peek()
+            .map(|n| n.peek())
     }
 
     /// Force-set the nonce for an exchange (e.g. after server sync).
@@ -155,8 +157,8 @@ mod tests {
     #[test]
     fn test_next_nonce_increments() {
         let mgr = make_manager();
-        let n1 = mgr.next_nonce("binance");
-        let n2 = mgr.next_nonce("binance");
+        let n1 = mgr.next_nonce("binance").unwrap();
+        let n2 = mgr.next_nonce("binance").unwrap();
         assert_eq!(n1, 1000);
         assert_eq!(n2, 1001);
     }
@@ -164,43 +166,50 @@ mod tests {
     #[test]
     fn test_peek_does_not_increment() {
         let mgr = make_manager();
-        let _ = mgr.next_nonce("binance"); // 1000 → now 1001
-        assert_eq!(mgr.current_nonce("binance"), 1001);
-        assert_eq!(mgr.current_nonce("binance"), 1001); // still 1001
+        let _ = mgr.next_nonce("binance").unwrap(); // 1000 → now 1001
+        assert_eq!(mgr.current_nonce("binance").unwrap(), 1001);
+        assert_eq!(mgr.current_nonce("binance").unwrap(), 1001); // still 1001
     }
 
     #[test]
     fn test_independent_exchanges() {
         let mgr = make_manager();
-        assert_eq!(mgr.next_nonce("binance"), 1000);
-        assert_eq!(mgr.next_nonce("bitfinex"), 5000);
-        assert_eq!(mgr.next_nonce("binance"), 1001);
-        assert_eq!(mgr.next_nonce("bitfinex"), 5001);
+        assert_eq!(mgr.next_nonce("binance").unwrap(), 1000);
+        assert_eq!(mgr.next_nonce("bitfinex").unwrap(), 5000);
+        assert_eq!(mgr.next_nonce("binance").unwrap(), 1001);
+        assert_eq!(mgr.next_nonce("bitfinex").unwrap(), 5001);
     }
 
     #[test]
     fn test_set_nonce() {
         let mgr = make_manager();
         mgr.set_nonce("binance", 9999);
-        assert_eq!(mgr.next_nonce("binance"), 9999);
-        assert_eq!(mgr.next_nonce("binance"), 10000);
+        assert_eq!(mgr.next_nonce("binance").unwrap(), 9999);
+        assert_eq!(mgr.next_nonce("binance").unwrap(), 10000);
     }
 
     #[test]
     fn test_sync_with_server_lower() {
         let mgr = make_manager();
-        mgr.next_nonce("binance"); // now at 1001
+        mgr.next_nonce("binance").unwrap(); // now at 1001
         mgr.sync_with_server("binance", 500); // server behind — no effect
-        assert_eq!(mgr.current_nonce("binance"), 1001);
+        assert_eq!(mgr.current_nonce("binance").unwrap(), 1001);
     }
 
     #[test]
     fn test_sync_with_server_higher() {
         let mgr = make_manager();
-        mgr.next_nonce("binance"); // now at 1001
+        mgr.next_nonce("binance").unwrap(); // now at 1001
         mgr.sync_with_server("binance", 5000); // server ahead — bump up
-        assert_eq!(mgr.current_nonce("binance"), 5000);
-        assert_eq!(mgr.next_nonce("binance"), 5000); // returns 5000, now 5001
+        assert_eq!(mgr.current_nonce("binance").unwrap(), 5000);
+        assert_eq!(mgr.next_nonce("binance").unwrap(), 5000); // returns 5000, now 5001
+    }
+
+    #[test]
+    fn test_unregistered_exchange_returns_none() {
+        let mgr = make_manager();
+        assert_eq!(mgr.next_nonce("unknown_exchange"), None);
+        assert_eq!(mgr.current_nonce("unknown_exchange"), None);
     }
 
     #[test]

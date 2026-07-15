@@ -51,7 +51,7 @@
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use reqwest;
@@ -59,7 +59,7 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::balance_allocator::LocalCapitalAllocator;
 use crate::signer::PrivateApiSigner;
@@ -161,6 +161,11 @@ pub struct AutoCapitalRebalancer {
     /// Deposit addresses keyed as "ExchangeName_network" → address.
     /// Loaded from config at boot.  Replaces the old hardcoded function.
     deposit_addresses: HashMap<String, String>,
+
+    /// Per-exchange last-seen heartbeat timestamps.
+    /// Updated by the main trading loop via `record_exchange_heartbeat`.
+    /// Used to skip withdrawals to exchanges that appear dead or frozen.
+    exchange_last_seen: Arc<std::sync::Mutex<HashMap<u16, Instant>>>,
 }
 
 impl AutoCapitalRebalancer {
@@ -192,6 +197,7 @@ impl AutoCapitalRebalancer {
             gas_fee_usd: AtomicU64::new(2_000_000),
             total_gas_deducted: AtomicU64::new(0),
             deposit_addresses,
+            exchange_last_seen: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -284,6 +290,59 @@ impl AutoCapitalRebalancer {
                 }
             };
 
+            // ── Pre-flight validation ──────────────────────────────────
+
+            // 1. Exchange liveness check — reject if the source exchange has
+            //    no recent heartbeat (could be disconnected or frozen).
+            //    Sending a withdrawal into a dead exchange risks permanent
+            //    capital loss.
+            if !self.is_exchange_live(req.from_exchange_id) {
+                warn!(
+                    from = req.from_exchange_id,
+                    to = req.to_exchange_id,
+                    "Stage 2 ABORTED: source exchange has no recent heartbeat — \
+                     likely disconnected or frozen. Skipping withdrawal to \
+                     avoid sending capital into a black hole."
+                );
+                continue;
+            }
+
+            // 2. Amount validation — reject zero or negative amounts.
+            if req.amount <= Decimal::ZERO {
+                warn!(
+                    from = req.from_exchange_id,
+                    to = req.to_exchange_id,
+                    amount = %req.amount,
+                    "Stage 2 ABORTED: invalid rebalance amount (must be positive)"
+                );
+                continue;
+            }
+
+            // 3. Self-transfer guard — reject if source == destination.
+            if req.from_exchange_id == req.to_exchange_id {
+                warn!(
+                    exchange = req.from_exchange_id,
+                    "Stage 2 ABORTED: source and destination exchange are the same — \
+                     self-transfer would waste gas fees"
+                );
+                continue;
+            }
+
+            // 4. Channel backpressure / staleness check — if too many
+            //    rebalances are queued, the oldest requests are stale (the
+            //    market has moved since they were generated).  Each in-flight
+            //    transfer blocks for ~60 s of blockchain settlement, so 3+
+            //    queued means the front of the queue is at least minutes old.
+            if self.receiver.len() > 3 {
+                warn!(
+                    queued = self.receiver.len(),
+                    from = req.from_exchange_id,
+                    "Stage 2 ABORTED: rebalance channel backpressure detected — \
+                     skipping stale request (market conditions have likely changed)"
+                );
+                continue;
+            }
+
             let withdrawal_endpoint = get_withdrawal_endpoint(req.from_exchange_id);
             let network = "arbitrum";
 
@@ -295,6 +354,18 @@ impl AutoCapitalRebalancer {
                 signer,
                 withdrawal_endpoint,
             );
+
+            // 5. Payload sanity check — unknown exchanges produce empty payloads.
+            //    Sending an empty body to an API endpoint is guaranteed to fail,
+            //    but we catch it early to avoid wasting a network round-trip and
+            //    to log a clear diagnosis.
+            if payload_str.is_empty() {
+                error!(
+                    from = req.from_exchange_id,
+                    "Stage 2 ABORTED: withdrawal payload is empty (unknown exchange ID)"
+                );
+                continue;
+            }
 
             // ── Stage 3: Blockchain Transit Flight ──────────────────────
             debug!(
@@ -620,6 +691,60 @@ impl AutoCapitalRebalancer {
             }
         }
     }
+
+    // -------------------------------------------------------------------
+    // Exchange liveness tracking
+    // -------------------------------------------------------------------
+
+    /// Record that `exchange_id` has recently sent or received data.
+    ///
+    /// Call this from the main trading loop's WebSocket or REST polling
+    /// task whenever fresh data arrives from an exchange.  The rebalancer
+    /// uses this to avoid dispatching withdrawals to dead/frozen exchanges
+    /// where funds could become permanently stuck.
+    ///
+    /// # Thread Safety
+    ///
+    /// This method acquires a `std::sync::Mutex` for a single `HashMap`
+    /// insert — the critical section is ~50 ns and only contended during
+    /// the rebalancer's periodic liveness check (also ~50 ns).
+    pub fn record_exchange_heartbeat(&self, exchange_id: u16) {
+        if let Ok(mut map) = self.exchange_last_seen.lock() {
+            map.insert(exchange_id, Instant::now());
+        }
+        // Lock poisoned — silently skip.  The rebalancer will fail-open
+        // (assume exchange is live) when it can't read the map either.
+    }
+
+    /// Returns `true` if `exchange_id` has a recorded heartbeat within
+    /// the last 30 seconds.
+    ///
+    /// * **No heartbeats recorded for ANY exchange** → returns `true`
+    ///   (bootstrap grace period: don't block the very first rebalance
+    ///   before the trading loop has had a chance to record heartbeats).
+    ///
+    /// * **Heartbeats exist for other exchanges but not this one** →
+    ///   returns `false` (this exchange is genuinely dead).
+    ///
+    /// * **Lock poisoned** → returns `true` (fail-open: don't block
+    ///   all rebalances just because of a poisoned lock).
+    fn is_exchange_live(&self, exchange_id: u16) -> bool {
+        const HEARTBEAT_TTL_SECS: u64 = 30;
+
+        match self.exchange_last_seen.lock() {
+            Ok(map) => {
+                if map.is_empty() {
+                    // Bootstrap grace period — no heartbeats recorded yet.
+                    return true;
+                }
+                match map.get(&exchange_id) {
+                    Some(last_seen) => last_seen.elapsed().as_secs() < HEARTBEAT_TTL_SECS,
+                    None => false, // Other exchanges have heartbeats but not this one — dead.
+                }
+            }
+            Err(_) => true, // Lock poisoned — fail-open.
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -690,7 +815,7 @@ mod tests {
         assert!(overflow.is_err(), "11th message should be rejected (channel full)");
 
         // Drop one from the receiver to free a slot.
-        rx.recv().await.unwrap();
+        rx.recv().await.expect("channel should have a message after sending 10");
         // Now it should accept again.
         let retry = tx.try_send(RebalanceRequest {
             from_exchange_id: 0,

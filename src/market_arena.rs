@@ -144,11 +144,21 @@ impl MarketArena {
     }
 
     /// Update the order book state for a specific exchange×token.
+    ///
+    /// If the lock is poisoned (a previous holder panicked), the poisoned
+    /// state is recovered and the update proceeds.  This prevents a single
+    /// panic from permanently disabling the entire arena.
     #[inline]
     pub fn update(&self, exchange_id: usize, token_id: usize, bid_fp: u64, ask_fp: u64) {
         let idx = self.get_index(exchange_id, token_id);
         if let Some(slot) = self.matrix.get(idx) {
-            let mut state = slot.write().unwrap();
+            let mut state = slot.write().unwrap_or_else(|poisoned| {
+                tracing::warn!(
+                    exchange_id, token_id,
+                    "RwLock poisoned in MarketArena::update — recovering"
+                );
+                poisoned.into_inner()
+            });
             state.bid_price = bid_fp;
             state.ask_price = ask_fp;
             state.timestamp_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -158,10 +168,20 @@ impl MarketArena {
 
     /// Read the order book state for a specific exchange×token.
     /// Returns a copy (zero-copy read via RwLock).
+    ///
+    /// If the lock is poisoned, the poisoned value is recovered and returned.
     #[inline]
     pub fn read(&self, exchange_id: usize, token_id: usize) -> Option<OrderBookState> {
         let idx = self.get_index(exchange_id, token_id);
-        self.matrix.get(idx).map(|slot| *slot.read().unwrap())
+        self.matrix.get(idx).map(|slot| {
+            *slot.read().unwrap_or_else(|poisoned| {
+                tracing::warn!(
+                    exchange_id, token_id,
+                    "RwLock poisoned in MarketArena::read — recovering"
+                );
+                poisoned.into_inner()
+            })
+        })
     }
 
     /// Register a cross-exchange target.

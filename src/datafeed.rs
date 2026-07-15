@@ -122,31 +122,74 @@ fn parse_u16_at(bytes: &[u8], mut pos: usize) -> Option<(u16, usize)> {
     Some((val, pos))
 }
 
-/// Parse digits into a u64, skipping any '.' characters.  This converts
-/// fixed-point JSON numbers like `50000.50` into `5000050`.
+/// Parse digits into a u64, normalizing to exactly `TARGET_DECIMALS`
+/// decimal places.  This converts fixed-point JSON numbers like `50000.50`
+/// into `50000500000000` (9-decimal fixed-point), ensuring that `50000.50`
+/// and `5000.050` produce *different* values (50000500000000 vs
+/// 5000050000000).
+///
+/// Without this normalization, `50000.50` and `5000.050` would both
+/// yield `5000050`, causing the bot to misprice assets and execute
+/// losing trades.
+const TARGET_DECIMALS: u32 = 9;
+
 #[inline]
 fn parse_u64_skip_dot(bytes: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     let len = bytes.len();
     let start = pos;
-    while pos < len && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.') {
-        pos += 1;
+
+    // First pass: find the end of the number and count decimal places.
+    let mut dot_seen = false;
+    let mut decimal_places: u32 = 0;
+    let scan_end = pos;
+    let mut i = pos;
+    while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+        if bytes[i] == b'.' {
+            if dot_seen {
+                break; // second dot — stop
+            }
+            dot_seen = true;
+        } else if dot_seen {
+            decimal_places += 1;
+        }
+        i += 1;
     }
-    if pos == start {
+    let end = i;
+
+    if end == start {
         return None;
     }
-    let mut val: u64 = 0;
+
+    // Parse digits into a raw integer (skipping dots).
+    let mut raw_val: u64 = 0;
     let mut cursor = start;
-    while cursor < pos {
+    while cursor < end {
         let b = bytes[cursor];
         if b == b'.' {
             cursor += 1;
             continue;
         }
         let digit = b - b'0';
-        val = val.checked_mul(10)?.checked_add(digit as u64)?;
+        raw_val = raw_val.checked_mul(10)?.checked_add(digit as u64)?;
         cursor += 1;
     }
-    Some((val, pos))
+
+    // Normalize to TARGET_DECIMALS decimal places.
+    // raw_val has `decimal_places` fractional digits; we need `TARGET_DECIMALS`.
+    let normalized = if decimal_places <= TARGET_DECIMALS {
+        // Pad with zeros: multiply by 10^(TARGET_DECIMALS - decimal_places)
+        let pad = TARGET_DECIMALS - decimal_places;
+        match raw_val.checked_mul(10u64.checked_pow(pad)?) {
+            Some(v) => v,
+            None => return None, // overflow
+        }
+    } else {
+        // Truncate: divide by 10^(decimal_places - TARGET_DECIMALS)
+        let trim = decimal_places - TARGET_DECIMALS;
+        raw_val / 10u64.checked_pow(trim).unwrap_or(1)
+    };
+
+    Some((normalized, end))
 }
 
 // ---------------------------------------------------------------------------
@@ -493,7 +536,19 @@ mod tests {
     fn test_parse_valid_payload() {
         let payload = b"{\"t\":42,\"b\":50000.50,\"a\":50001.25}";
         let result = parse_raw_bytes_fast(payload);
-        assert_eq!(result, Some((42, 5000050, 5000125)));
+        // 50000.50 → 50000500000000 (9-decimal FP)
+        // 50001.25 → 50001250000000
+        assert_eq!(result, Some((42, 50000500000000, 50001250000000)));
+    }
+
+    #[test]
+    fn test_precision_different_decimals() {
+        // CRITICAL: 50000.50 and 5000.050 must NOT produce the same value.
+        let p1 = b"{\"t\":1,\"b\":50000.50,\"a\":1}";
+        let p2 = b"{\"t\":1,\"b\":5000.050,\"a\":1}";
+        let r1 = parse_raw_bytes_fast(p1).unwrap();
+        let r2 = parse_raw_bytes_fast(p2).unwrap();
+        assert_ne!(r1.1, r2.1, "50000.50 and 5000.050 must differ!");
     }
 
     #[test]

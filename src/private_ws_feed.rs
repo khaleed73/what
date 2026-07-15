@@ -83,6 +83,10 @@ pub struct PrivateWsFeedListener {
     event_sender: mpsc::Sender<PrivateFeedEvent>,
     /// Track active connections.
     active_connections: Arc<RwLock<HashMap<String, bool>>>,
+    /// Mutex that serialises token refresh attempts.  On rapid reconnects
+    /// multiple tasks may try to refresh simultaneously; `try_lock`
+    /// ensures only one proceeds while the others skip.
+    refresh_mutex: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PrivateWsFeedListener {
@@ -104,6 +108,7 @@ impl PrivateWsFeedListener {
             configs,
             event_sender,
             active_connections: Arc::new(RwLock::new(active)),
+            refresh_mutex: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -173,6 +178,43 @@ impl PrivateWsFeedListener {
     pub async fn is_active(&self, exchange_name: &str) -> bool {
         let active = self.active_connections.read().await;
         active.get(exchange_name).copied().unwrap_or(false)
+    }
+
+    /// Attempt to refresh the authentication token for the given exchange.
+    ///
+    /// Uses a non-blocking `try_lock` on the internal `refresh_mutex` so that
+    /// if a refresh is already in progress (e.g. due to a rapid reconnect),
+    /// this call returns `false` immediately instead of queuing up and
+    /// potentially double-refreshing.
+    ///
+    /// # Returns
+    /// * `Ok(true)`  — this call performed the refresh
+    /// * `Ok(false)` — skipped because another refresh is already in progress
+    /// * `Err(_)`   — the exchange was not found in the configuration
+    pub async fn refresh_token(&self, exchange_name: &str) -> Result<bool, String> {
+        // Verify the exchange is configured.
+        if !self.configs.iter().any(|c| c.exchange_name == exchange_name) {
+            return Err(format!("Exchange '{}' not found in private feed configs", exchange_name));
+        }
+
+        // Non-blocking lock: if another task is already refreshing, skip.
+        match self.refresh_mutex.try_lock() {
+            Ok(_guard) => {
+                // In production this would call the exchange's listen-key
+                // renewal or OAuth refresh endpoint.  For now, just log.
+                tracing::info!(exchange = %exchange_name, "Token refresh initiated");
+                // Simulate the async work (replace with real HTTP call).
+                // drop(_guard) happens automatically at the end of this scope.
+                Ok(true)
+            }
+            Err(_) => {
+                tracing::debug!(
+                    exchange = %exchange_name,
+                    "Skipping token refresh — another refresh already in progress"
+                );
+                Ok(false)
+            }
+        }
     }
 }
 

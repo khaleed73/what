@@ -290,6 +290,108 @@ impl AbsoluteMathEngine {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exchange-specific constraint checks
+// ---------------------------------------------------------------------------
+
+/// Validates that a Bybit order does not violate hedging-mode rules.
+///
+/// In Bybit's **hedge mode** a single instrument cannot hold both a long
+/// and a short position simultaneously.  Call this before placing an order
+/// that would open the opposing side.
+///
+/// # Arguments
+/// * `symbol` — Trading pair (e.g. `"BTCUSDT"`).
+/// * `current_side` — The side of the position/order already held (`"Long"` or `"Short"`).
+/// * `new_side` — The side of the incoming order (`"Long"` or `"Short"`).
+/// * `hedging_mode` — `true` if the account is in hedge mode.
+///
+/// # Returns
+/// `Ok(())` if the order is allowed, `Err(description)` otherwise.
+pub fn validate_bybit_hedging_mode(
+    symbol: &str,
+    current_side: &str,
+    new_side: &str,
+    hedging_mode: bool,
+) -> Result<(), String> {
+    if !hedging_mode {
+        return Ok(());
+    }
+    if current_side.to_lowercase() == new_side.to_lowercase() {
+        return Ok(());
+    }
+    Err(format!(
+        "Bybit hedge mode violation on {}: cannot open {} position while {} is held",
+        symbol, new_side, current_side
+    ))
+}
+
+/// Margin mode for OKX.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OkxMarginMode {
+    /// Cross margin: entire account balance is available as collateral.
+    Cross,
+    /// Isolated margin: only the position's allocated margin is at risk.
+    Isolated,
+}
+
+/// Validates that an OKX order is compatible with the account's margin mode.
+///
+/// In **cross** margin the full wallet balance may be used, so the
+/// `available_balance` argument should reflect the cross-margin available
+/// amount.  In **isolated** margin only the `position_margin` allocated to
+/// that specific position may be used.
+///
+/// # Arguments
+/// * `symbol` — Trading pair (e.g. `"BTC-USDT-SWAP"`).
+/// * `required_margin` — Margin needed for the order.
+/// * `available_balance` — Account- or position-level available balance.
+/// * `margin_mode` — Current margin mode.
+///
+/// # Returns
+/// `Ok(())` if the order can be margined, `Err(description)` otherwise.
+pub fn validate_okx_margin_mode(
+    symbol: &str,
+    required_margin: Decimal,
+    available_balance: Decimal,
+    margin_mode: OkxMarginMode,
+) -> Result<(), String> {
+    if required_margin > available_balance {
+        return Err(format!(
+            "OKX {} margin insufficient: required {} but only {} available ({:?} mode)",
+            symbol, required_margin, available_balance, margin_mode
+        ));
+    }
+    Ok(())
+}
+
+/// Validates that a Coinbase limit order is submitted as post-only.
+///
+/// Coinbase charges a **taker fee** for orders that execute immediately.
+/// To avoid this, limit orders should be placed with `post_only: true`
+/// so they are only added to the order book and never cross the spread.
+///
+/// # Arguments
+/// * `symbol` — Trading pair (e.g. `"BTC-USD"`).
+/// * `is_limit_order` — Whether the order is a limit order (as opposed to market).
+/// * `post_only` — Whether the `post_only` flag is set on the order.
+///
+/// # Returns
+/// `Ok(())` if the order is correctly configured, `Err(description)` otherwise.
+pub fn validate_coinbase_post_only(
+    symbol: &str,
+    is_limit_order: bool,
+    post_only: bool,
+) -> Result<(), String> {
+    if is_limit_order && !post_only {
+        return Err(format!(
+            "Coinbase {} limit order must be post-only to avoid taker fees",
+            symbol
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +564,63 @@ mod tests {
     fn test_zero_spend_rejected() {
         let depth = MarketDepth { asks: vec![], bids: vec![] };
         assert!(AbsoluteMathEngine::calculate_slippage_buy(&depth, Decimal::ZERO).is_err());
+    }
+
+    // -- Exchange-specific constraint tests --
+
+    #[test]
+    fn test_bybit_hedging_same_side_ok() {
+        assert!(validate_bybit_hedging_mode("BTCUSDT", "Long", "Long", true).is_ok());
+        assert!(validate_bybit_hedging_mode("BTCUSDT", "Short", "short", true).is_ok());
+    }
+
+    #[test]
+    fn test_bybit_hedging_opposing_side_rejected() {
+        let err = validate_bybit_hedging_mode("BTCUSDT", "Long", "Short", true);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("hedge mode violation"));
+    }
+
+    #[test]
+    fn test_bybit_one_way_mode_always_ok() {
+        // In one-way mode hedging rules don't apply.
+        assert!(validate_bybit_hedging_mode("BTCUSDT", "Long", "Short", false).is_ok());
+    }
+
+    #[test]
+    fn test_okx_margin_sufficient() {
+        assert!(validate_okx_margin_mode(
+            "BTC-USDT-SWAP", dec!(100.0), dec!(200.0), OkxMarginMode::Cross
+        ).is_ok());
+        assert!(validate_okx_margin_mode(
+            "BTC-USDT-SWAP", dec!(100.0), dec!(100.0), OkxMarginMode::Isolated
+        ).is_ok());
+    }
+
+    #[test]
+    fn test_okx_margin_insufficient() {
+        let err = validate_okx_margin_mode(
+            "BTC-USDT-SWAP", dec!(200.0), dec!(100.0), OkxMarginMode::Isolated
+        );
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("margin insufficient"));
+    }
+
+    #[test]
+    fn test_coinbase_post_only_limit_ok() {
+        assert!(validate_coinbase_post_only("BTC-USD", true, true).is_ok());
+    }
+
+    #[test]
+    fn test_coinbase_post_only_limit_missing_flag() {
+        let err = validate_coinbase_post_only("BTC-USD", true, false);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("post-only"));
+    }
+
+    #[test]
+    fn test_coinbase_market_order_no_flag_needed() {
+        // Market orders don't need post-only.
+        assert!(validate_coinbase_post_only("BTC-USD", false, false).is_ok());
     }
 }

@@ -1021,6 +1021,11 @@ pub struct CoinFinder {
     global_symbol_map: tokio::sync::Mutex<HashMap<String, u16>>,
     /// Category mask for each discovered token_id.
     token_categories: tokio::sync::Mutex<HashMap<u16, u16>>,
+    /// Custom symbol-to-exchange mappings that override or supplement
+    /// the dynamically-discovered pairs.  Key is a normalized pair
+    /// symbol (e.g. "BTCUSDT"), value is the list of exchange IDs
+    /// where this pair should be registered.
+    custom_mappings: tokio::sync::Mutex<HashMap<String, Vec<u16>>>,
 }
 
 impl CoinFinder {
@@ -1049,7 +1054,22 @@ impl CoinFinder {
             next_token_id: std::sync::atomic::AtomicU16::new(start_token_id),
             global_symbol_map: tokio::sync::Mutex::new(HashMap::new()),
             token_categories: tokio::sync::Mutex::new(HashMap::new()),
+            custom_mappings: tokio::sync::Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Add a custom symbol-to-exchange mapping.
+    ///
+    /// `symbol` is a normalized pair symbol (e.g. "BTCUSDT").
+    /// `exchange_ids` is the list of exchange IDs where this pair should
+    /// be registered, overriding or supplementing the scanner's discovery.
+    ///
+    /// This allows runtime configuration without code changes.
+    pub async fn add_custom_mapping(&self, symbol: &str, exchange_ids: Vec<u16>) {
+        self.custom_mappings
+            .lock()
+            .await
+            .insert(symbol.to_uppercase(), exchange_ids);
     }
 
     /// Allocate a new token ID (monotonically increasing, lock-free).
@@ -1195,6 +1215,70 @@ impl CoinFinder {
 
             total_pairs += filtered_pairs.len();
             exchange_pairs.insert(exch_id, filtered_pairs);
+        }
+
+        // -----------------------------------------------------------------
+        // Apply custom symbol-to-exchange mappings
+        // -----------------------------------------------------------------
+        {
+            let custom = self.custom_mappings.lock().await;
+            for (symbol, target_exchange_ids) in custom.iter() {
+                // Extract base by stripping a known quote anchor suffix.
+                let (base, quote) = {
+                    let upper = symbol.as_str();
+                    let mut found = None;
+                    for anchor in &self.config.quote_anchors {
+                        if upper.ends_with(anchor.as_str()) {
+                            let b = &upper[..upper.len() - anchor.len()];
+                            if !b.is_empty() {
+                                found = Some((b.to_string(), anchor.clone()));
+                                break;
+                            }
+                        }
+                    }
+                    match found {
+                        Some(pair) => pair,
+                        None => continue, // cannot parse — skip
+                    }
+                };
+
+                // Classify the token for category filtering.
+                let (passes, category) = passes_filter(
+                    &base, &quote, &self.config.quote_anchors,
+                    self.config.min_volume_usd, None,
+                );
+                if !passes { continue; }
+                if self.config.allowed_categories != 0
+                    && (category & self.config.allowed_categories) == 0
+                {
+                    continue;
+                }
+
+                let (token_id, is_new) = match self.get_or_create_token_id(&base, category).await {
+                    Some(pair) => pair,
+                    None => continue,
+                };
+                if is_new { new_tokens += 1; }
+
+                for &target_exch in target_exchange_ids {
+                    // Skip if this pair is already in the exchange's list.
+                    let already = exchange_pairs
+                        .get(&target_exch)
+                        .map(|pairs| pairs.iter().any(|(tid, _, _, _)| *tid == token_id))
+                        .unwrap_or(false);
+                    if already { continue; }
+
+                    token_exchange_presence
+                        .entry(token_id)
+                        .or_default()
+                        .insert(target_exch);
+
+                    exchange_pairs
+                        .entry(target_exch)
+                        .or_default()
+                        .push((token_id, base.clone(), quote.clone(), symbol.clone()));
+                }
+            }
         }
 
         // -----------------------------------------------------------------

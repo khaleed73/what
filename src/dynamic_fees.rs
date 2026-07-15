@@ -14,7 +14,7 @@
 //!     rest_urls,            // HashMap<u16, String>
 //! ));
 //! fee_mgr.fetch_all_fees().await;
-//! fee_mgr.refresh_periodically(fee_mgr.clone(), 300).await;
+//! fee_mgr.refresh_periodically(fee_mgr.clone(), 30).await;
 //! ```
 
 use std::collections::HashMap;
@@ -131,8 +131,12 @@ impl DynamicFeeManager {
             let (maker_bps, taker_bps, source) = match result {
                 Some((m, t)) => (m, t, "api".to_string()),
                 None => {
-                    let fallback = self.config_fees.get(name).copied().unwrap_or(10);
-                    (fallback, fallback, "config".to_string())
+                    if let Some(config_fee) = self.config_fees.get(name).copied() {
+                        (config_fee, config_fee, "config".to_string())
+                    } else {
+                        let (dm, dt) = Self::exchange_default_fees(name);
+                        (dm, dt, "default".to_string())
+                    }
                 }
             };
 
@@ -164,22 +168,30 @@ impl DynamicFeeManager {
 
     /// Return the cached taker fee in basis points for the given exchange.
     ///
-    /// Falls back to config, then to a 10 bps default.
+    /// Falls back to config, then to exchange-specific defaults.
     pub fn get_taker_fee_bps(&self, exchange_id: u16) -> u64 {
         if let Some(schedule) = self.fees.get(&exchange_id) {
             return schedule.taker_fee_bps;
         }
         let name = exchange_name_by_id(exchange_id);
-        self.config_fees.get(name).copied().unwrap_or(10)
+        self.config_fees
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| Self::exchange_default_fees(name).1)
     }
 
     /// Return the cached maker fee in basis points for the given exchange.
+    ///
+    /// Falls back to config, then to exchange-specific defaults.
     pub fn get_maker_fee_bps(&self, exchange_id: u16) -> u64 {
         if let Some(schedule) = self.fees.get(&exchange_id) {
             return schedule.maker_fee_bps;
         }
         let name = exchange_name_by_id(exchange_id);
-        self.config_fees.get(name).copied().unwrap_or(10)
+        self.config_fees
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| Self::exchange_default_fees(name).0)
     }
 
     /// Return a summary of all cached fee schedules for logging.
@@ -537,6 +549,17 @@ impl DynamicFeeManager {
     // -----------------------------------------------------------------------
     //  Internal helpers
     // -----------------------------------------------------------------------
+
+    /// Return exchange-specific default (maker_bps, taker_bps) when no config
+    /// or API value is available.
+    fn exchange_default_fees(name: &str) -> (u64, u64) {
+        match name {
+            "Coinbase" => (40, 60),
+            "Kraken" => (25, 40),
+            "BitMEX" => (8, 8),
+            _ => (10, 10),
+        }
+    }
 
     /// Build a full URL from an exchange ID and endpoint path.
     fn rest_url(&self, exchange_id: u16, path: &str) -> String {

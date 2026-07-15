@@ -23,6 +23,7 @@
 // borrow-checker constraints would complicate the async dispatch.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,11 +45,35 @@ use crate::signer::PrivateExchangeClient;
 /// Stored separately from `SecretString` because withdrawal operations
 /// need synchronous access to the key material for HMAC signing in
 /// async contexts without borrow-checker friction.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExchangeCredentials {
     pub api_key: String,
     pub api_secret: String,
     pub passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for ExchangeCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeCredentials")
+            .field("api_key", &redact_secret(&self.api_key))
+            .field("api_secret", &"****".to_string())
+            .field("passphrase", &self.passphrase.as_ref().map(|p| redact_secret(p)))
+            .finish()
+    }
+}
+
+impl fmt::Display for ExchangeCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ExchangeCredentials {{ api_key: {}, api_secret: ****{} }}",
+            redact_secret(&self.api_key),
+            self.passphrase
+                .as_ref()
+                .map(|p| format!(", passphrase: {}", redact_secret(p)))
+                .unwrap_or_default()
+        )
+    }
 }
 
 impl ExchangeCredentials {
@@ -330,7 +355,7 @@ impl WithdrawalExecutor {
             .body(signed_body)
             .send()
             .await
-            .map_err(|e| format!("Binance withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Binance withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -363,13 +388,13 @@ impl WithdrawalExecutor {
             .header("X-MBX-APIKEY", &creds.api_key)
             .send()
             .await
-            .map_err(|e| format!("Binance fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Binance fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("Binance fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("Binance fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("Binance fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -427,7 +452,7 @@ impl WithdrawalExecutor {
             .body(body_str)
             .send()
             .await
-            .map_err(|e| format!("Bybit withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Bybit withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -467,13 +492,13 @@ impl WithdrawalExecutor {
             .header("X-BAPI-RECV-WINDOW", &recv_window)
             .send()
             .await
-            .map_err(|e| format!("Bybit fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Bybit fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("Bybit fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("Bybit fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("Bybit fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -539,7 +564,7 @@ impl WithdrawalExecutor {
             .body(body_str)
             .send()
             .await
-            .map_err(|e| format!("OKX withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("OKX withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -579,13 +604,13 @@ impl WithdrawalExecutor {
             .header("OK-ACCESS-PASSPHRASE", passphrase)
             .send()
             .await
-            .map_err(|e| format!("OKX fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("OKX fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("OKX fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("OKX fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("OKX fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -650,7 +675,7 @@ impl WithdrawalExecutor {
             .body(body_str)
             .send()
             .await
-            .map_err(|e| format!("GateIO withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("GateIO withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -683,13 +708,13 @@ impl WithdrawalExecutor {
             .header("Timestamp", &timestamp)
             .send()
             .await
-            .map_err(|e| format!("GateIO fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("GateIO fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("GateIO fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("GateIO fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("GateIO fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -751,7 +776,7 @@ impl WithdrawalExecutor {
             .body(body_str)
             .send()
             .await
-            .map_err(|e| format!("KuCoin withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("KuCoin withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -791,13 +816,13 @@ impl WithdrawalExecutor {
             .header("KC-API-KEY-VERSION", "2")
             .send()
             .await
-            .map_err(|e| format!("KuCoin fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("KuCoin fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("KuCoin fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("KuCoin fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("KuCoin fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -872,7 +897,7 @@ impl WithdrawalExecutor {
             .body(body_str)
             .send()
             .await
-            .map_err(|e| format!("Bitget withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Bitget withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -909,13 +934,13 @@ impl WithdrawalExecutor {
             .header("ACCESS-PASSPHRASE", passphrase)
             .send()
             .await
-            .map_err(|e| format!("Bitget fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Bitget fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("Bitget fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("Bitget fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("Bitget fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -985,7 +1010,7 @@ impl WithdrawalExecutor {
             .body(body_str)
             .send()
             .await
-            .map_err(|e| format!("HTX withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("HTX withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -1019,13 +1044,13 @@ impl WithdrawalExecutor {
             .header("Timestamp", &timestamp)
             .send()
             .await
-            .map_err(|e| format!("HTX fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("HTX fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("HTX fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("HTX fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("HTX fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -1106,7 +1131,7 @@ impl WithdrawalExecutor {
             .body(form_body)
             .send()
             .await
-            .map_err(|e| format!("Kraken withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Kraken withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -1151,13 +1176,13 @@ impl WithdrawalExecutor {
             .body(form_body)
             .send()
             .await
-            .map_err(|e| format!("Kraken fee query failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("Kraken fee query failed: {}", e)))?;
 
         let status = resp.status();
         let body = resp.text().await.map_err(|e| format!("Kraken fee read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("Kraken fee HTTP {}: {}", status, body));
+            return Err(redact_urls_in_error(&format!("Kraken fee HTTP {}: {}", status, body)));
         }
 
         let v: Value =
@@ -1227,7 +1252,7 @@ impl WithdrawalExecutor {
             .body(signed_body)
             .send()
             .await
-            .map_err(|e| format!("MEXC withdrawal request failed: {}", e))?;
+            .map_err(|e| redact_urls_in_error(&format!("MEXC withdrawal request failed: {}", e)))?;
 
         let status = resp.status();
         let body: String = resp
@@ -1252,7 +1277,7 @@ fn parse_binance_withdrawal_response(
         let error_msg = serde_json::from_str::<Value>(body)
             .ok()
             .and_then(|v| v.get("msg").and_then(|m| m.as_str()).map(String::from))
-            .unwrap_or_else(|| body.to_string());
+            .unwrap_or_else(|| redact_urls_in_error(body));
         return Ok(WithdrawalResult {
             success: false,
             withdrawal_id: None,
@@ -1386,7 +1411,7 @@ fn parse_gateio_withdrawal_response(
         let error_msg = serde_json::from_str::<Value>(body)
             .ok()
             .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(String::from))
-            .unwrap_or_else(|| body.to_string());
+            .unwrap_or_else(|| redact_urls_in_error(body));
         return Ok(WithdrawalResult {
             success: false,
             withdrawal_id: None,
@@ -1664,6 +1689,58 @@ pub async fn execute_rebalance_transfer(
 // ═══════════════════════════════════════════════════════════════════════════
 //  Helper functions
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Redact a secret value, showing only the first 4 and last 4 characters
+/// with the middle replaced by `****`.
+///
+/// If the string is 8 characters or shorter, the entire value is replaced
+/// with `****` to avoid exposing any meaningful portion.
+fn redact_secret(s: &str) -> String {
+    if s.len() <= 8 {
+        return "****".to_string();
+    }
+    format!("{}****{}", &s[..4], &s[s.len() - 4..])
+}
+
+/// Remove any URLs from an error string to prevent accidental exposure
+/// of secrets that may be embedded in query parameters (e.g. HMAC
+/// signatures appended as `signature=...`).
+///
+/// This is applied to all reqwest error messages because `reqwest::Error`
+/// frequently includes the full request URL in its `Display` output.
+fn redact_urls_in_error(msg: &str) -> String {
+    let mut result = String::with_capacity(msg.len());
+    let mut search_from = 0;
+
+    while search_from < msg.len() {
+        let rest = &msg[search_from..];
+        let http_pos = rest.find("http://").map(|p| p + search_from);
+        let https_pos = rest.find("https://").map(|p| p + search_from);
+
+        let url_start = match (http_pos, https_pos) {
+            (Some(h), Some(s)) => h.min(s),
+            (Some(h), None) => h,
+            (None, Some(s)) => s,
+            (None, None) => {
+                result.push_str(rest);
+                break;
+            }
+        };
+
+        // Copy everything before the URL
+        result.push_str(&msg[search_from..url_start]);
+
+        // Skip past the URL until whitespace or end of string
+        let url_slice = &msg[url_start..];
+        let url_end = url_slice
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(url_slice.len());
+        result.push_str("[REDACTED URL]");
+        search_from = url_start + url_end;
+    }
+
+    result
+}
 
 /// HMAC-SHA256 signing returning hex-encoded signature.
 fn hmac_hex(secret: &str, message: &str) -> String {

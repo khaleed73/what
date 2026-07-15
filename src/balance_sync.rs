@@ -29,6 +29,10 @@ async fn sync_exchange_balance(
 
 /// Run a one-time boot sync across all exchanges.
 /// Returns the total USDT across all exchanges.
+///
+/// **FIX**: On sync failure, the previous balance is PRESERVED (not zeroed).
+/// Zeroing the balance would cause the bot to think it has no capital on that
+/// exchange, leading to missed trades or incorrect position sizing.
 pub async fn boot_sync(
     clients: &std::collections::HashMap<u16, Arc<dyn PrivateExchangeClient>>,
     http: &reqwest::Client,
@@ -44,8 +48,16 @@ pub async fn boot_sync(
                 total += bal;
             }
             Err(e) => {
-                warn!(exchange = exchange_id, error = %e, "boot balance sync FAILED — using 0");
-                allocator.update_balance_atomic(exchange_id as usize, token_id, Decimal::ZERO);
+                // CRITICAL FIX: Do NOT set balance to zero on failure.
+                // The allocator may already have a known balance from config
+                // or a previous session.  Zeroing it would cause the execution
+                // engine to miscalculate position sizes and potentially miss
+                // profitable trades or, worse, over-leverage.
+                error!(
+                    exchange = exchange_id,
+                    error = %e,
+                    "boot balance sync FAILED — preserving previous balance (NOT zeroing)"
+                );
             }
         }
     }

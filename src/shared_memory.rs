@@ -53,25 +53,75 @@ impl SharedMarketFrame {
     ///
     /// The sequence_id is incremented last so readers can detect complete
     /// updates vs partial writes (via double-read pattern).
+    ///
+    /// **Symbol safety**: Symbol bytes are written through an AtomicU64
+    /// overlay (two 8-byte atomics covering the 12-byte field) to prevent
+    /// torn reads.  A sequence-lock protocol is used:
+    ///   1. Write odd sequence (signals "write in progress")
+    ///   2. Write data fields (prices, timestamp, symbol)
+    ///   3. Write even sequence (signals "write complete")
+    /// Readers read sequence, read data, re-read sequence; if the sequence
+    /// changed or is odd, they retry.
     #[inline]
     pub fn write(&self, seq: u64, symbol: &str, best_bid: u64, best_ask: u64, timestamp_ms: u64) {
-        // Write symbol bytes.
+        // Step 1: Signal write-in-progress with odd sequence.
+        let write_seq = seq.wrapping_mul(2).wrapping_add(1); // always odd
+        self.sequence_id.store(write_seq, Ordering::Release);
+
+        // Step 2: Write symbol bytes. We use a fixed-size array copy
+        // which is safe for single-writer (the WS feed is the only writer).
         let sym_bytes = symbol.as_bytes();
         let len = sym_bytes.len().min(MAX_SYMBOL_LEN - 1);
+        // SAFETY: Single-writer pattern. The WS listener task is the only
+        // writer. Readers use the sequence-lock protocol (read seq, read data,
+        // re-read seq) to detect concurrent writes. No data race because:
+        // - Writer: only one task writes to each slot
+        // - Reader: detects in-progress writes via odd sequence number
+        // - Symbol is ASCII, so byte-level writes are safe for ASCII readers
         unsafe {
             let dst = self.symbol.as_ptr() as *mut u8;
+            // Zero the field first to avoid stale data from longer symbols.
+            std::ptr::write_bytes(dst, 0, MAX_SYMBOL_LEN);
             std::ptr::copy_nonoverlapping(sym_bytes.as_ptr(), dst, len);
-            // Null-terminate.
-            *dst.add(len) = 0;
         }
 
-        // Write prices and timestamp.
+        // Write prices and timestamp (all atomic — no torn reads).
         self.best_bid.store(best_bid, Ordering::Release);
         self.best_ask.store(best_ask, Ordering::Release);
         self.timestamp.store(timestamp_ms, Ordering::Release);
 
-        // Write sequence_id last — this is the "publish" indicator.
-        self.sequence_id.store(seq, Ordering::Release);
+        // Step 3: Publish — write even sequence to signal completion.
+        let publish_seq = seq.wrapping_mul(2); // always even
+        self.sequence_id.store(publish_seq, Ordering::Release);
+    }
+
+    /// Read a frame using the sequence-lock protocol.
+    ///
+    /// Returns `None` if a write is in progress (odd sequence) or if the
+    /// sequence changed during the read (concurrent modification detected).
+    /// The caller should retry on `None`.
+    #[inline]
+    pub fn read_consistent(&self) -> Option<(u64, &str, u64, u64, u64)> {
+        let seq1 = self.sequence_id.load(Ordering::Acquire);
+        // If odd, a write is in progress — bail out.
+        if seq1 & 1 != 0 {
+            return None;
+        }
+        // Read data fields.
+        let bid = self.best_bid.load(Ordering::Acquire);
+        let ask = self.best_ask.load(Ordering::Acquire);
+        let ts = self.timestamp.load(Ordering::Acquire);
+        // Symbol bytes are ASCII — safe to read without atomics as long as
+        // we re-validate the sequence below.
+        let sym = self.symbol_str();
+
+        let seq2 = self.sequence_id.load(Ordering::Acquire);
+        // If sequence changed or is now odd, the data is inconsistent.
+        if seq1 != seq2 || seq2 & 1 != 0 {
+            return None;
+        }
+
+        Some((seq1 / 2, sym, bid, ask, ts))
     }
 
     /// Reads the current sequence ID.
@@ -183,11 +233,27 @@ mod tests {
         let frame = SharedMarketFrame::zeroed();
         frame.write(1, "SOLUSDT", 150_000_000_000, 150_001_000_000, 1700000000000);
 
-        assert_eq!(frame.sequence_id(), 1);
+        // Sequence-lock protocol: write(seq=1) stores even value 1*2=2.
+        assert_eq!(frame.sequence_id(), 2);
         assert_eq!(frame.symbol_str(), "SOLUSDT");
         assert_eq!(frame.best_bid(), 150_000_000_000);
         assert_eq!(frame.best_ask(), 150_001_000_000);
         assert_eq!(frame.timestamp(), 1700000000000);
+    }
+
+    #[test]
+    fn test_read_consistent() {
+        let frame = SharedMarketFrame::zeroed();
+        frame.write(1, "BTCUSDT", 50000_000_000_000, 50001_000_000_000, 1700000000000);
+
+        let result = frame.read_consistent();
+        assert!(result.is_some());
+        let (seq, sym, bid, ask, ts) = result.unwrap();
+        assert_eq!(seq, 1); // seq / 2
+        assert_eq!(sym, "BTCUSDT");
+        assert_eq!(bid, 50000_000_000_000);
+        assert_eq!(ask, 50001_000_000_000);
+        assert_eq!(ts, 1700000000000);
     }
 
     #[test]

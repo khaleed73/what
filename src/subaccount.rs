@@ -114,12 +114,23 @@ pub async fn verify_safety(exchange_id: u16, perms: &ApiKeyPermission) -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// API credentials and REST URL for a single exchange.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExchangeCreds {
     pub api_key: String,
     pub api_secret: String,
     pub passphrase: Option<String>,
     pub rest_url: String,
+}
+
+impl std::fmt::Debug for ExchangeCreds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeCreds")
+            .field("api_key", &redact_secret(&self.api_key))
+            .field("api_secret", &redact_secret(&self.api_secret))
+            .field("passphrase", &self.passphrase.as_ref().map(|p| redact_secret(p)))
+            .field("rest_url", &self.rest_url)
+            .finish()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -372,11 +383,11 @@ impl SubAccountManager {
             .header("X-MBX-APIKEY", &creds.api_key)
             .send()
             .await
-            .map_err(|e| format!("Binance permission check failed: {}", e))?;
+            .map_err(|e| format!("Binance permission check failed: {}", sanitize_reqwest_error(&e)))?;
 
         let status = resp.status();
         let body = resp.text().await
-            .map_err(|e| format!("Binance read body: {}", e))?;
+            .map_err(|e| format!("Binance read body: {}", sanitize_reqwest_error(&e)))?;
 
         if !status.is_success() {
             if status.as_u16() == 403 {
@@ -457,11 +468,11 @@ impl SubAccountManager {
             .header("X-BAPI-RECV-WINDOW", &recv_window)
             .send()
             .await
-            .map_err(|e| format!("Bybit permission check failed: {}", e))?;
+            .map_err(|e| format!("Bybit permission check failed: {}", sanitize_reqwest_error(&e)))?;
 
         let status = resp.status();
         let body = resp.text().await
-            .map_err(|e| format!("Bybit read body: {}", e))?;
+            .map_err(|e| format!("Bybit read body: {}", sanitize_reqwest_error(&e)))?;
 
         if !status.is_success() {
             if status.as_u16() == 403 {
@@ -514,11 +525,11 @@ impl SubAccountManager {
             .header("OK-ACCESS-PASSPHRASE", passphrase)
             .send()
             .await
-            .map_err(|e| format!("OKX permission check failed: {}", e))?;
+            .map_err(|e| format!("OKX permission check failed: {}", sanitize_reqwest_error(&e)))?;
 
         let status = resp.status();
         let body = resp.text().await
-            .map_err(|e| format!("OKX read body: {}", e))?;
+            .map_err(|e| format!("OKX read body: {}", sanitize_reqwest_error(&e)))?;
 
         if !status.is_success() {
             if status.as_u16() == 403 {
@@ -573,11 +584,11 @@ impl SubAccountManager {
             .header("OK-ACCESS-PASSPHRASE", passphrase)
             .send()
             .await
-            .map_err(|e| format!("OKX apikey check failed: {}", e))?;
+            .map_err(|e| format!("OKX apikey check failed: {}", sanitize_reqwest_error(&e)))?;
 
         let status = resp.status();
         let body = resp.text().await
-            .map_err(|e| format!("OKX apikey read body: {}", e))?;
+            .map_err(|e| format!("OKX apikey read body: {}", sanitize_reqwest_error(&e)))?;
 
         if !status.is_success() {
             return Err(format!("OKX apikey HTTP {}: {}", status, body));
@@ -653,7 +664,7 @@ impl SubAccountManager {
         let resp = req
             .send()
             .await
-            .map_err(|e| format!("{} permission check failed: {}", name, e))?;
+            .map_err(|e| format!("{} permission check failed: {}", name, sanitize_reqwest_error(&e)))?;
 
         let status = resp.status();
         let _body = resp.text().await.unwrap_or_default();
@@ -849,4 +860,39 @@ fn epoch_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before UNIX epoch")
         .as_secs()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Secret-redaction helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Redact a secret string, showing only the first 4 and last 4 characters.
+///
+/// For strings of 9 or fewer characters, all characters are replaced with `*`
+/// to avoid revealing the full value.  An empty string returns `"<empty>"`.
+pub fn redact_secret(s: &str) -> String {
+    let len = s.len();
+    if len == 0 {
+        return "<empty>".to_string();
+    }
+    if len <= 9 {
+        return "*".repeat(len);
+    }
+    let first: String = s.chars().take(4).collect();
+    let last: String = s.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let stars = "*".repeat(len.saturating_sub(8).min(16));
+    format!("{}{}{}", first, stars, last)
+}
+
+/// Strip URL and other request details from a `reqwest::Error`.
+///
+/// `reqwest::Error::to_string()` includes the full request URL, which may
+/// contain HMAC signatures in query parameters (e.g. Binance's
+/// `signature=…`).  We return only the underlying error source to avoid
+/// leaking those values into logs.
+fn sanitize_reqwest_error(e: &reqwest::Error) -> String {
+    match std::error::Error::source(e) {
+        Some(source) => format!("{}", source),
+        None => "unknown request error".to_string(),
+    }
 }

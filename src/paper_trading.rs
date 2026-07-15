@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -20,15 +21,23 @@ const LCG_A: u64 = 1_664_525;
 const LCG_C: u64 = 1_013_904_223;
 const LCG_M: u64 = 1 << 32;
 
-/// Returns a pseudo-random slippage in the range **1–5 basis points** using a
-/// simple Linear Congruential Generator.  Safe to call from multiple threads.
-fn random_slippage_bps() -> u64 {
-    let prev = LCG_STATE
+/// Minimum partial-fill amount in basis points (50 %).
+const PARTIAL_FILL_MIN_BPS: u64 = 5000;
+
+/// Advance the global LCG and return the raw 32-bit value.
+/// Safe to call from multiple threads.
+fn lcg_next() -> u32 {
+    LCG_STATE
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
             Some((LCG_A.wrapping_mul(s).wrapping_add(LCG_C)) % LCG_M)
         })
-        .expect("LCG fetch_update: closure always returns Some, this cannot fail");
-    1 + (prev % 5)
+        .expect("LCG fetch_update: closure always returns Some, this cannot fail") as u32
+}
+
+/// Returns a pseudo-random slippage in the range **1–5 basis points** using a
+/// simple Linear Congruential Generator.  Safe to call from multiple threads.
+fn random_slippage_bps() -> u64 {
+    1 + (lcg_next() % 5) as u64
 }
 
 /// Fixed 3 bps slippage – provided for deterministic unit tests if desired.
@@ -75,6 +84,12 @@ pub struct PaperTradingPipeline {
     pub total_pnl: AtomicI64,
     /// Chronological list of every filled `PaperTradeRecord`.
     pub trade_history: Arc<RwLock<Vec<PaperTradeRecord>>>,
+    /// Fill probability (0–100 %). Default 95.
+    pub fill_probability: AtomicU64,
+    /// Maximum partial-fill amount in basis points (0–10 000). Default 9500 = 95 %.
+    pub partial_fill_max_pct: AtomicU64,
+    /// Simulated round-trip exchange latency in microseconds. Default 500 µs.
+    pub simulated_latency_us: AtomicU64,
 }
 
 impl PaperTradingPipeline {
@@ -104,7 +119,36 @@ impl PaperTradingPipeline {
             total_trades: AtomicU64::new(0),
             total_pnl: AtomicI64::new(0),
             trade_history: Arc::new(RwLock::new(Vec::new())),
+            fill_probability: AtomicU64::new(95),
+            partial_fill_max_pct: AtomicU64::new(9500),
+            simulated_latency_us: AtomicU64::new(500),
         }
+    }
+
+    /// Set the fill probability (0–100 %).
+    ///
+    /// Before filling, a random number is drawn. If it exceeds this threshold
+    /// the fill is **rejected** (simulating network errors, rate limits, or
+    /// insufficient exchange liquidity).
+    pub fn set_fill_probability(&self, pct: u64) {
+        self.fill_probability.store(pct.min(100), Ordering::SeqCst);
+    }
+
+    /// Set the maximum partial-fill amount in **basis points** (0–10 000).
+    ///
+    /// When a fill is accepted, the actual filled quantity is randomly chosen
+    /// in the range `[PARTIAL_FILL_MIN_BPS, partial_fill_max_pct)` divided by
+    /// 10 000.  A value of 10 000 disables partial fills (100 % fill every time).
+    pub fn set_partial_fill_max_pct(&self, bps: u64) {
+        self.partial_fill_max_pct.store(bps.min(10_000), Ordering::SeqCst);
+    }
+
+    /// Set the simulated round-trip exchange latency in **microseconds**.
+    ///
+    /// Before processing a fill the pipeline sleeps for this duration, mimicking
+    /// real-world network + matching-engine round-trip time.
+    pub fn set_simulated_latency_us(&self, us: u64) {
+        self.simulated_latency_us.store(us, Ordering::SeqCst);
     }
 
     /// Allocate capital for an FX triangular arbitrage loop.
@@ -147,13 +191,20 @@ impl PaperTradingPipeline {
     // Core simulation
     // -----------------------------------------------------------------------
 
-    /// Simulate filling an order at `price` with a small random slippage.
+    /// Simulate filling an order at `price` with a small random slippage,
+    /// optional latency, fill-probability gate, and partial-fill model.
     ///
-    /// * **BUY**  – deducts `total` (qty × effective_price) from USDT (token 0)
-    ///              and credits `qty` to `token_id`.
-    /// * **SELL** – deducts `qty` from `token_id` and credits `total` to USDT.
+    /// * **Latency** – sleeps for `simulated_latency_us` µs before processing.
+    /// * **Fill-probability** – rejects the fill outright with probability
+    ///   `(100 - fill_probability)` % (simulating network errors / rate limits).
+    /// * **Partial fill** – when accepted, the filled quantity is randomly
+    ///   chosen in `[50 %, partial_fill_max_pct)` of the requested quantity.
+    /// * **BUY**  – deducts `total` (actual_qty × effective_price) from USDT
+    ///              and credits `actual_qty` to `token_id`.
+    /// * **SELL** – deducts `actual_qty` from `token_id` and credits `total`
+    ///              to USDT.
     ///
-    /// If the source balance is insufficient the trade is **rejected** and a
+    /// If the source balance is insufficient (or the fill was rejected) a
     /// zeroed-out record is returned (no balances are mutated, no counters
     /// are incremented).
     pub async fn simulate_fill(
@@ -165,6 +216,48 @@ impl PaperTradingPipeline {
         price: Decimal,
         is_buy: bool,
     ) -> PaperTradeRecord {
+        let side = if is_buy { "BUY" } else { "SELL" };
+        let ts = Utc::now().timestamp_millis();
+
+        // --- 1. Simulated latency ---
+        let latency = self.simulated_latency_us.load(Ordering::SeqCst);
+        if latency > 0 {
+            tokio::time::sleep(Duration::from_micros(latency)).await;
+        }
+
+        // --- 2. Fill-probability gate ---
+        let fill_pct = self.fill_probability.load(Ordering::SeqCst);
+        let rand_val = lcg_next() as u64;
+        if rand_val % 100 >= fill_pct {
+            return PaperTradeRecord {
+                timestamp: ts,
+                exchange_id,
+                token_id,
+                symbol: symbol.to_string(),
+                side: side.to_string(),
+                qty: Decimal::ZERO,
+                price: Decimal::ZERO,
+                total: Decimal::ZERO,
+                simulated_slippage_bps: 0,
+            };
+        }
+
+        // --- 3. Partial fill ---
+        // A value of 10 000 bps disables partial fills (100 % every time).
+        let actual_qty = {
+            let partial_max = self.partial_fill_max_pct.load(Ordering::SeqCst);
+            if partial_max >= 10_000 {
+                qty
+            } else if partial_max <= PARTIAL_FILL_MIN_BPS {
+                qty * Decimal::from(partial_max) / dec!(10000)
+            } else {
+                let range = partial_max - PARTIAL_FILL_MIN_BPS + 1; // inclusive upper bound
+                let fill_bps = PARTIAL_FILL_MIN_BPS + (lcg_next() as u64 % range);
+                qty * Decimal::from(fill_bps) / dec!(10000)
+            }
+        };
+
+        // --- 4. Slippage ---
         let slippage_bps = random_slippage_bps();
         let slippage = Decimal::from(slippage_bps) / dec!(10000);
 
@@ -174,11 +267,9 @@ impl PaperTradingPipeline {
             price * (Decimal::ONE - slippage)
         };
 
-        let total = qty * effective_price;
-        let side = if is_buy { "BUY" } else { "SELL" };
-        let ts = Utc::now().timestamp_millis();
+        let total = actual_qty * effective_price;
 
-        // --- mutate balances under write lock ---
+        // --- 5. Balance check & mutation ---
         let mut balances = self.balances.write().await;
 
         let ok = if is_buy {
@@ -187,15 +278,15 @@ impl PaperTradingPipeline {
                 false
             } else {
                 *balances.entry(0u16).or_insert(Decimal::ZERO) -= total;
-                *balances.entry(token_id).or_insert(Decimal::ZERO) += qty;
+                *balances.entry(token_id).or_insert(Decimal::ZERO) += actual_qty;
                 true
             }
         } else {
-            let tok = balances.get(&token_id).copied().unwrap_or(Decimal::ZERO);
-            if tok < qty {
+            let tok_bal = balances.get(&token_id).copied().unwrap_or(Decimal::ZERO);
+            if tok_bal < actual_qty {
                 false
             } else {
-                *balances.entry(token_id).or_insert(Decimal::ZERO) -= qty;
+                *balances.entry(token_id).or_insert(Decimal::ZERO) -= actual_qty;
                 *balances.entry(0u16).or_insert(Decimal::ZERO) += total;
                 true
             }
@@ -237,7 +328,7 @@ impl PaperTradingPipeline {
             token_id,
             symbol: symbol.to_string(),
             side: side.to_string(),
-            qty,
+            qty: actual_qty,
             price: effective_price,
             total,
             simulated_slippage_bps: slippage_bps,
@@ -343,9 +434,14 @@ mod tests {
     use rust_decimal_macros::dec;
 
     /// Helper: build a pipeline with a known USDT capital.
+    /// Disables latency, rejection, and partial fills so tests are deterministic.
     fn make_pipeline(usdt_capital: &str) -> PaperTradingPipeline {
         let cap: Decimal = usdt_capital.parse().unwrap();
-        PaperTradingPipeline::new(cap)
+        let p = PaperTradingPipeline::new(cap);
+        p.set_fill_probability(100);
+        p.set_partial_fill_max_pct(10_000); // 100 % — no partial fills
+        p.set_simulated_latency_us(0);      // no latency
+        p
     }
 
     #[tokio::test]

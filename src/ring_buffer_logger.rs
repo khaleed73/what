@@ -8,6 +8,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use rust_decimal::Decimal;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 
 /// Maximum number of log entries in the ring buffer.
 const RING_BUFFER_SIZE: usize = 65536;
@@ -48,6 +50,10 @@ pub struct RingBufferLogger {
     buffer: Box<[Option<LogEvent>; RING_BUFFER_SIZE]>,
     write_seq: AtomicU64,
     read_seq: AtomicU64,
+    /// Optional file path for flush-on-drop. If set, the `Drop` implementation
+    /// will synchronously drain all remaining messages and append them to
+    /// this file before the process exits.
+    log_file_path: Option<String>,
 }
 
 impl RingBufferLogger {
@@ -59,6 +65,7 @@ impl RingBufferLogger {
             buffer,
             write_seq: AtomicU64::new(0),
             read_seq: AtomicU64::new(0),
+            log_file_path: None,
         }
     }
 
@@ -129,6 +136,13 @@ impl RingBufferLogger {
         events
     }
 
+    /// Sets the file path for flush-on-drop. When the logger is dropped,
+    /// all remaining (undrained) messages will be synchronously written
+    /// to this file in append mode.
+    pub fn set_log_file_path(&mut self, path: String) {
+        self.log_file_path = Some(path);
+    }
+
     /// Peeks at the most recent entry without removing it.
     pub fn peek_latest(&self) -> Option<&LogEvent> {
         let write_idx = self.write_seq.load(Ordering::Acquire);
@@ -137,6 +151,40 @@ impl RingBufferLogger {
         }
         let latest_slot = ((write_idx - 1) as usize) & RING_BUFFER_MASK;
         self.buffer[latest_slot].as_ref()
+    }
+}
+
+impl Drop for RingBufferLogger {
+    fn drop(&mut self) {
+        let path = match &self.log_file_path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let remaining = self.drain_all();
+        if remaining.is_empty() {
+            return;
+        }
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+            for event in &remaining {
+                // CSV-like line: log_id,timestamp_ms,exchange_id,symbol,side,quantity,price,delta_profit,strategy
+                let line = format!(
+                    "{},{},{},\"{}\",\"{}\",{},{},{},\"{}\"\n",
+                    event.log_id,
+                    event.timestamp_ms,
+                    event.exchange_id,
+                    event.symbol,
+                    event.side,
+                    event.quantity,
+                    event.price,
+                    event.delta_profit,
+                    event.strategy,
+                );
+                let _ = file.write_all(line.as_bytes());
+            }
+            let _ = file.flush();
+        }
     }
 }
 

@@ -35,15 +35,28 @@ pub struct VolatilityGuard {
     exchange_overrides: std::sync::Mutex<std::collections::HashMap<u16, u64>>,
     /// Number of rejected trades due to spread ceiling.
     rejection_count: AtomicU64,
+    /// EMA of spread in basis points. `None` before the first observation.
+    /// Uses exponential moving average: `ema = α * new + (1-α) * ema`
+    /// where `α = 2 / (period + 1)`. This gives more weight to recent
+    /// data and reacts faster to volatility spikes compared to SMA.
+    ema_spread_bps: std::sync::Mutex<Option<Decimal>>,
+    /// EMA period. Default: 20. Higher values produce smoother (slower)
+    /// EMA; lower values make it more responsive.
+    ema_period: AtomicU64,
 }
 
 impl VolatilityGuard {
+    /// Default EMA period.
+    const DEFAULT_EMA_PERIOD: u64 = 20;
+
     /// Creates a new guard with the default 0.08% (80 bps) ceiling.
     pub fn new() -> Self {
         Self {
             spread_ceiling_bps: AtomicU64::new(DEFAULT_SPREAD_CEILING_BPS),
             exchange_overrides: std::sync::Mutex::new(HashMap::new()),
             rejection_count: AtomicU64::new(0),
+            ema_spread_bps: std::sync::Mutex::new(None),
+            ema_period: AtomicU64::new(Self::DEFAULT_EMA_PERIOD),
         }
     }
 
@@ -53,6 +66,8 @@ impl VolatilityGuard {
             spread_ceiling_bps: AtomicU64::new(ceiling_bps),
             exchange_overrides: std::sync::Mutex::new(HashMap::new()),
             rejection_count: AtomicU64::new(0),
+            ema_spread_bps: std::sync::Mutex::new(None),
+            ema_period: AtomicU64::new(Self::DEFAULT_EMA_PERIOD),
         }
     }
 
@@ -84,7 +99,28 @@ impl VolatilityGuard {
         // spread_bps = ((ask - bid) / mid) * 10_000
         let mid = (best_bid + best_ask) / Decimal::TWO;
         let spread = best_ask - best_bid;
-        let spread_bps_fp = decimal_to_fp(spread * Decimal::from(10_000u64) / mid);
+        let current_spread_bps = spread * Decimal::from(10_000u64) / mid;
+
+        // Update EMA: ema = α * new + (1 - α) * ema
+        // α = 2 / (period + 1)
+        let period = self.ema_period.load(Ordering::SeqCst);
+        let alpha = Decimal::from(2u64) / Decimal::from(period + 1);
+        let one_minus_alpha = Decimal::ONE - alpha;
+        let ema_bps = {
+            let mut ema_guard = self.ema_spread_bps.lock().unwrap();
+            match *ema_guard {
+                None => {
+                    // Seed EMA with the first observation.
+                    *ema_guard = Some(current_spread_bps);
+                    current_spread_bps
+                }
+                Some(old_ema) => {
+                    let new_ema = alpha * current_spread_bps + one_minus_alpha * old_ema;
+                    *ema_guard = Some(new_ema);
+                    new_ema
+                }
+            }
+        };
 
         // Get the effective ceiling for this exchange.
         let ceiling_bps = {
@@ -92,16 +128,15 @@ impl VolatilityGuard {
             *overrides.get(&exchange_id).unwrap_or(&self.spread_ceiling_bps.load(Ordering::SeqCst))
         };
 
-        // Convert ceiling to same fixed-point scale.
-        let ceiling_fp = ceiling_bps * 1_000_000_000;
-
-        if spread_bps_fp > ceiling_fp {
+        // Compare EMA-smoothed spread against the ceiling.
+        if ema_bps > Decimal::from(ceiling_bps) {
             self.rejection_count.fetch_add(1, Ordering::SeqCst);
             tracing::debug!(
                 exchange_id,
-                spread_bps = spread_bps_fp / 1_000_000_000,
+                spread_bps = %current_spread_bps,
+                ema_bps = %ema_bps,
                 ceiling_bps,
-                "Trade rejected: spread exceeds ceiling"
+                "Trade rejected: EMA spread exceeds ceiling"
             );
             false
         } else {
@@ -132,6 +167,21 @@ impl VolatilityGuard {
     /// Get the total rejection count.
     pub fn rejection_count(&self) -> u64 {
         self.rejection_count.load(Ordering::SeqCst)
+    }
+
+    /// Returns the current EMA-smoothed spread in basis points, or `None` if
+    /// no spread observations have been made yet.
+    pub fn spread_ema_bps(&self) -> Option<Decimal> {
+        *self.ema_spread_bps.lock().unwrap()
+    }
+
+    /// Updates the EMA period. Higher values produce smoother (slower)
+    /// EMA; lower values make it more responsive to recent changes.
+    /// Note: changing the period resets the EMA so it re-seeds on the next
+    /// observation.
+    pub fn update_ema_period(&self, period: u64) {
+        self.ema_period.store(period.max(2), Ordering::SeqCst);
+        *self.ema_spread_bps.lock().unwrap() = None;
     }
 }
 

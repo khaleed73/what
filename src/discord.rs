@@ -96,37 +96,76 @@ impl DiscordWorker {
     }
 
     /// Main event loop — runs until all senders are dropped.
+    ///
+    /// Failed sends are retried up to 3 times with exponential backoff
+    /// (100 ms × 2^attempt).  All failures are logged; no alert is ever
+    /// silently dropped.
     pub async fn run(mut self) {
         info!("Discord notification worker started");
 
         while let Some(notification) = self.receiver.recv().await {
             let payload = build_embed_payload(&notification);
 
-            match self
-                .http
-                .post(&self.webhook_url)
-                .header("Content-Type", "application/json")
-                .json(&payload)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    debug!("discord notification sent");
-                }
-                Ok(resp) => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    if status.as_u16() != 204 {
+            const MAX_RETRIES: u32 = 3;
+            let mut attempt: u32 = 0;
+
+            loop {
+                match self
+                    .http
+                    .post(&self.webhook_url)
+                    .header("Content-Type", "application/json")
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        debug!("discord notification sent");
+                        break;
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        if status.as_u16() == 204 {
+                            break;
+                        }
+                        attempt += 1;
+                        if attempt >= MAX_RETRIES {
+                            warn!(
+                                %status,
+                                %body,
+                                attempts = attempt,
+                                "discord webhook failed after all retries"
+                            );
+                            break;
+                        }
+                        let delay = std::time::Duration::from_millis(100 * (1 << attempt));
                         warn!(
                             %status,
-                            %body,
-                            "discord webhook returned non-success"
+                            attempt,
+                            next_retry_ms = delay.as_millis() as u64,
+                            "discord webhook non-success, retrying"
                         );
+                        tokio::time::sleep(delay).await;
                     }
-                }
-                Err(e) => {
-                    // Discord is best-effort — never block or crash the bot.
-                    warn!(error = %e, "failed to send discord notification");
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt >= MAX_RETRIES {
+                            warn!(
+                                error = %e,
+                                attempts = attempt,
+                                "discord notification failed after all retries"
+                            );
+                            break;
+                        }
+                        let delay = std::time::Duration::from_millis(100 * (1 << attempt));
+                        warn!(
+                            error = %e,
+                            attempt,
+                            next_retry_ms = delay.as_millis() as u64,
+                            "discord notification error, retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
                 }
             }
         }

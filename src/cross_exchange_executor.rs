@@ -82,43 +82,52 @@ impl CrossExchangeExecutor {
         let buy_valid = Self::validate_order(buy_order);
         let sell_valid = Self::validate_order(sell_order);
 
-        let buy_result = if let Err(e) = buy_valid {
-            LegResult {
-                exchange_name: buy_order.exchange_name.clone(),
-                exchange_id: buy_order.exchange_id,
-                success: false,
-                order_id: None,
-                filled_quantity: Decimal::ZERO,
-                filled_price: Decimal::ZERO,
-                error_message: Some(e),
-                execution_time_us: 0,
-            }
-        } else {
-            let start = Instant::now();
-            let result = dispatch_fn(buy_order.clone()).await;
-            let mut r = result;
-            r.execution_time_us = start.elapsed().as_micros() as u64;
-            r
-        };
-
-        let sell_result = if let Err(e) = sell_valid {
-            LegResult {
-                exchange_name: sell_order.exchange_name.clone(),
-                exchange_id: sell_order.exchange_id,
-                success: false,
-                order_id: None,
-                filled_quantity: Decimal::ZERO,
-                filled_price: Decimal::ZERO,
-                error_message: Some(e),
-                execution_time_us: 0,
-            }
-        } else {
-            let start = Instant::now();
-            let result = dispatch_fn(sell_order.clone()).await;
-            let mut r = result;
-            r.execution_time_us = start.elapsed().as_micros() as u64;
-            r
-        };
+        // Execute BOTH legs concurrently using tokio::join! for true parallelism.
+        // Previous sequential execution (buy first, then sell) added up to 2x
+        // latency and caused the sell-side price to move before the sell order
+        // was dispatched — a critical flaw for HFT arbitrage.
+        let (buy_result, sell_result) = tokio::join!(
+            async {
+                if let Err(e) = &buy_valid {
+                    LegResult {
+                        exchange_name: buy_order.exchange_name.clone(),
+                        exchange_id: buy_order.exchange_id,
+                        success: false,
+                        order_id: None,
+                        filled_quantity: Decimal::ZERO,
+                        filled_price: Decimal::ZERO,
+                        error_message: Some(e.clone()),
+                        execution_time_us: 0,
+                    }
+                } else {
+                    let start = Instant::now();
+                    let result = dispatch_fn(buy_order.clone()).await;
+                    let mut r = result;
+                    r.execution_time_us = start.elapsed().as_micros() as u64;
+                    r
+                }
+            },
+            async {
+                if let Err(e) = &sell_valid {
+                    LegResult {
+                        exchange_name: sell_order.exchange_name.clone(),
+                        exchange_id: sell_order.exchange_id,
+                        success: false,
+                        order_id: None,
+                        filled_quantity: Decimal::ZERO,
+                        filled_price: Decimal::ZERO,
+                        error_message: Some(e.clone()),
+                        execution_time_us: 0,
+                    }
+                } else {
+                    let start = Instant::now();
+                    let result = dispatch_fn(sell_order.clone()).await;
+                    let mut r = result;
+                    r.execution_time_us = start.elapsed().as_micros() as u64;
+                    r
+                }
+            },
+        );
 
         let both_succeeded = buy_result.success && sell_result.success;
 

@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Snapshot of all health counters, suitable for logging or metrics export.
@@ -12,7 +13,13 @@ pub struct HealthStats {
     pub is_healthy: bool,
     pub last_signal_ago_secs: u64,
     pub last_trade_ago_secs: u64,
+    /// Per-exchange data feed liveness (exchange_id → `true` if data received
+    /// within the staleness window).
+    pub feed_healthy: HashMap<u16, bool>,
 }
+
+/// Feeds with no data update for longer than this (ms) are considered stale.
+const FEED_STALENESS_MS: i64 = 10_000;
 
 /// Tracks operational health metrics for monitoring and alerting.
 pub struct HealthMonitor {
@@ -24,6 +31,10 @@ pub struct HealthMonitor {
     last_signal_time_ms: AtomicU64,
     last_trade_time_ms: AtomicU64,
     is_healthy: AtomicBool,
+    /// Last data-feed update per exchange (epoch millis).
+    /// The `RwLock` is only needed when a *new* exchange ID is registered;
+    /// once registered the `AtomicI64` allows lock-free updates.
+    last_feed_update: std::sync::RwLock<HashMap<u16, AtomicI64>>,
 }
 
 impl HealthMonitor {
@@ -38,6 +49,7 @@ impl HealthMonitor {
             last_signal_time_ms: AtomicU64::new(Self::now_ms()),
             last_trade_time_ms: AtomicU64::new(Self::now_ms()),
             is_healthy: AtomicBool::new(true),
+            last_feed_update: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -68,19 +80,62 @@ impl HealthMonitor {
         self.total_websocket_reconnects.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record that a data feed for the given exchange has just delivered a
+    /// message.  If the exchange has not been seen before it is registered
+    /// automatically.
+    ///
+    /// # Arguments
+    /// * `exchange_id` — Numeric exchange identifier (e.g. 1 = Binance, 2 = Bybit).
+    pub fn record_feed_update(&self, exchange_id: u16) {
+        let now_ms = Self::now_ms() as i64;
+        let mut map = self.last_feed_update.write().unwrap();
+        map.entry(exchange_id)
+            .or_insert_with(|| AtomicI64::new(now_ms))
+            .store(now_ms, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if the given exchange's data feed has been seen
+    /// within the last `FEED_STALENESS_MS` milliseconds (10 seconds).
+    /// Returns `false` if the exchange is not registered or the feed is stale.
+    pub fn is_feed_healthy(&self, exchange_id: u16) -> bool {
+        let map = self.last_feed_update.read().unwrap();
+        if let Some(ts) = map.get(&exchange_id) {
+            let now_ms = Self::now_ms() as i64;
+            now_ms.saturating_sub(ts.load(Ordering::Relaxed)) < FEED_STALENESS_MS
+        } else {
+            false
+        }
+    }
+
+    /// Returns `true` if **all** registered data feeds are healthy.
+    /// If no feeds have been registered yet, returns `true` (vacuously).
+    fn all_feeds_healthy(&self) -> bool {
+        let map = self.last_feed_update.read().unwrap();
+        if map.is_empty() {
+            return true;
+        }
+        let now_ms = Self::now_ms() as i64;
+        map.values().all(|ts| {
+            now_ms.saturating_sub(ts.load(Ordering::Relaxed)) < FEED_STALENESS_MS
+        })
+    }
+
     /// Returns `true` if the system is considered healthy.
     ///
-    /// The system is healthy when either:
+    /// The system is healthy when **all** of the following hold:
     /// - less than 60 seconds have elapsed since startup, **or**
-    /// - a signal was recorded within the last 30 seconds.
+    ///   a signal was recorded within the last 30 seconds.
+    /// - every registered data feed has delivered data within the last
+    ///   10 seconds (if any feeds are registered at all).
     pub fn is_healthy(&self) -> bool {
         let uptime = self.started_at.elapsed().as_secs();
         if uptime < 60 {
-            return true;
+            return self.all_feeds_healthy();
         }
         let now = Self::now_ms();
         let last = self.last_signal_time_ms.load(Ordering::Relaxed);
-        now.saturating_sub(last) < 30_000
+        let signal_ok = now.saturating_sub(last) < 30_000;
+        signal_ok && self.all_feeds_healthy()
     }
 
     /// Uptime in whole seconds since creation.
@@ -97,6 +152,18 @@ impl HealthMonitor {
         let healthy = self.is_healthy();
         self.is_healthy.store(healthy, Ordering::Relaxed);
 
+        // Build per-exchange feed liveness map.
+        let feed_map = self.last_feed_update.read().unwrap();
+        let now_i64 = now as i64;
+        let feed_healthy: HashMap<u16, bool> = feed_map
+            .iter()
+            .map(|(&id, ts)| {
+                let fresh = now_i64.saturating_sub(ts.load(Ordering::Relaxed)) < FEED_STALENESS_MS;
+                (id, fresh)
+            })
+            .collect();
+        drop(feed_map);
+
         HealthStats {
             uptime_secs: self.get_uptime_secs(),
             total_signals: self.total_signals_generated.load(Ordering::Relaxed),
@@ -106,6 +173,7 @@ impl HealthMonitor {
             is_healthy: healthy,
             last_signal_ago_secs: now.saturating_sub(last_signal) / 1_000,
             last_trade_ago_secs: now.saturating_sub(last_trade) / 1_000,
+            feed_healthy,
         }
     }
 
@@ -260,5 +328,80 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let t1 = hm.get_uptime_secs();
         assert!(t1 >= t0, "uptime should be monotonically increasing");
+    }
+
+    // -- Feed liveness tests --
+
+    #[test]
+    fn test_feed_update_registers_and_is_healthy() {
+        let hm = HealthMonitor::new();
+        // Unregistered exchange is unhealthy.
+        assert!(!hm.is_feed_healthy(1));
+        // Record a feed update.
+        hm.record_feed_update(1);
+        assert!(hm.is_feed_healthy(1));
+    }
+
+    #[test]
+    fn test_feed_stale_after_timeout() {
+        let hm = HealthMonitor::new();
+        hm.record_feed_update(1);
+        assert!(hm.is_feed_healthy(1));
+
+        // Backdate the feed timestamp to 11 seconds ago (> 10 s threshold).
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let stale_ts = (now.saturating_sub(11_000)) as i64;
+        let map = hm.last_feed_update.read().unwrap();
+        if let Some(atomic) = map.get(&1) {
+            atomic.store(stale_ts, Ordering::Relaxed);
+        }
+        drop(map);
+
+        assert!(!hm.is_feed_healthy(1));
+    }
+
+    #[test]
+    fn test_no_feeds_vacuously_healthy() {
+        let hm = HealthMonitor::new();
+        // No feeds registered → all_feeds_healthy returns true.
+        assert!(hm.is_healthy());
+    }
+
+    #[test]
+    fn test_stale_feed_makes_system_unhealthy() {
+        let hm = HealthMonitor::new();
+        hm.record_feed_update(1);
+        hm.record_signal(); // keep signals fresh
+
+        // Backdate exchange 1's feed to 11 seconds ago.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let stale_ts = (now.saturating_sub(11_000)) as i64;
+        let map = hm.last_feed_update.read().unwrap();
+        if let Some(atomic) = map.get(&1) {
+            atomic.store(stale_ts, Ordering::Relaxed);
+        }
+        drop(map);
+
+        // Even though signals are fresh, the stale feed should mark as unhealthy.
+        // But we're still within the 60 s grace period, so is_healthy checks feeds.
+        assert!(!hm.is_healthy());
+    }
+
+    #[test]
+    fn test_feed_healthy_in_stats_snapshot() {
+        let hm = HealthMonitor::new();
+        hm.record_feed_update(1);
+        hm.record_feed_update(2);
+
+        let stats = hm.get_stats();
+        assert_eq!(stats.feed_healthy.get(&1), Some(&true));
+        assert_eq!(stats.feed_healthy.get(&2), Some(&true));
+        assert_eq!(stats.feed_healthy.get(&99), None);
     }
 }
