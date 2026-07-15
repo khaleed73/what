@@ -213,6 +213,7 @@ pub struct ValidatedCrossExchangeConfig {
     pub enabled: bool,
     pub min_spread_pct: Decimal,
     pub max_target_latency_ms: u64,
+    /// Reserved for future L2 liquidity gate on signal emission.
     pub min_l2_liquidity_usd: Decimal,
     pub max_slippage_tolerance: Decimal,
     /// Optional allowlist of exchange IDs. None = all exchanges eligible.
@@ -223,7 +224,9 @@ pub struct ValidatedCrossExchangeConfig {
 pub struct ValidatedTriangularConfig {
     pub enabled: bool,
     pub min_loop_profit_pct: Decimal,
+    /// Reserved: only 3-hop loops are currently supported.
     pub max_path_length: u32,
+    /// Reserved for future volume filtering on loop discovery.
     pub min_pair_volume_24h: Decimal,
     pub quote_anchors: Vec<String>,
     /// Optional allowlist of exchange IDs. None = all exchanges eligible.

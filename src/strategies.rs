@@ -175,6 +175,15 @@ impl MarketArena {
 
     /// Allocates the flat arrays and pre-initialises every slot to zero.
     pub fn new(total_exchanges: usize, total_tokens: usize) -> Self {
+        // SAFETY: exchange IDs are used as bit positions in u64 bitmasks
+        // throughout evaluate_tick and build_cross_exchange_targets.
+        // Shifting u64 by >= 64 is undefined behaviour in Rust.
+        debug_assert!(
+            total_exchanges <= 64,
+            "total_exchanges ({}) must be <= 64 for u64 bitmask-based filtering",
+            total_exchanges,
+        );
+
         let size = total_exchanges * total_tokens;
 
         let bid_prices: Vec<AtomicU64> = (0..size).map(|_| AtomicU64::new(0)).collect();
@@ -220,8 +229,9 @@ impl MarketArena {
     }
 
     /// Returns a snapshot of all currently active token IDs.
-    /// Uses `try_lock()` — if the coin finder is rebuilding the list,
-    /// returns the stale snapshot rather than blocking.
+    /// Uses a blocking `lock()` — do **not** call this from a hot-path
+    /// async context.  The signal loop should use `active_tokens.try_lock()`
+    /// directly to avoid blocking the tokio runtime.
     pub fn get_active_token_ids(&self) -> Vec<u16> {
         self.active_tokens
             .lock()
@@ -240,7 +250,15 @@ impl MarketArena {
     // -----------------------------------------------------------------------
 
     /// Atomically stores a new bid / ask pair using `Ordering::Release`.
+    ///
+    /// Silently drops the update if `exch_id` or `token_id` are out of range.
+    /// This prevents a single malformed WebSocket message from panicking the
+    /// entire process (denial-of-service vector).
+    #[inline(always)]
     pub fn update_price(&self, exch_id: usize, token_id: usize, bid: u64, ask: u64) {
+        if exch_id >= self.total_exchanges || token_id >= self.total_tokens {
+            return;
+        }
         let idx = self.get_index(exch_id, token_id);
         self.bid_prices[idx].store(bid, Ordering::Release);
         self.ask_prices[idx].store(ask, Ordering::Release);

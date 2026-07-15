@@ -1054,7 +1054,9 @@ impl CoinFinder {
     }
 
     /// Allocate a new token ID (monotonically increasing, lock-free).
-    fn alloc_token_id(&self) -> u16 {
+    /// Returns `None` when the safety cap is exhausted, instead of
+    /// silently returning 0 (which would collide with USDT).
+    fn alloc_token_id(&self) -> Option<u16> {
         self.next_token_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 if v >= (MAX_DISCOVERED_TOKENS as u16) {
@@ -1063,7 +1065,7 @@ impl CoinFinder {
                     Some(v + 1)
                 }
             })
-            .unwrap_or(0)
+            .ok()
     }
 
     /// Get or create a token_id for the given symbol.
@@ -1078,12 +1080,15 @@ impl CoinFinder {
             return Some((id, false));
         }
 
-        let id = self.alloc_token_id();
-        if id == 0 && map.contains_key(symbol) {
-            // Safety cap hit — we couldn't allocate a new ID.
-            // Check if somehow we already had it.
-            return map.get(symbol).map(|&id| (id, false));
-        }
+        let id = match self.alloc_token_id() {
+            Some(id) => id,
+            None => {
+                // Safety cap exhausted — cannot register more tokens.
+                // Return None so the caller skips this symbol entirely
+                // rather than colliding with token 0 (USDT).
+                return None;
+            }
+        };
 
         map.insert(symbol.to_uppercase(), id);
         self.token_categories
@@ -1240,8 +1245,16 @@ impl CoinFinder {
                 // (USDT=0, USDC=1, DAI=2 are pre-registered)
                 let quote_id = self
                     .allocator
-                    .get_id(quote)
-                    .unwrap_or(u16::MAX); // unregistered quote → sentinel, never confused with USDT=0
+                    .get_id(quote);
+
+                // Skip pairs where the quote currency is not registered.
+                // Using u16::MAX as a sentinel would create triangular loops
+                // referencing an out-of-bounds token index, causing panics
+                // in evaluate_tick's get_index() call.
+                let quote_id = match quote_id {
+                    Some(id) => id,
+                    None => continue,
+                };
 
                 pair_list.push((token_id, quote_id));
             }

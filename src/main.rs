@@ -168,8 +168,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = EngineConfig::load_and_validate("config.toml")?;
     println!("Configuration loaded: {} exchange(s) configured", config.exchanges.len());
 
-    let num_exchanges = config.exchanges.len().max(1);
+    // Size the arena by the *highest* exchange ID, not the count.
+    // Exchange IDs from config are used directly as array indices, so
+    // the arena must have at least `max(id) + 1` rows.  If IDs are not
+    // contiguous (e.g. {1, 2, 5}) the gaps are simply unused slots.
+    let max_exchange_id = config
+        .exchanges
+        .values()
+        .map(|e| e.id as usize)
+        .max()
+        .unwrap_or(0);
+    let num_exchanges = (max_exchange_id + 1).max(1);
     let max_tokens: usize = 3000;
+
+    // Validate that no exchange ID exceeds u64 bitmask range (0..64).
+    // Beyond 64 exchanges the bitmask-based strategy filters break.
+    if max_exchange_id >= 64 {
+        return Err(
+            format!(
+                "exchange id {} exceeds maximum of 63 (bitmask-based filtering requires < 64 exchanges)",
+                max_exchange_id
+            )
+            .into(),
+        );
+    }
 
     // ------------------------------------------------------------------
     // 3. Build the Market Arena (contiguous memory matrix)
