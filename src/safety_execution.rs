@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Enforced order types for safety. Market orders are prohibited to prevent
-//! unbounded slippage. Only limit orders with time-in-force constraints are allowed.
+/// unbounded slippage. Only limit orders with time-in-force constraints are allowed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SafeOrderType {
     /// Immediate-or-Cancel: Fill what you can immediately, cancel the rest.

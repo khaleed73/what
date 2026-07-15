@@ -71,6 +71,12 @@ pub struct CategorizedInventory {
     pub stable_indices: Vec<u16>,
 }
 
+impl Default for CategorizedInventory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CategorizedInventory {
     pub fn new() -> Self {
         Self {

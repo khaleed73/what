@@ -10,7 +10,7 @@
 use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 use crate::circuit_breaker::{EngineCircuitBreaker, CircuitBreakerError};
-use crate::exchange_constraints::{MarketDepth, DepthLevel, AbsoluteMathEngine};
+use crate::exchange_constraints::{MarketDepth, AbsoluteMathEngine};
 
 /// Result of a shielded execution evaluation.
 #[derive(Debug, Clone)]
@@ -261,6 +261,7 @@ impl CoreExecutionShield {
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+    use crate::exchange_constraints::DepthLevel;
 
     fn make_shield() -> CoreExecutionShield {
         CoreExecutionShield::new(

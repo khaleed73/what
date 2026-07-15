@@ -111,6 +111,7 @@ use std::str::FromStr;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     fn make_signer() -> ZeroAllocationSigner {
         ZeroAllocationSigner::new("test_secret_key_12345")

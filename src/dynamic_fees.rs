@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use reqwest::Client;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use tracing::{debug, info, warn};
 
 use crate::exchange::exchange_name_by_id;
@@ -105,22 +106,22 @@ impl DynamicFeeManager {
             .chain(self.rest_urls.keys().copied())
             .collect();
 
-        for id in exchange_ids {
-            let name = exchange_name_by_id(id);
+        for id in &exchange_ids {
+            let name = exchange_name_by_id(*id);
             let now = chrono::Utc::now().timestamp_millis();
 
             let result = match name {
-                "Binance" => self.fetch_binance_fees(id).await,
-                "Bybit" => self.fetch_bybit_fees(id).await,
-                "OKX" => self.fetch_okx_fees(id).await,
-                "GateIO" => self.fetch_gateio_fees(id).await,
-                "KuCoin" => self.fetch_kucoin_fees(id).await,
-                "Bitget" => self.fetch_bitget_fees(id).await,
-                "BitMEX" => self.fetch_bitmex_fees(id).await,
-                "Coinbase" => self.fetch_coinbase_fees(id).await,
-                "HTX" => self.fetch_htx_fees(id).await,
-                "Kraken" => self.fetch_kraken_fees(id).await,
-                "MEXC" => self.fetch_mexc_fees(id).await,
+                "Binance" => self.fetch_binance_fees(*id).await,
+                "Bybit" => self.fetch_bybit_fees(*id).await,
+                "OKX" => self.fetch_okx_fees(*id).await,
+                "GateIO" => self.fetch_gateio_fees(*id).await,
+                "KuCoin" => self.fetch_kucoin_fees(*id).await,
+                "Bitget" => self.fetch_bitget_fees(*id).await,
+                "BitMEX" => self.fetch_bitmex_fees(*id).await,
+                "Coinbase" => self.fetch_coinbase_fees(*id).await,
+                "HTX" => self.fetch_htx_fees(*id).await,
+                "Kraken" => self.fetch_kraken_fees(*id).await,
+                "MEXC" => self.fetch_mexc_fees(*id).await,
                 _ => {
                     debug!(exchange = name, id, "No API fee fetcher; using config/default");
                     None
@@ -151,7 +152,7 @@ impl DynamicFeeManager {
                 "Fee schedule updated"
             );
 
-            self.fees.insert(id, schedule);
+            self.fees.insert(*id, schedule);
         }
 
         info!("Fee schedule refresh complete for {} exchanges", exchange_ids.len());
@@ -432,7 +433,7 @@ impl DynamicFeeManager {
                 let maker = data
                     .get("maker_fee")
                     .and_then(|v| v.as_f64())
-                    .map(|f| bps_from_fraction_f64(f))
+                    .map(bps_from_fraction_f64)
                     .or_else(|| {
                         data.get("maker_fee")
                             .and_then(|v| v.as_str())
@@ -441,7 +442,7 @@ impl DynamicFeeManager {
                 let taker = data
                     .get("taker_fee")
                     .and_then(|v| v.as_f64())
-                    .map(|f| bps_from_fraction_f64(f))
+                    .map(bps_from_fraction_f64)
                     .or_else(|| {
                         data.get("taker_fee")
                             .and_then(|v| v.as_str())
@@ -576,8 +577,7 @@ fn bps_from_fraction_str(s: &str) -> u64 {
     let trimmed = s.trim();
 
     // Handle percentage format: "0.10%"
-    if trimmed.ends_with('%') {
-        let pct_str = &trimmed[..trimmed.len() - 1];
+    if let Some(pct_str) = trimmed.strip_suffix('%') {
         if let Ok(pct) = pct_str.parse::<f64>() {
             return (pct * 100.0).round() as u64; // 0.10% → 10 bps
         }

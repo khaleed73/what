@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 /// Snapshot of all health counters, suitable for logging or metrics export.
 #[derive(Debug, Clone)]
@@ -128,6 +128,7 @@ impl Default for HealthMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_new_monitor_is_healthy_within_grace_period() {

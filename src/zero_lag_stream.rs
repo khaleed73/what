@@ -8,7 +8,6 @@
 //!   4. Tracks connection health metrics
 
 use std::time::Duration;
-use serde::Deserialize;
 
 /// Parsed order book update from a WebSocket message.
 #[derive(Debug, Clone)]

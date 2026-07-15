@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use rust_decimal::Decimal;
-use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -227,7 +227,7 @@ impl BacktestEngine {
 
     /// Run the backtest on bars previously loaded via `load_data`.
     pub fn run_loaded(&mut self) -> BacktestResult {
-        self.run(&self.bars)
+        self.run(self.bars.clone().as_slice())
     }
 
     /// Run the backtest on a slice of `PriceBar`s.
@@ -292,7 +292,7 @@ impl BacktestEngine {
         timestamps.sort();
 
         let fee_fraction = Decimal::from(self.config.taker_fee_bps) / Decimal::from(10_000u64);
-        let min_spread_decimal =
+        let _min_spread_decimal =
             Decimal::from(self.config.min_spread_bps) / Decimal::from(10_000u64);
 
         // Track equity curve for drawdown and Sharpe.
@@ -318,7 +318,7 @@ impl BacktestEngine {
 
                 // Build a map: exchange_id -> (bid, ask).
                 let mut market_map: HashMap<u16, (Decimal, Decimal)> = HashMap::new();
-                for bar in *symbol_bars {
+                for bar in symbol_bars {
                     market_map.insert(bar.exchange_id, (bar.bid_price, bar.ask_price));
                 }
 
@@ -790,7 +790,7 @@ fn compute_sharpe_ratio(equity_curve: &[Decimal], annual_steps: u64) -> Decimal 
         / n;
 
     let std_dev = if variance >= Decimal::ZERO {
-        variance.sqrt()
+        decimal_sqrt(variance, 20)
     } else {
         Decimal::ZERO
     };

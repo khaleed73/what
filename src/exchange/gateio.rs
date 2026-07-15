@@ -305,7 +305,7 @@ impl Exchange for GateioClient {
                     .filter_map(|s| {
                         s["id"]
                             .as_str()
-                            .map(|s| from_gateio_symbol(s))
+                            .map(from_gateio_symbol)
                     })
                     .collect()
             })

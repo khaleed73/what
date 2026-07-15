@@ -14,7 +14,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use ring::hmac;
-use rust_decimal::Decimal;
 use serde_json::Value;
 use tracing::{error, info, warn};
 
@@ -224,7 +223,7 @@ impl SubAccountManager {
         let mut guide = String::new();
 
         guide.push_str(&"═".repeat(72));
-        guide.push_str("\n");
+        guide.push('\n');
         guide.push_str("  API KEY SETUP GUIDE — HFT Arbitrage Bot\n");
         guide.push_str("  Goal: Create a TRADE-ONLY sub-account per exchange.\n");
         guide.push_str("  Required permissions: Read ✅  Trade ✅  Withdraw ❌  Deposit ❌\n");
@@ -335,11 +334,11 @@ impl SubAccountManager {
             };
 
             guide.push_str(instructions);
-            guide.push_str("\n");
+            guide.push('\n');
         }
 
         guide.push_str(&"═".repeat(72));
-        guide.push_str("\n");
+        guide.push('\n');
         guide.push_str("  ⚠  NEVER use API keys with withdrawal permission on automated bots.\n");
         guide.push_str("  ⚠  ALWAYS enable IP restrictions to your VPS IP.\n");
         guide.push_str("  ⚠  Store API secrets securely (use SecretString wrappers).\n");
@@ -607,7 +606,7 @@ impl SubAccountManager {
         let ip_restricted = data
             .and_then(|d| d.get("ip"))
             .and_then(|ip| ip.as_str())
-            .map(|ip| ip != "")
+            .map(|ip| !ip.is_empty())
             .unwrap_or(false);
 
         let allowed_ips = data

@@ -294,9 +294,10 @@ mod tests {
     fn test_discrete_buy_slippage_partial() {
         let shield = make_shield();
         let book = make_book();
-        // Spend $1500 — takes all 10 at $100, then 5 at $100.5.
+        // Spend $1500 — takes all 10 at $100, then 500/100.5 ≈ 4.975 at $100.5.
+        // Total qty ≈ 14.975 (truncated to lot_step 0.001).
         let (qty, vwap) = shield.process_discrete_buy_slippage(&book, dec!(1500));
-        assert!((qty - dec!(15.0)).abs() < dec!(0.01));
+        assert!((qty - dec!(14.975)).abs() < dec!(0.01));
         // VWAP should be between $100 and $100.5.
         assert!(vwap > dec!(100.0) && vwap < dec!(100.5));
     }

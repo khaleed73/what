@@ -186,7 +186,7 @@ impl CrossExchangeExecutor {
     /// Returns the minimum sell price given a buy price for breakeven.
     pub fn breakeven_sell_price(
         buy_price: Decimal,
-        quantity: Decimal,
+        _quantity: Decimal,
         fee_buy: Decimal,
         fee_sell: Decimal,
     ) -> Decimal {

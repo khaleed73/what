@@ -49,7 +49,7 @@ impl HtxClient {
             return Ok(cached);
         }
         let timestamp = chrono::Utc::now().timestamp_millis().to_string();
-        let _sign_str = format!("GET\napi.huobi.pro\n/v1/account/accounts\n");
+        let _sign_str = "GET\napi.huobi.pro\n/v1/account/accounts\n".to_string();
         let signature = sign_htx(
             self.config.api_secret.expose(),
             "GET",

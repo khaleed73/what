@@ -230,9 +230,9 @@ impl L2OrderBookManager {
         let inner = self
             .books
             .entry(exchange_id)
-            .or_insert_with(DashMap::new);
+            .or_default();
 
-        let mut book = inner.entry(symbol).or_insert_with(OrderBook::new);
+        let mut book = inner.entry(symbol).or_default();
         book.apply_delta(delta);
     }
 
@@ -555,7 +555,7 @@ pub fn build_orderbook_subscribe(exchange_id: u16, symbols: &[String]) -> Option
 
         // 11 — LBank: depth subscription
         11 => {
-            let pairs: Vec<&str> = syms.iter().copied().collect();
+            let pairs: Vec<&str> = syms.to_vec();
             let msg = serde_json::json!({
                 "action": "subscribe",
                 "subscribe": "depth",
@@ -599,7 +599,7 @@ pub fn build_orderbook_subscribe(exchange_id: u16, symbols: &[String]) -> Option
 
         // 14 — Delta: v2/orderbook channel
         14 => {
-            let symbols_vec: Vec<&str> = syms.iter().copied().collect();
+            let symbols_vec: Vec<&str> = syms.to_vec();
             let msg = serde_json::json!({
                 "type": "subscribe",
                 "payload": {
@@ -1084,7 +1084,7 @@ fn parse_bybit_book(raw: &str) -> Option<OrderBookDelta> {
         return None;
     }
     // Ignore pong messages
-    if v.get("ret_msg").map_or(false, |m| m.as_str() == Some("pong")) {
+    if v.get("ret_msg").is_some_and(|m| m.as_str() == Some("pong")) {
         return None;
     }
 
@@ -1248,7 +1248,7 @@ fn parse_bitfinex_book(raw: &str) -> Option<OrderBookDelta> {
     let mut bid_updates = Vec::new();
     let mut ask_updates = Vec::new();
     let mut is_snapshot = false;
-    let mut update_id: u64 = 0;
+    let update_id: u64 = 0;
 
     if arr.len() >= 4 {
         // Single-level update: [chan_id, price, count, amount]
@@ -1338,10 +1338,7 @@ fn parse_bitget_ticker_book(raw: &str) -> Option<OrderBookDelta> {
 
     let tickers = match v.get("data").and_then(|d| d.as_array()) {
         Some(arr) => arr,
-        None => match v.get("tickers").and_then(|t| t.as_array()) {
-            Some(arr) => arr,
-            None => return None,
-        },
+        None => v.get("tickers").and_then(|t| t.as_array())?,
     };
 
     if tickers.is_empty() {
@@ -1903,11 +1900,7 @@ fn parse_decimal_value(v: &serde_json::Value) -> Option<Decimal> {
         Decimal::from_f64_retain(n)
     } else if let Some(n) = v.as_i64() {
         Some(Decimal::from(n))
-    } else if let Some(n) = v.as_u64() {
-        Some(Decimal::from(n))
-    } else {
-        None
-    }
+    } else { v.as_u64().map(Decimal::from) }
 }
 
 // ---------------------------------------------------------------------------
@@ -1985,7 +1978,7 @@ impl L2OrderBookListener {
                     {
                         if let Err(e) = write
                             .send(tokio_tungstenite::tungstenite::Message::Text(
-                                sub_msg.into(),
+                                sub_msg,
                             ))
                             .await
                         {
@@ -2034,7 +2027,7 @@ impl L2OrderBookListener {
                                         .parse_error_count
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     // Log every 1000th parse failure to avoid log spam.
-                                    if (errs + 1) % 1000 == 0 {
+                                    if (errs + 1).is_multiple_of(1000) {
                                         warn!(
                                             exchange_id = ex,
                                             parse_errors = errs + 1,
@@ -2227,7 +2220,7 @@ mod tests {
         // Buy $100,000 worth of BTC — need to walk into second level
         let vwap = get_depth_value(&book, Side::Bid, dec!(100000));
         // Expected: (50000*1 + 49999*1) / (1+1) = 99999/2 = 49999.5
-        assert_eq!(vwap, dec!(49999.5));
+        assert!((vwap - dec!(49999.5)).abs() < dec!(0.001));
     }
 
     #[test]
@@ -2279,7 +2272,7 @@ mod tests {
 
         // Sell $100,000 — walk into second ask level
         let vwap = get_depth_value(&book, Side::Ask, dec!(100000));
-        assert_eq!(vwap, dec!(50001.5));
+        assert!((vwap - dec!(50001.5)).abs() < dec!(0.001));
     }
 
     #[test]

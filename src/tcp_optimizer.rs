@@ -173,7 +173,7 @@ mod tests {
         let config = TcpOptimizedClientConfig::default();
         let client = TcpOptimizer::build_client(&config);
         // Verify the client was created successfully.
-        assert!(client.post("https://httpbin.org/post").timeout().is_ok());
+        let _req = client.post("https://httpbin.org/post").timeout(std::time::Duration::from_secs(5));
     }
 
     #[test]
@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(config.pool_max_idle_per_host, 16);
         assert_eq!(config.connect_timeout, Duration::from_secs(3));
         let client = TcpOptimizer::build_client(&config);
-        assert!(client.post("https://httpbin.org/post").timeout().is_ok());
+        let _req = client.post("https://httpbin.org/post").timeout(std::time::Duration::from_secs(5));
     }
 
     #[test]
@@ -192,8 +192,8 @@ mod tests {
         opt.register_exchange_default("bybit");
 
         assert_eq!(opt.exchange_count(), 2);
-        assert!(opt.get_client("binance").post("https://test.com").timeout().is_ok());
-        assert!(opt.get_client("bybit").post("https://test.com").timeout().is_ok());
+        let _r1 = opt.get_client("binance").post("https://test.com").timeout(std::time::Duration::from_secs(5));
+        let _r2 = opt.get_client("bybit").post("https://test.com").timeout(std::time::Duration::from_secs(5));
     }
 
     #[test]

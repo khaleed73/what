@@ -20,6 +20,12 @@ pub struct AtomicLevel {
 
 const FP_SCALE_U64: u64 = 1_000_000_000;
 
+impl Default for AtomicLevel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AtomicLevel {
     pub const fn new() -> Self {
         Self {
@@ -83,6 +89,12 @@ impl AtomicLevel {
 pub struct FixedOrderBook {
     pub asks: [AtomicLevel; MAX_BOOK_DEPTH],
     pub bids: [AtomicLevel; MAX_BOOK_DEPTH],
+}
+
+impl Default for FixedOrderBook {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FixedOrderBook {

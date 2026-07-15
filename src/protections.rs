@@ -364,7 +364,7 @@ impl RiskManager {
         // ── Layer 3: Equity staleness ──────────────────────────
         {
             let elapsed_ms = current_time_millis().saturating_sub(self.last_update.load(Ordering::Relaxed));
-            if elapsed_ms as i64 > self.max_staleness_ms {
+            if elapsed_ms > self.max_staleness_ms {
                 return Err(TradeRejection::EquityStale);
             }
         }
@@ -448,7 +448,7 @@ impl RiskManager {
         // ── Layer 14: Network latency freshness ────────────────
         {
             let elapsed = current_time_millis().saturating_sub(self.last_network_check.load(Ordering::Relaxed));
-            if elapsed as i64 > NETWORK_STALE_MS as i64 {
+            if elapsed > NETWORK_STALE_MS as i64 {
                 return Err(TradeRejection::NetworkLatencyStale);
             }
         }

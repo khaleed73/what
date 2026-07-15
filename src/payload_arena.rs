@@ -82,7 +82,7 @@ impl PayloadBuffer {
     /// Appends a key-value pair: `&key=&value`. Does NOT add `&` prefix.
     #[inline]
     pub fn append_param(&self, key: &str, value: &str) -> bool {
-        let need_amp = self.len() > 0;
+        let need_amp = !self.is_empty();
         if need_amp && !self.append_str("&") {
             return false;
         }

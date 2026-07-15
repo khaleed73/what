@@ -468,6 +468,7 @@ pub mod okx {
 
 pub mod gateio {
     use async_trait::async_trait;
+    use base64::Engine;
     use ring::digest;
     use ring::hmac;
     use rust_decimal::Decimal;
@@ -928,6 +929,21 @@ impl PrivateExchangeClient for PaperExchangeClient {
 
     /// No-op cancellation — paper exchange always fills immediately.
     async fn cancel_order(
+        &self,
+        _http_client: &reqwest::Client,
+        _symbol: &str,
+        order_id: &str,
+    ) -> Result<OrderResult, String> {
+        Ok(OrderResult {
+            success: true,
+            order_id: Some(order_id.to_string()),
+            filled_qty: Decimal::ZERO,
+            avg_price: Decimal::ZERO,
+            error: None,
+        })
+    }
+
+    async fn query_order(
         &self,
         _http_client: &reqwest::Client,
         _symbol: &str,
@@ -2485,13 +2501,14 @@ pub mod kraken {
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            let has_id = txid.is_some();
 
             Ok(OrderResult {
-                success: txid.is_some(),
+                success: has_id,
                 order_id: txid,
                 filled_qty: Decimal::ZERO,
                 avg_price: Decimal::ZERO,
-                error: if txid.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("Kraken: missing txid in response".to_string())
@@ -2834,13 +2851,14 @@ pub mod htx {
                 .map_err(|e| format!("HTX submit_order JSON parse failed: {}", e))?;
 
             let order_id = json_val["data"].as_str().map(|s| s.to_string());
+            let has_id = order_id.is_some();
 
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: Decimal::ZERO,
                 avg_price: Decimal::ZERO,
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("HTX: missing order ID in response".to_string())
@@ -2924,7 +2942,7 @@ pub mod htx {
                 .map_err(|e| format!(
                     "HTX get_balance balance JSON parse failed: {}",
                     e
-                }))?;
+                ))?;
 
             if let Some(arr) = json_val["data"]["list"].as_array() {
                 for b in arr {
@@ -3220,13 +3238,14 @@ pub mod lbank {
                 .await?;
 
             let order_id = json_val["data"].as_str().map(|s| s.to_string());
+            let has_id = order_id.is_some();
 
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: Decimal::ZERO,
                 avg_price: Decimal::ZERO,
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("LBank: missing order ID in response".to_string())
@@ -3524,13 +3543,14 @@ pub mod bitstamp {
                 .await?;
 
             let order_id = json_val["id"].as_str().map(String::from);
+            let has_id = order_id.is_some();
 
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: Decimal::ZERO,
                 avg_price: Decimal::ZERO,
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("Bitstamp: missing order ID in response".to_string())
@@ -3855,13 +3875,14 @@ pub mod deribit {
 
             let order_result = &v["result"]["order"];
             let order_id = order_result["order_id"].as_str().map(String::from);
+            let has_id = order_id.is_some();
 
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: parse_json_decimal(&order_result["filled_amount"]),
                 avg_price: parse_json_decimal(&order_result["average_price"]),
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("Deribit: missing order ID in response".to_string())
@@ -4066,7 +4087,7 @@ pub mod delta {
             http_client: &reqwest::Client,
             order: OrderRequest,
         ) -> Result<OrderResult, String> {
-            let product_id = Self::resolve_product_id(&order.symbol);
+            let product_id = resolve_product_id(&order.symbol);
             let side = match order.side {
                 OrderSide::Buy => "buy",
                 OrderSide::Sell => "sell",
@@ -4092,12 +4113,13 @@ pub mod delta {
                 .await?;
 
             let order_id = v["id"].as_str().map(String::from);
+            let has_id = order_id.is_some();
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: parse_json_decimal(&v["filled_quantity"]),
                 avg_price: parse_json_decimal(&v["avg_fill_price"]),
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("Delta: missing order ID in response".to_string())
@@ -4114,9 +4136,10 @@ pub mod delta {
                 .send_signed(http_client, "GET", "/v2/wallet/balances", None)
                 .await?;
 
-            let entries = v["result"]
+            let entries: &[Value] = v["result"]
                 .as_array()
                 .or_else(|| v.as_array())
+                .map(|a| a.as_slice())
                 .unwrap_or(&[]);
 
             for item in entries {
@@ -4336,13 +4359,14 @@ pub mod mexc {
                 .map_err(|e| format!("MEXC submit_order JSON parse failed: {}", e))?;
 
             let order_id = v["orderId"].as_str().map(String::from);
+            let has_id = order_id.is_some();
 
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: parse_json_decimal(&v["filledQty"]),
                 avg_price: parse_json_decimal(&v["avgPrice"]),
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("MEXC: missing orderId in response".to_string())
@@ -4654,13 +4678,14 @@ pub mod ibank {
                 .await?;
 
             let order_id = v["OrderGuid"].as_str().map(String::from);
+            let has_id = order_id.is_some();
 
             Ok(OrderResult {
-                success: order_id.is_some(),
+                success: has_id,
                 order_id,
                 filled_qty: Decimal::ZERO,
                 avg_price: Decimal::ZERO,
-                error: if order_id.is_some() {
+                error: if has_id {
                     None
                 } else {
                     Some("Ibank: missing OrderGuid in response".to_string())

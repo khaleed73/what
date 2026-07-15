@@ -139,8 +139,14 @@ fn extract_number_value(text: &str, key: &str) -> Option<f64> {
     let num_start = after_key.find(':')?;
     let after_colon = &after_key[num_start + 1..];
 
+    // Skip whitespace before the number
+    let after_ws: String = after_colon
+        .chars()
+        .skip_while(|c| c.is_ascii_whitespace())
+        .collect();
+
     // Parse the number — handle negative sign and decimal point.
-    let num_str: String = after_colon
+    let num_str: String = after_ws
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == 'e' || *c == 'E' || *c == '+')
         .collect();

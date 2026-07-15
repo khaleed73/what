@@ -95,6 +95,12 @@ pub struct KrakenNonce {
     last: std::sync::Mutex<u64>,
 }
 
+impl Default for KrakenNonce {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KrakenNonce {
     pub fn new() -> Self {
         let initial = std::time::SystemTime::now()
@@ -135,17 +141,13 @@ impl KrakenNonce {
 /// let client = build_pinned_http_client(10, &tls)?;
 /// ```
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct TlsPinningConfig {
     /// Optional PEM-encoded CA certificate bundle. When set, *only* these
     /// certificates are trusted for TLS connections.
     pub ca_cert_pem: Option<String>,
 }
 
-impl Default for TlsPinningConfig {
-    fn default() -> Self {
-        Self { ca_cert_pem: None }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // build_http_client

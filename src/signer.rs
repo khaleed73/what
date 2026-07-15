@@ -735,8 +735,8 @@ impl PrivateExchangeClient for BybitClient {
     ) -> Result<OrderResult, String> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let pre_sign = format!("{}{}{}", timestamp, self.api_key.expose(), self.api_secret.expose());
-        let signature = crate::signer::hmac_signature(&pre_sign, &self.api_secret.expose());
+        let pre_sign = format!("{}{}{}", timestamp, self.api_key.expose(), self.signer.api_secret.expose());
+        let signature = crate::signer::hmac_signature(&pre_sign, self.signer.api_secret.expose());
         let url = format!("{}/v5/order/realtime?orderId={}", self.rest_url, order_id);
 
         let resp = http_client.get(&url)
@@ -1095,21 +1095,21 @@ impl PrivateExchangeClient for KucoinClient {
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0).to_string();
         let passphrase_str = self.signer.passphrase.as_ref().map(|p| p.expose()).unwrap_or("");
         let passphrase_sign = {
-            let key = hmac::Key::new(hmac::HMAC_SHA256, self.api_secret.expose().as_bytes());
+            let key = hmac::Key::new(hmac::HMAC_SHA256, self.signer.api_secret.expose().as_bytes());
             let sig = hmac::sign(&key, passphrase_str.as_bytes());
             base64::engine::general_purpose::STANDARD.encode(sig.as_ref())
         };
         let query_str = format!("{}{}{}", timestamp, "GET", "/api/v1/orders/".to_string() + order_id);
         let signature = base64::engine::general_purpose::STANDARD.encode(
-            ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, self.api_secret.expose().as_bytes()), query_str.as_bytes()).as_ref()
+            ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, self.signer.api_secret.expose().as_bytes()), query_str.as_bytes()).as_ref()
         );
         let url = format!("{}/api/v1/orders/{}", self.rest_url, order_id);
 
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("KC-API-KEY", reqwest::header::HeaderValue::from_str(self.api_key.expose()).unwrap_or_default());
-        headers.insert("KC-API-SIGN", reqwest::header::HeaderValue::from_str(&signature).unwrap_or_default());
-        headers.insert("KC-API-TIMESTAMP", reqwest::header::HeaderValue::from_str(&timestamp).unwrap_or_default());
-        headers.insert("KC-API-PASSPHRASE", reqwest::header::HeaderValue::from_str(&passphrase_sign).unwrap_or_default());
+        headers.insert("KC-API-KEY", reqwest::header::HeaderValue::from_str(self.api_key.expose()).unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")));
+        headers.insert("KC-API-SIGN", reqwest::header::HeaderValue::from_str(&signature).unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")));
+        headers.insert("KC-API-TIMESTAMP", reqwest::header::HeaderValue::from_str(&timestamp).unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")));
+        headers.insert("KC-API-PASSPHRASE", reqwest::header::HeaderValue::from_str(&passphrase_sign).unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")));
         headers.insert("KC-API-KEY-VERSION", reqwest::header::HeaderValue::from_static("2"));
 
         let resp = http_client.get(&url).headers(headers)

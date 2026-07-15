@@ -445,7 +445,7 @@ impl AutoCapitalRebalancer {
                 let mut params: std::collections::BTreeMap<String, String> =
                     std::collections::BTreeMap::new();
                 params.insert("coin".into(), "USDT".into());
-                params.insert("network".into(), network.to_uppercase().into());
+                params.insert("network".into(), network.to_uppercase());
                 params.insert("address".into(), target_address.to_string());
                 params.insert("amount".into(), req.amount.to_string());
 

@@ -159,7 +159,7 @@ pub struct LowLatencyWsListener {
     pub arena: Arc<MarketArena>,
     /// Receives updated symbol lists from the coin finder.
     /// The WS listener re-subscribes with the latest symbols on reconnect.
-    pub symbol_watch: watch::Receiver<Vec<String>>,
+    pub symbol_watch: tokio::sync::watch::Receiver<Vec<String>>,
 }
 
 impl LowLatencyWsListener {
@@ -167,7 +167,7 @@ impl LowLatencyWsListener {
         exchange_id: u16,
         wss_url: String,
         arena: Arc<MarketArena>,
-        symbol_watch: watch::Receiver<Vec<String>>,
+        symbol_watch: tokio::sync::watch::Receiver<Vec<String>>,
     ) -> Self {
         Self {
             exchange_id,
@@ -284,7 +284,7 @@ impl LowLatencyWsListener {
 pub fn spawn_feed_workers(
     arena: Arc<MarketArena>,
     exchanges: Vec<(u16, String)>,
-    symbol_watch: watch::Receiver<Vec<String>>,
+    symbol_watch: tokio::sync::watch::Receiver<Vec<String>>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(exchanges.len());
 

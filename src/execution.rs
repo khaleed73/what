@@ -1,15 +1,13 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::Datelike;
 use rust_decimal::prelude::ToPrimitive;
 
 use async_trait::async_trait;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use rust_decimal::Decimal;
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -591,7 +589,7 @@ impl HighFrequencyExecutionEngine {
     /// Check and reset daily counters at midnight UTC.
     /// Returns (daily_loss_cents, daily_profit_cents) after potential reset.
     fn check_daily_reset(&self) -> (u64, u64) {
-        let today = chrono::Utc::now().ordinal() as u32;
+        let today = chrono::Utc::now().ordinal();
         let mut last_day = self.daily_reset_day.lock().unwrap_or_else(|e| e.into_inner());
         if today != *last_day {
             *last_day = today;
@@ -882,6 +880,7 @@ impl HighFrequencyExecutionEngine {
             // exceeded the total 500ms budget cannot be cancelled from here.
             "blast_arbitrage_legs total timeout exceeded 500ms".to_string()
         })?;
+        let total_result = total_result?;
 
         // ── Post-blast: untrack filled orders, record daily P&L ──
         // Filled orders are removed from the tracker (no need to cancel).
@@ -899,12 +898,12 @@ impl HighFrequencyExecutionEngine {
             let buy_notional = total_result.0.filled_qty * total_result.0.avg_price;
             let sell_notional = total_result.1.filled_qty * total_result.1.avg_price;
             let profit = sell_notional - buy_notional;
-            let profit_cents = ((profit * Decimal::from(100u64)).to_string()
-                .split('.').next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0));
+            let profit_cents = (profit * Decimal::from(100u64)).to_string()
+                .split('.').next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
             self.record_daily_pnl(profit_cents);
         }
 
-        total_result
+        Ok(total_result)
     }
 
     /// Execute a three-leg triangular arbitrage.
@@ -1064,6 +1063,7 @@ impl HighFrequencyExecutionEngine {
             // haven't already fired.
             "blast_triangular_legs total timeout exceeded 500ms".to_string()
         })?;
+        let total_result = total_result?;
 
         // ── Post-blast: untrack filled orders ──
         for result in total_result.iter() {
@@ -1072,7 +1072,7 @@ impl HighFrequencyExecutionEngine {
             }
         }
 
-        total_result
+        Ok(total_result)
     }
 
     /// Toggle between paper and real execution mode.
@@ -1881,7 +1881,7 @@ pub fn spawn_order_cancellation_sweeper(
             // Also run the tracker's built-in stale cleanup (max age = 300s).
             let cleaned = tracker.cleanup_stale();
 
-            if cycle % 10 == 0 || cancelled > 0 || cleaned > 0 {
+            if cycle.is_multiple_of(10) || cancelled > 0 || cleaned > 0 {
                 info!(
                     cycle,
                     tracked = tracker.len(),
@@ -2109,9 +2109,9 @@ mod math_verification_extended {
         let total_fees = buy_fee + sell_fee;
 
         // Total capital = balances + fees paid
-        // (btc_a/btc_b are zero after full round-trip)
+        // Selling adds USDT, so gross profit increases capital
         let capital_after = usdt_a + usdt_b;
-        let expected_capital = total_before - (sell_notional - buy_notional) - total_fees;
+        let expected_capital = total_before + (sell_notional - buy_notional) - total_fees;
         assert_eq!(capital_after, expected_capital);
 
         // Profit after fees: (sell_notional - buy_notional) - total_fees

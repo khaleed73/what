@@ -588,6 +588,7 @@ impl MarketArena {
 mod tests {
     use super::*;
     use rust_decimal::Decimal;
+    use rust_decimal::prelude::ToPrimitive;
 
     #[test]
     fn test_update_price_reflects_in_atomics() {

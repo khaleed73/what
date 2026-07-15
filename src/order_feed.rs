@@ -61,10 +61,10 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
 
                 match key {
                     b'e' => {
-                        // Check for "executionReport"
-                        if payload.get(i..i + 16) == Some(b"\"executionReport\"") {
+                        // Check for "executionReport" (17 bytes including quotes)
+                        if payload.get(i..i + 17) == Some(b"\"executionReport\"") {
                             is_execution_report = true;
-                            i += 16;
+                            i += 17;
                         }
                     }
                     b't' => {
@@ -121,15 +121,14 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                             }
                         }
                     }
-                    b'L' => {
+                    b'L'
                         // Skip fill price
-                        if payload[i] == b'"' {
+                        if payload[i] == b'"' => {
                             i += 1;
                             while i < len && payload[i] != b'"' {
                                 i += 1;
                             }
                         }
-                    }
                     _ => {}
                 }
             }
@@ -179,9 +178,9 @@ pub fn parse_full_execution_report(payload: &[u8]) -> Option<FullExecutionReport
 
                 match key {
                     b'e' => {
-                        if payload.get(i..i + 16) == Some(b"\"executionReport\"") {
+                        if payload.get(i..i + 17) == Some(b"\"executionReport\"") {
                             is_execution_report = true;
-                            i += 16;
+                            i += 17;
                         }
                     }
                     b't' => {

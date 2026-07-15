@@ -705,6 +705,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Execution pool: {} exchange client(s) loaded", execution_pool.len());
 
     // ------------------------------------------------------------------
+    // 9b-pre-a. Detect paper mode (must be before live_capital & engine init)
+    // ------------------------------------------------------------------
+    let placeholder_detected = detect_paper_mode(&config);
+    let forced_paper = if config.force_live_mode {
+        if placeholder_detected {
+            println!("⚠️  WARNING: force_live_mode=true but placeholder keys detected!");
+            println!("   The bot will attempt REAL orders. Ensure ALL keys are valid.");
+        }
+        false // force live mode overrides placeholder detection
+    } else if placeholder_detected {
+        // Interactive confirmation: ask the operator before entering paper mode.
+        println!("\n╔══════════════════════════════════════════════════════════════╗");
+        println!("║  📋 PAPER MODE DETECTED                                    ║");
+        println!("║                                                            ║");
+        println!("║  One or more exchanges have placeholder API keys.           ║");
+        println!("║  The bot will run in PAPER MODE (simulated fills).          ║");
+        println!("║                                                            ║");
+        println!("║  No real orders will be placed. Real-time market data       ║");
+        println!("║  from all exchanges will still be streamed via WebSocket.   ║");
+        println!("║                                                            ║");
+        println!("║  To switch to LIVE MODE later:                              ║");
+        println!("║    1. Replace all placeholder API keys in config.toml        ║");
+        println!("║    2. Set force_live_mode = true                            ║");
+        println!("╠══════════════════════════════════════════════════════════════╣");
+        println!("║  Confirm PAPER MODE? (y/n):                                 ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap_or_default();
+        let confirmed = input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes");
+        if !confirmed {
+            println!("Aborted by user. Update your API keys in config.toml and re-run.");
+            return Ok(());
+        }
+        true
+    } else {
+        false
+    };
+
+    // ------------------------------------------------------------------
     // 9b-pre. LIVE MODE: Boot-time balance sync from exchanges
     // ------------------------------------------------------------------
     // In live mode, query actual USDT balances from each exchange and
@@ -743,59 +782,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // generic Binance-style fallback.
     // The .with_rate_limiter() call attaches a per-exchange 429 circuit breaker
     // that blocks ALL orders to a rate-limited exchange for 60 seconds.
-    let _rate_limiter = Arc::new(
+    let rate_limiter = Arc::new(
         execution::RateLimitCircuitBreaker::new(config.exchanges.len(), 60)
     );
     let real_exec: Arc<dyn execution::OrderPipeline> = Arc::new(
         execution::RealExecutionPipeline::new(
             reqwest::Client::new(),
-            rest_urls,
+            rest_urls.clone(),
             Arc::clone(&signers_pool),
         )
         .with_typed_pool(Arc::clone(&execution_pool))
         .with_rate_limiter(Arc::clone(&rate_limiter))
     );
-
-    // Auto-detect paper mode: if any exchange has placeholder keys,
-    // force paper mode so the execution engine routes through the
-    // PaperExecutionPipeline instead of attempting live orders.
-    // The config.toml `force_live_mode = true` override can bypass this
-    // safety check — use with extreme caution.
-    let placeholder_detected = detect_paper_mode(&config);
-    let forced_paper = if config.force_live_mode {
-        if placeholder_detected {
-            println!("⚠️  WARNING: force_live_mode=true but placeholder keys detected!");
-            println!("   The bot will attempt REAL orders. Ensure ALL keys are valid.");
-        }
-        false // force live mode overrides placeholder detection
-    } else if placeholder_detected {
-        // Interactive confirmation: ask the operator before entering paper mode.
-        println!("\n╔══════════════════════════════════════════════════════════════╗");
-        println!("║  📋 PAPER MODE DETECTED                                    ║");
-        println!("║                                                            ║");
-        println!("║  One or more exchanges have placeholder API keys.           ║");
-        println!("║  The bot will run in PAPER MODE (simulated fills).          ║");
-        println!("║                                                            ║");
-        println!("║  No real orders will be placed. Real-time market data       ║");
-        println!("║  from all exchanges will still be streamed via WebSocket.   ║");
-        println!("║                                                            ║");
-        println!("║  To switch to LIVE MODE later:                              ║");
-        println!("║    1. Replace all placeholder API keys in config.toml        ║");
-        println!("║    2. Set force_live_mode = true                            ║");
-        println!("╠══════════════════════════════════════════════════════════════╣");
-        println!("║  Confirm PAPER MODE? (y/n):                                 ║");
-        println!("╚══════════════════════════════════════════════════════════════╝");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap_or_default();
-        let confirmed = input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes");
-        if !confirmed {
-            println!("Aborted by user. Update your API keys in config.toml and re-run.");
-            return Ok(());
-        }
-        true
-    } else {
-        false
-    };
 
     let mut engine = HighFrequencyExecutionEngine::new(
         Arc::clone(&risk_manager),
@@ -1000,21 +998,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|e| (e.id, e.wss_url.clone()))
         .collect();
     let ob_symbol_watch = symbol_watch_tx.subscribe();
+    let ob_len = ob_feed_list.len();
     let _ob_handles = spawn_ob_workers(
         Arc::clone(&ob_manager),
         ob_feed_list,
         ob_symbol_watch,
     );
-    println!("L2 order book depth feeds started for {} exchange(s)", ob_feed_list.len());
+    println!("L2 order book depth feeds started for {} exchange(s)", ob_len);
 
     // ------------------------------------------------------------------
     // 12c. Dynamic Fee Manager — fetches real fee rates from exchanges
     // ------------------------------------------------------------------
     let mut config_fee_map: HashMap<String, u64> = HashMap::new();
-    if let Some(ref fees) = config.friction_protections.exchange_taker_fees {
-        for (name, bps) in fees {
-            config_fee_map.insert(name.to_lowercase(), *bps as u64);
-        }
+    for (name, bps) in &config.friction_protections.exchange_taker_fees {
+        config_fee_map.insert(name.to_lowercase(), *bps as u64);
     }
     let fee_manager = Arc::new(DynamicFeeManager::new(
         config_fee_map,
@@ -1039,9 +1036,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 12d. Trade Log & P&L Reporting
     // ------------------------------------------------------------------
-    let trade_log = Arc::new(TradeLog::new("trade_log.jsonl"));
-    trade_log.load_existing().await.unwrap_or(());
-    let existing_count = trade_log.records.lock().await.len();
+    let trade_log = Arc::new(TradeLog::new("trade_log.jsonl".to_string()));
+    trade_log.load_existing().await;
+    let existing_count = trade_log.records.lock().unwrap().len();
     println!("Trade log initialized — {} existing trades loaded from trade_log.jsonl", existing_count);
     start_daily_pnl_printer(Arc::clone(&trade_log));
 
@@ -1063,8 +1060,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if !creds_map.is_empty() {
+            let creds_len = creds_map.len();
             let sub_mgr = SubAccountManager::new(creds_map);
-            println!("Verifying API key permissions for {} exchange(s)...", creds_map.len());
+            println!("Verifying API key permissions for {} exchange(s)...", creds_len);
             let results = sub_mgr.validate_all_keys().await;
             let mut safety_ok = true;
             for (id, name, result) in &results {
@@ -1107,6 +1105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("Withdrawal executor initialized — rebalancer can now execute on-chain transfers");
     println!("  ⚠️  Withdrawals require real API keys with withdrawal permission");
+
+    // ------------------------------------------------------------------
+    // 12f. Derive minimum-signal thresholds from config (pct → bps).
+    //      Computed early so both backtest mode and live mode can use them.
+    // ------------------------------------------------------------------
+    let min_cross_bps: u64 = (config.strategies.cross_exchange.min_spread_pct * Decimal::from(10_000u64))
+        .to_u64()
+        .unwrap_or(15);
+    let min_tri_bps: u64 = (config.strategies.triangular.min_loop_profit_pct * Decimal::from(10_000u64))
+        .to_u64()
+        .unwrap_or(15);
 
     // ------------------------------------------------------------------
     // 12g. Backtest mode check (CLI flag: --backtest <data.csv>)
@@ -1183,13 +1192,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_health = Arc::clone(&health);
     let signal_symbol_watch = symbol_watch_tx;
 
-    // Derive minimum-signal thresholds from config (pct → bps).
-    let min_cross_bps: u64 = (config.strategies.cross_exchange.min_spread_pct * Decimal::from(10_000u64))
-        .to_u64()
-        .unwrap_or(15);
-    let min_tri_bps: u64 = (config.strategies.triangular.min_loop_profit_pct * Decimal::from(10_000u64))
-        .to_u64()
-        .unwrap_or(15);
     println!(
         "Signal thresholds from config: cross-exchange >= {} bps, triangular >= {} bps",
         min_cross_bps, min_tri_bps,

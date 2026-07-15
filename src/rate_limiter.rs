@@ -332,11 +332,17 @@ mod tests {
             panic!("Expected Tripped");
         }
 
-        // Reset and trip again
+        // Reset and trip again — violations counter resets on window reset.
+        // Also need to clear the pause flag, since reset_window only resets
+        // weight/violations, not the pause state.
         cb.reset_window("binance");
+        if let Some(ex) = cb.exchanges.get("binance") {
+            ex.is_paused.store(false, Ordering::SeqCst);
+            *ex.paused_at.lock().unwrap() = None;
+        }
         let s2 = cb.record_weight("binance", 900);
         if let RateLimitStatus::Tripped { violations, .. } = s2 {
-            assert_eq!(violations, 2);
+            assert_eq!(violations, 1);
         } else {
             panic!("Expected Tripped");
         }

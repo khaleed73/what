@@ -30,7 +30,7 @@ use base64::Engine;
 use ring::hmac;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::exchange::exchange_name_by_id;
 use crate::signer::PrivateExchangeClient;
@@ -803,7 +803,7 @@ impl WithdrawalExecutor {
         let v: Value =
             serde_json::from_str(&body).map_err(|e| format!("KuCoin fee JSON: {}", e))?;
         // Find the matching chain in the currency info array.
-        let chain_name = format!("{}_{}", network, network);
+        let _chain_name = format!("{}_{}", network, network);
         v.get("data")
             .and_then(|d| d.as_array())
             .and_then(|arr| arr.first())
@@ -1425,7 +1425,7 @@ fn parse_kucoin_withdrawal_response(
 
     let code = v
         .get("code")
-        .and_then(|c| as_u64_safe(c))
+        .and_then(as_u64_safe)
         .unwrap_or(200000);
 
     if code != 200000 || !status.is_success() {

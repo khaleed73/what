@@ -377,10 +377,11 @@ mod tests {
             ],
             bids: vec![],
         };
-        // Spend $50000 → 0.5 at 50000 + 0.5 at 50100 = 1.0 BTC
+        // Spend $50000 → 0.5 at 50000 + (25000/50100) at 50100 ≈ 0.999 BTC
         let result = AbsoluteMathEngine::calculate_slippage_buy(&depth, dec!(50000.0));
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), dec!(1.0));
+        let expected = dec!(0.5) + dec!(25000) / dec!(50100);
+        assert!((result.unwrap() - expected).abs() < dec!(0.0000001));
     }
 
     #[test]

@@ -7,7 +7,6 @@
 //! rate limit detection and backoff.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

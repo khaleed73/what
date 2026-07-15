@@ -277,6 +277,12 @@ impl TradeLog {
         // Split P&L evenly across the three legs for per-leg reporting.
         let per_leg_pnl = loop_pnl / Decimal::from(3);
 
+        // Clone symbols so we can still reference them in the info! macro
+        // after the original values are moved into the TradeRecords.
+        let leg1_sym = legs.leg1_symbol.clone();
+        let leg2_sym = legs.leg2_symbol.clone();
+        let leg3_sym = legs.leg3_symbol.clone();
+
         let record1 = TradeRecord {
             trade_id: id1.clone(),
             timestamp: now,
@@ -334,9 +340,9 @@ impl TradeLog {
 
         info!(
             exchange = %exchange_name,
-            leg1 = %legs.leg1_symbol,
-            leg2 = %legs.leg2_symbol,
-            leg3 = %legs.leg3_symbol,
+            leg1 = %leg1_sym,
+            leg2 = %leg2_sym,
+            leg3 = %leg3_sym,
             loop_pnl = %loop_pnl,
             "Triangular arb recorded"
         );
@@ -373,7 +379,7 @@ impl TradeLog {
 
             // Extract the date portion from the unix-millis timestamp.
             let date_key = date_string_from_millis(trade.timestamp);
-            *daily_pnl.entry(date_key).or_insert_with(Decimal::ZERO) +=
+            *daily_pnl.entry(date_key).or_insert(Decimal::ZERO) +=
                 trade.pnl_realized.unwrap_or(Decimal::ZERO);
         }
 

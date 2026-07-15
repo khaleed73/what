@@ -35,6 +35,12 @@ pub const REASON_EXCHANGE_MASS_FAILURE: u64 = 6;
 pub const REASON_CLOCK_DRIFT: u64 = 7;
 pub const REASON_UNKNOWN: u64 = 0;
 
+impl Default for EngineCircuitBreaker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EngineCircuitBreaker {
     pub fn new() -> Self {
         Self {

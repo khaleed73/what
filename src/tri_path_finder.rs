@@ -217,27 +217,24 @@ impl TriPathFinder {
         let mut profit_factor = 1.0;
 
         // A → B
-        if let Some(edge) = self.edges[path[0]].iter().find(|e| e.to == path[1]) {
+        {
+            let edge = self.edges[path[0]].iter().find(|e| e.to == path[1])?;
             pairs.push(edge.pair_symbol.clone());
             profit_factor *= edge.log_rate.exp();
-        } else {
-            return None;
         }
 
         // B → C
-        if let Some(edge) = self.edges[path[1]].iter().find(|e| e.to == path[2]) {
+        {
+            let edge = self.edges[path[1]].iter().find(|e| e.to == path[2])?;
             pairs.push(edge.pair_symbol.clone());
             profit_factor *= edge.log_rate.exp();
-        } else {
-            return None;
         }
 
         // C → A
-        if let Some(edge) = self.edges[path[2]].iter().find(|e| e.to == path[0]) {
+        {
+            let edge = self.edges[path[2]].iter().find(|e| e.to == path[0])?;
             pairs.push(edge.pair_symbol.clone());
             profit_factor *= edge.log_rate.exp();
-        } else {
-            return None;
         }
 
         let currencies: Vec<String> = path.iter().map(|&i| self.idx_to_currency[i].clone()).collect();

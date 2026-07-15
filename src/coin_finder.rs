@@ -845,7 +845,7 @@ async fn scan_ibank(http: &Client, rest_url: &str, exchange_id: u16) -> Exchange
                 }
             }
         }
-        Err(e) => {
+        Err(_e) => {
             // Fallback: if GetMarkets fails, try the general assets endpoint
             match http.get(&url).send().await {
                 Ok(resp2) => {
@@ -964,14 +964,13 @@ fn passes_filter(
     }
 
     // Memecoin heuristic: contains known memecoin fragments
-    if upper.len() >= 4 {
-        if MEMECOIN_FRAGMENTS
+    if upper.len() >= 4
+        && MEMECOIN_FRAGMENTS
             .iter()
             .any(|frag| upper.contains(frag))
         {
             return (true, CAT_MEMECOIN);
         }
-    }
 
     // Default: altcoin
     (true, CAT_ALTCOIN)
@@ -1286,7 +1285,7 @@ impl CoinFinder {
 
             let (new_tokens, total_pairs) = self.scan_cycle().await;
 
-            if cycle == 1 || cycle % 60 == 0 {
+            if cycle == 1 || cycle.is_multiple_of(60) {
                 info!(
                     cycle,
                     new_tokens,
