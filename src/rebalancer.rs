@@ -120,6 +120,33 @@ fn get_withdrawal_endpoint(exchange_id: u16) -> &'static str {
 //  AutoCapitalRebalancer
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// A lightweight handle for recording exchange heartbeats from data feed
+/// workers.  Clonable and `Send + Sync` so it can be passed into Tokio tasks.
+///
+/// Each call to `record()` updates the last-seen timestamp for an exchange.
+/// The rebalancer reads this map during its pre-flight liveness check to
+/// avoid dispatching withdrawals to dead/frozen exchanges.
+#[derive(Clone)]
+pub struct ExchangeHeartbeatHandle {
+    inner: Arc<std::sync::Mutex<HashMap<u16, Instant>>>,
+}
+
+impl ExchangeHeartbeatHandle {
+    /// Record a heartbeat for the given exchange (typically called from a
+    /// WS data feed worker on every incoming message).
+    ///
+    /// Thread safety: acquires a `std::sync::Mutex` for a single
+    /// `HashMap::insert` — critical section ~50 ns.
+    #[inline]
+    pub fn record(&self, exchange_id: u16) {
+        if let Ok(mut map) = self.inner.lock() {
+            map.insert(exchange_id, Instant::now());
+        }
+        // Lock poisoned — silently skip.  The rebalancer will fail-open
+        // (assume exchange is live) when it can't read the map either.
+    }
+}
+
 /// The background capital rebalancing worker.
 ///
 /// Spawns as an independent Tokio task.  It receives `RebalanceRequest`
@@ -162,9 +189,8 @@ pub struct AutoCapitalRebalancer {
     /// Loaded from config at boot.  Replaces the old hardcoded function.
     deposit_addresses: HashMap<String, String>,
 
-    /// Per-exchange last-seen heartbeat timestamps.
-    /// Updated by the main trading loop via `record_exchange_heartbeat`.
-    /// Used to skip withdrawals to exchanges that appear dead or frozen.
+    /// Shared heartbeat map — the same `Arc` backing the
+    /// `ExchangeHeartbeatHandle` given out to data feed workers.
     exchange_last_seen: Arc<std::sync::Mutex<HashMap<u16, Instant>>>,
 }
 
@@ -696,24 +722,17 @@ impl AutoCapitalRebalancer {
     // Exchange liveness tracking
     // -------------------------------------------------------------------
 
-    /// Record that `exchange_id` has recently sent or received data.
+    /// Returns a clonable handle that data feed workers can use to record
+    /// exchange heartbeats.  Each call to `handle.record(exchange_id)` from
+    /// a WS feed worker keeps the rebalancer's liveness map fresh.
     ///
-    /// Call this from the main trading loop's WebSocket or REST polling
-    /// task whenever fresh data arrives from an exchange.  The rebalancer
-    /// uses this to avoid dispatching withdrawals to dead/frozen exchanges
-    /// where funds could become permanently stuck.
-    ///
-    /// # Thread Safety
-    ///
-    /// This method acquires a `std::sync::Mutex` for a single `HashMap`
-    /// insert — the critical section is ~50 ns and only contended during
-    /// the rebalancer's periodic liveness check (also ~50 ns).
-    pub fn record_exchange_heartbeat(&self, exchange_id: u16) {
-        if let Ok(mut map) = self.exchange_last_seen.lock() {
-            map.insert(exchange_id, Instant::now());
+    /// Call this **before** spawning the rebalancer (i.e. before moving
+    /// `self` into the Tokio task), then distribute clones to each feed
+    /// worker via `spawn_feed_workers`.
+    pub fn heartbeat_handle(&self) -> ExchangeHeartbeatHandle {
+        ExchangeHeartbeatHandle {
+            inner: Arc::clone(&self.exchange_last_seen),
         }
-        // Lock poisoned — silently skip.  The rebalancer will fail-open
-        // (assume exchange is live) when it can't read the map either.
     }
 
     /// Returns `true` if `exchange_id` has a recorded heartbeat within

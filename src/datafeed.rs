@@ -1,4 +1,5 @@
 use crate::strategies::MarketArena;
+use crate::rebalancer::ExchangeHeartbeatHandle;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -203,6 +204,10 @@ pub struct LowLatencyWsListener {
     /// Receives updated symbol lists from the coin finder.
     /// The WS listener re-subscribes with the latest symbols on reconnect.
     pub symbol_watch: tokio::sync::watch::Receiver<Vec<String>>,
+    /// Optional handle to record exchange heartbeats for the rebalancer's
+    /// liveness check.  When `Some`, every successfully parsed WS message
+    /// records a heartbeat so the rebalancer knows this exchange is alive.
+    pub heartbeat: Option<ExchangeHeartbeatHandle>,
 }
 
 impl LowLatencyWsListener {
@@ -217,7 +222,15 @@ impl LowLatencyWsListener {
             wss_url,
             arena,
             symbol_watch,
+            heartbeat: None,
         }
+    }
+
+    /// Set the heartbeat handle.  Call this after construction to enable
+    /// rebalancer liveness tracking for this exchange's feed worker.
+    pub fn with_heartbeat(mut self, handle: ExchangeHeartbeatHandle) -> Self {
+        self.heartbeat = Some(handle);
+        self
     }
 
     /// Connects to the WebSocket endpoint and streams price updates into the
@@ -263,6 +276,11 @@ impl LowLatencyWsListener {
                                         bid,
                                         ask,
                                     );
+                                    // Record heartbeat for the rebalancer's
+                                    // liveness check (no-op if handle is None).
+                                    if let Some(ref hb) = self.heartbeat {
+                                        hb.record(self.exchange_id);
+                                    }
                                 }
                             }
                             Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
@@ -318,16 +336,19 @@ impl LowLatencyWsListener {
 
 /// Spawns one tokio task per exchange, each running a `LowLatencyWsListener`.
 /// Returns the vector of `JoinHandle`s so the caller can await or abort them.
-/// Spawns one tokio task per exchange, each running a `LowLatencyWsListener`.
-/// Returns the vector of `JoinHandle`s so the caller can await or abort them.
 ///
 /// `symbol_watch` is a `watch::Receiver` carrying the latest discovered symbol
 /// list.  Each WS listener re-subscribes with the current symbols on every
 /// reconnect.  The coin finder writes new symbol lists via the sender half.
+///
+/// `heartbeat` is an optional `ExchangeHeartbeatHandle` from the rebalancer.
+/// When provided, each feed worker records a heartbeat on every parsed WS
+/// message, keeping the rebalancer's exchange liveness map fresh.
 pub fn spawn_feed_workers(
     arena: Arc<MarketArena>,
     exchanges: Vec<(u16, String)>,
     symbol_watch: tokio::sync::watch::Receiver<Vec<String>>,
+    heartbeat: Option<ExchangeHeartbeatHandle>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(exchanges.len());
 
@@ -338,6 +359,12 @@ pub fn spawn_feed_workers(
             Arc::clone(&arena),
             symbol_watch.clone(),
         );
+        // Clone the heartbeat handle for this worker (Arc clone, cheap).
+        let listener = if let Some(ref hb) = heartbeat {
+            listener.with_heartbeat(hb.clone())
+        } else {
+            listener
+        };
         let handle = tokio::spawn(async move {
             listener.start_streaming().await;
         });

@@ -96,7 +96,7 @@ use ring_buffer_logger::RingBufferLogger;
 use rebalance_matrix::RebalanceMatrixEngine;
 use zero_lag_stream::ZeroLagStreamManager;
 use cross_exchange_executor::CrossExchangeExecutor;
-use rebalancer::{AutoCapitalRebalancer, create_rebalance_channel};
+use rebalancer::{AutoCapitalRebalancer, ExchangeHeartbeatHandle, create_rebalance_channel};
 use stablecoin::StablecoinMonitor;
 use subaccount::SubAccountManager;
 use coin_finder::{CoinFinder, CoinFinderConfig};
@@ -913,11 +913,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.friction_protections.transfer_gas_fee_usd
     );
 
+    // Extract the heartbeat handle BEFORE moving the rebalancer into
+    // the spawned task.  Feed workers will use this to record exchange
+    // liveness so the rebalancer can skip withdrawals to dead exchanges.
+    let heartbeat_handle: ExchangeHeartbeatHandle = rebalancer.heartbeat_handle();
+
     // Spawn the rebalancer on an independent background task.
     let rebalancer_handle = tokio::spawn(async move {
         rebalancer.run().await;
     });
     println!("Auto-Capital Rebalancer background worker started (channel capacity 10)");
+    println!("Rebalancer heartbeat handle distributed to feed workers");
     // rebalance_tx is kept alive for the live signal loop below.
     // When the strategy engine detects capital starvation on an exchange,
     // it sends a RebalanceRequest through this channel.
@@ -981,8 +987,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The coin finder will write updated symbol lists here.
     // Each WS listener re-subscribes with the latest symbols on reconnect.
     let (symbol_watch_tx, symbol_watch_rx) = tokio::sync::watch::channel(Vec::new());
-    let _feed_handles = spawn_feed_workers(Arc::clone(&arena), feed_list, symbol_watch_rx);
-    println!("Live WebSocket feed workers started for {} exchange(s)", feed_count);
+    let _feed_handles = spawn_feed_workers(Arc::clone(&arena), feed_list, symbol_watch_rx, Some(heartbeat_handle));
+    println!("Live WebSocket feed workers started for {} exchange(s) (heartbeat-wired to rebalancer)", feed_count);
     println!("Dynamic WS subscription channel active — coin finder updates symbols on reconnect");
 
     // ------------------------------------------------------------------
@@ -1184,13 +1190,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_arena = Arc::clone(&arena);
     let signal_engine = Arc::clone(&engine);
     let signal_allocator = Arc::clone(&allocator_arc);
-    let signal_rebalance_tx = rebalance_tx;
+    let signal_rebalance_tx = rebalance_tx.clone();
     let signal_risk = Arc::clone(&risk_manager);
     let signal_depeg = Arc::clone(&depeg_circuit);
     let num_exch = num_exchanges;
     let paper_capital_fp = initial_capital_fp;
     let signal_health = Arc::clone(&health);
     let signal_symbol_watch = symbol_watch_tx;
+
+    // ------------------------------------------------------------------
+    // Capital Starvation Detector — wired to rebalancer via callback
+    // ------------------------------------------------------------------
+    // Creates a detector with the configurable threshold (default $10).
+    // The callback finds the exchange with the highest USDT balance and
+    // sends a RebalanceRequest to transfer $500 from that exchange to
+    // the starved one.  This replaces the old hard-coded check.
+    let starvation_threshold = config.risk.min_single_position_pct * live_capital;
+    let starvation_threshold = if starvation_threshold < Decimal::from(50) {
+        Decimal::from(50) // floor at $50
+    } else {
+        starvation_threshold
+    };
+    let mut starvation_detector = capital_starvation::CapitalStarvationDetector::new(starvation_threshold);
+    {
+        let cb_allocator = Arc::clone(&allocator_arc);
+        let cb_rebalance_tx = signal_rebalance_tx.clone();
+        let cb_num_exch = num_exch;
+        starvation_detector.set_starvation_callback(Arc::new(move |starved_exchange_id: u16| {
+            // Find the exchange with the highest USDT balance to pull from.
+            let mut best_src: u16 = 0;
+            let mut best_bal = Decimal::ZERO;
+            for eid in 0..cb_num_exch {
+                if eid as u16 == starved_exchange_id {
+                    continue;
+                }
+                let bal = cb_allocator.get_balance_atomic(eid, 0); // token 0 = USDT
+                if bal > best_bal {
+                    best_bal = bal;
+                    best_src = eid as u16;
+                }
+            }
+            let transfer_amount = if best_bal > Decimal::from(500) {
+                Decimal::from(500)
+            } else {
+                // Transfer up to 80% of the source's balance to avoid
+                // draining it too.
+                (best_bal * Decimal::from(80)) / Decimal::from(100)
+            };
+            tracing::warn!(
+                from = best_src,
+                to = starved_exchange_id,
+                amount = %transfer_amount,
+                source_balance = %best_bal,
+                "starvation_callback: dispatching rebalance request"
+            );
+            let _ = cb_rebalance_tx.try_send(
+                rebalancer::RebalanceRequest {
+                    from_exchange_id: best_src,
+                    to_exchange_id: starved_exchange_id,
+                    token_id: 0,
+                    amount: transfer_amount,
+                    token_symbol: "USDT".to_string(),
+                },
+            );
+        }));
+    }
+    let signal_starvation_detector = starvation_detector;
+    println!(
+        "Capital starvation detector armed (threshold=${:.2}, callback wired to rebalancer)",
+        starvation_threshold
+    );
 
     println!(
         "Signal thresholds from config: cross-exchange >= {} bps, triangular >= {} bps",
@@ -1471,24 +1540,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Every 500 ticks (~50 seconds), check if any exchange is
-            // starved of USDT and send a rebalance request.
+            // starved of USDT via the CapitalStarvationDetector.
+            // The detector's callback (wired above) automatically sends
+            // a RebalanceRequest to the rebalancer channel, selecting the
+            // best-funded source exchange dynamically.
             if tick_counter % 500 == 0 {
                 for exch_id in 0..num_exch {
                     let bal = signal_allocator.get_balance_atomic(exch_id, 0); // token 0 = USDT
-                    if bal < dec!(50.0) {
+                    if let Some(event) = signal_starvation_detector.check_balance(
+                        exch_id,
+                        0, // token 0 = USDT
+                        bal,
+                    ) {
                         tracing::warn!(
-                            exchange = exch_id,
-                            usdt_balance = %bal,
-                            "capital starvation detected → sending rebalance request"
-                        );
-                        let _ = signal_rebalance_tx.try_send(
-                            rebalancer::RebalanceRequest {
-                                from_exchange_id: 0, // pull from exchange 0
-                                to_exchange_id: exch_id as u16,
-                                token_id: 0, // USDT
-                                amount: dec!(500.0),
-                                token_symbol: "USDT".to_string(),
-                            },
+                            exchange = event.exchange_id,
+                            token = event.token_id,
+                            balance = %event.current_balance,
+                            threshold = %event.min_threshold,
+                            "capital starvation detected (via detector)"
                         );
                     }
                 }
