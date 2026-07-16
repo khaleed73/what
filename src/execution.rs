@@ -195,7 +195,7 @@ where
                 }
 
                 if attempt + 1 < max_retries {
-                    let d = base_delay_ms * (1 << attempt);
+                    let d = (base_delay_ms * (1 << attempt)).min(2000); // cap at 2s
                     warn!(
                         attempt = attempt + 1,
                         max_retries,
@@ -1653,11 +1653,18 @@ pub fn check_slippage(
 /// Convert a `Decimal` dollar value to fixed-point u64 (dollars × 1_000_000).
 #[inline]
 fn decimal_to_fp(d: Decimal) -> u64 {
+    if d < Decimal::ZERO {
+        tracing::warn!(value = %d, "execution decimal_to_fp: negative value, clamping to 0");
+        return 0;
+    }
     let scaled = d * Decimal::from(1_000_000u64);
     // Use string round-trip to avoid truncation issues with .to_u64()
     let s = format!("{}", scaled);
     let parts: Vec<&str> = s.split('.').collect();
-    let integer_part: u64 = parts[0].parse().unwrap_or(0);
+    let integer_part: u64 = parts[0].parse().unwrap_or_else(|_| {
+        tracing::warn!(value = %d, scaled = %s, "execution decimal_to_fp: parse overflow, defaulting to 0");
+        0
+    });
     integer_part
 }
 

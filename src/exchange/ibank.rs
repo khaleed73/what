@@ -283,15 +283,27 @@ impl Exchange for IbankExchange {
 
     async fn fetch_symbols(&self) -> Result<Vec<String>> {
         // Fetch both primary and secondary currency codes
-        let primary_json = self
+        let primary_json = match self
             .send_public_get("/Public/GetValidPrimaryCurrencyCodes")
             .await
-            .ok();
+        {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "iBank: failed to fetch primary currency codes");
+                None
+            }
+        };
 
-        let secondary_json = self
+        let secondary_json = match self
             .send_public_get("/Public/GetValidSecondaryCurrencyCodes")
             .await
-            .ok();
+        {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, "iBank: failed to fetch secondary currency codes");
+                None
+            }
+        };
 
         let primary_codes: Vec<String> = primary_json
             .and_then(|v| {

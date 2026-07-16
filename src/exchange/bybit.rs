@@ -391,7 +391,8 @@ impl Exchange for BybitClient {
                 "symbol": bybit_symbol,
                 "cancelAll": 1
             });
-            let body_str = serde_json::to_string(&body).unwrap_or_default();
+            let body_str = serde_json::to_string(&body)
+                .map_err(|e| anyhow::anyhow!("failed to serialize cancel-all body: {}", e))?;
             let sign_str = format!(
                 "{}{}{}{}",
                 timestamp,

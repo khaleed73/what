@@ -251,10 +251,17 @@ impl LowLatencyWsListener {
         let mut consecutive_failures: u32 = 0;
         const BASE_DELAY_SECS: u64 = 1;
         const MAX_DELAY_SECS: u64 = 30;
+        const MAX_CONSECUTIVE_FAILURES: u32 = 50; // ~16 min of retries at cap
 
         loop {
-            match connect_async(&self.wss_url).await {
-                Ok((ws_stream, _response)) => {
+            // Wrap connect in a 10-second timeout to prevent hung DNS/TCP/TLS.
+            let connect_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                connect_async(&self.wss_url),
+            ).await;
+
+            match connect_result {
+                Ok(Ok((ws_stream, _response))) => {
                     // Successful connection — reset failure counter.
                     consecutive_failures = 0;
                     info!(exchange_id = ex, "websocket connected");
@@ -318,6 +325,15 @@ impl LowLatencyWsListener {
                 }
                 Err(e) => {
                     consecutive_failures += 1;
+                    if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+                        error!(
+                            exchange_id = ex,
+                            consecutive_failures,
+                            "WS connect failed {} times in a row — giving up, feed worker exiting",
+                            MAX_CONSECUTIVE_FAILURES
+                        );
+                        return;
+                    }
                     let delay_secs = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS);
                     error!(
@@ -334,6 +350,15 @@ impl LowLatencyWsListener {
 
             // Stream ended (not a connect failure) — use same backoff logic.
             consecutive_failures += 1;
+            if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+                error!(
+                    exchange_id = ex,
+                    consecutive_failures,
+                    "WS stream ended {} times — giving up, feed worker exiting",
+                    MAX_CONSECUTIVE_FAILURES
+                );
+                return;
+            }
             let delay_secs = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                 .min(MAX_DELAY_SECS);
             warn!(

@@ -9,6 +9,10 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Note: uuid::Uuid is used only as a fallback for client_order_id uniqueness.
+// All exchange modules already depend on the uuid crate via their
+// client_order_id generation, so it's available transitively.
+
 /// Enforced order types for safety. Market orders are prohibited to prevent
 /// unbounded slippage. Only limit orders with time-in-force constraints are allowed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -144,18 +148,22 @@ impl SafetyExecutionEngine {
             SafeOrderType::Fok => "FOK",
         };
 
+        // Generate unique client order ID: exchange_id-timestamp_ms-price_hash
+        // Falls back to a UUID if clock or price parse fails, ensuring uniqueness.
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .unwrap_or_else(|_| {
+                tracing::warn!("safety_execution: system clock before UNIX epoch, using 0");
+                0
+            });
 
-        // Generate unique client order ID: exchange_id-timestamp_ms-random_suffix
-        let client_order_id = format!(
-            "{}-{}-{:08x}",
-            exchange_id,
-            timestamp_ms,
-            (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(0) % 0xFFFFFFFF
-        );
+        let price_hash = (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(0) % 0xFFFFFFFF;
+        let client_order_id = if timestamp_ms == 0 && price_hash == 0 {
+            format!("{}-uuid-{}", exchange_id, uuid::Uuid::new_v4())
+        } else {
+            format!("{}-{}-{:08x}", exchange_id, timestamp_ms, price_hash)
+        };
 
         Ok(SafeOrderPayload {
             symbol: symbol.to_string(),

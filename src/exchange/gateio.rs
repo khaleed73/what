@@ -596,7 +596,7 @@ impl Exchange for GateioClient {
 
         let timestamp_us = json["current"]
             .as_f64()
-            .filter(|t| t.is_finite() && *t >= 0.0)
+            .filter(|t| t.is_finite() && *t >= 0.0 && *t < (u64::MAX as f64) / 1000.0)
             .map(|t| (t * 1000.0) as u64)
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64 * 1000);
 

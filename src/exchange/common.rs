@@ -261,6 +261,12 @@ pub async fn parse_exchange_response(
 // parse_json_decimal — extract Decimal from a JSON Value
 // ---------------------------------------------------------------------------
 
+/// Extract a `Decimal` from a JSON `Value`.
+///
+/// Tries, in order: string → i64 → f64. Returns `Decimal::ZERO` on any
+/// failure. For balance/price paths where silent zero is dangerous, prefer
+/// [`parse_json_decimal_verbose`] instead.
+#[must_use]
 pub fn parse_json_decimal(v: &Value) -> Decimal {
     parse_json_decimal_inner(v, None)
 }
@@ -268,6 +274,7 @@ pub fn parse_json_decimal(v: &Value) -> Decimal {
 /// Like [`parse_json_decimal`] but emits a `warn` log when the value cannot be
 /// parsed and falls back to `Decimal::ZERO`. Use this in balance/price
 /// parsing paths where silent zero is dangerous.
+#[must_use]
 pub fn parse_json_decimal_verbose(v: &Value, context: &str) -> Decimal {
     parse_json_decimal_inner(v, Some(context))
 }
@@ -459,6 +466,7 @@ pub fn sign_kraken(
 }
 
 /// Extract an f64 from a JSON Value (convenience for exchange responses).
+#[must_use]
 pub fn parse_json_f64(v: &Value) -> f64 {
     v.as_f64()
         .unwrap_or(0.0)
@@ -466,6 +474,7 @@ pub fn parse_json_f64(v: &Value) -> f64 {
 
 /// Parse a balance string to f64, logging when the value is unparseable.
 /// Returns the parsed value or 0.0 on failure (with a warning).
+#[must_use]
 pub fn parse_balance_f64(v: &Value, exchange: &str, asset: &str) -> f64 {
     match v.as_str().and_then(|s| s.parse::<f64>().ok()) {
         Some(f) => f,
@@ -482,6 +491,7 @@ pub fn parse_balance_f64(v: &Value, exchange: &str, asset: &str) -> f64 {
 }
 
 /// Convert f64 to Decimal for balance, logging when conversion fails (NaN/Inf).
+#[must_use]
 pub fn balance_f64_to_decimal(f: f64, exchange: &str, asset: &str) -> Decimal {
     match Decimal::from_f64(f) {
         Some(d) => d,

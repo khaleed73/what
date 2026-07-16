@@ -804,7 +804,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let real_exec: Arc<dyn execution::OrderPipeline> = Arc::new(
         execution::RealExecutionPipeline::new(
-            reqwest::Client::new(),
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .tcp_nodelay(true)
+                .build()
+                .expect("failed to build execution HTTP client"),
             rest_urls.clone(),
             Arc::clone(&signers_pool),
         )
@@ -1044,7 +1049,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let fee_manager = Arc::new(DynamicFeeManager::new(
         config_fee_map,
-        reqwest::Client::new(),
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("failed to build fee manager HTTP client"),
         Arc::clone(&execution_pool),
         rest_urls.clone(),
     ));
@@ -1276,6 +1285,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     token_symbol: "USDT".to_string(),
                 },
             );
+            if cb_rebalance_tx.is_full() {
+                tracing::warn!(
+                    from = best_src,
+                    to = starved_exchange_id,
+                    "rebalance channel full — starvation fix request DROPPED"
+                );
+            }
         }));
     }
     let signal_starvation_detector = starvation_detector;

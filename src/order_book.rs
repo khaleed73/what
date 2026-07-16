@@ -2024,10 +2024,16 @@ impl L2OrderBookListener {
         let mut consecutive_failures: u32 = 0;
         const BASE_DELAY_SECS: u64 = 1;
         const MAX_DELAY_SECS: u64 = 30;
+        const MAX_CONSECUTIVE_FAILURES: u32 = 50;
 
         loop {
-            match connect_async(&self.wss_url).await {
-                Ok((ws_stream, _response)) => {
+            let connect_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                connect_async(&self.wss_url),
+            ).await;
+
+            match connect_result {
+                Ok(Ok((ws_stream, _response))) => {
                     consecutive_failures = 0;
                     info!(exchange_id = ex, "L2 order book websocket connected");
 
@@ -2145,6 +2151,15 @@ impl L2OrderBookListener {
                 }
                 Err(e) => {
                     consecutive_failures += 1;
+                    if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+                        error!(
+                            exchange_id = ex,
+                            consecutive_failures,
+                            "L2 WS connect failed {} times — giving up, feed worker exiting",
+                            MAX_CONSECUTIVE_FAILURES
+                        );
+                        return;
+                    }
                     let delay_secs = (BASE_DELAY_SECS
                         << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS);
@@ -2162,6 +2177,15 @@ impl L2OrderBookListener {
 
             // Stream ended (not a connect failure) — backoff before retry
             consecutive_failures += 1;
+            if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+                error!(
+                    exchange_id = ex,
+                    consecutive_failures,
+                    "L2 WS stream ended {} times — giving up, feed worker exiting",
+                    MAX_CONSECUTIVE_FAILURES
+                );
+                return;
+            }
             let delay_secs = (BASE_DELAY_SECS
                 << consecutive_failures.saturating_sub(1))
                 .min(MAX_DELAY_SECS);

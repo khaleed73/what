@@ -149,9 +149,13 @@ impl PrivateWsFeedListener {
             active.insert(exchange_name.to_string(), true);
         }
 
-        let _ = self.event_sender
+        if self.event_sender
             .send(PrivateFeedEvent::Connected(exchange_name.to_string()))
-            .await;
+            .await
+            .is_err()
+        {
+            tracing::warn!(exchange = %exchange_name, "private_ws_feed: Connected event send failed — receiver dropped");
+        }
 
         tracing::info!(
             exchange = %exchange_name,
@@ -169,9 +173,13 @@ impl PrivateWsFeedListener {
             active.insert(exchange_name.to_string(), false);
         }
 
-        let _ = self.event_sender
+        if self.event_sender
             .send(PrivateFeedEvent::Disconnected(exchange_name.to_string(), reason.to_string()))
-            .await;
+            .await
+            .is_err()
+        {
+            tracing::debug!(exchange = %exchange_name, "private_ws_feed: Disconnected event send failed — receiver dropped");
+        }
     }
 
     /// Check if a specific exchange's feed is active.

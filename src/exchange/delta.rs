@@ -67,9 +67,10 @@ impl DeltaExchange {
         path: &str,
         timestamp: &str,
         body: &str,
-    ) -> String {
+    ) -> anyhow::Result<String> {
         let preimage = format!("{}{}{}{}", timestamp, method.to_uppercase(), path, body);
-        sign_hmac(self.config.api_secret.expose(), &preimage).unwrap_or_default()
+        sign_hmac(self.config.api_secret.expose(), &preimage)
+            .ok_or_else(|| anyhow::anyhow!("HMAC signing failed for Delta request"))
     }
 
     /// Send a signed request to Delta v2 API.
@@ -82,7 +83,7 @@ impl DeltaExchange {
         self.rate_limiter.throttle().await;
         let timestamp = chrono::Utc::now().timestamp().to_string();
         let payload = body.unwrap_or("");
-        let signature = self.sign_request(method, path, &timestamp, payload);
+        let signature = self.sign_request(method, path, &timestamp, payload)?;
 
         let base = self.config.base_url.trim_end_matches('/');
         // Strip any /v2 prefix from base_url so we can use full /v2/... paths

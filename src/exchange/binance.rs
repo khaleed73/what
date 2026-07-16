@@ -103,7 +103,9 @@ impl BinanceClient {
         } else {
             let offset = *self.time_offset_ms.read().await;
             let local_now = chrono::Utc::now().timestamp_millis();
-            Ok((local_now + offset) as u64)
+            local_now.checked_add(offset)
+                .and_then(|v| if v >= 0 { Some(v as u64) } else { None })
+                .ok_or_else(|| anyhow::anyhow!("timestamp underflow: local={}, offset={}", local_now, offset))
         }
     }
 }
