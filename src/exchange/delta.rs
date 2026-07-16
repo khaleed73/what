@@ -48,8 +48,8 @@ impl DeltaExchange {
                 message,
                 ..
             }) => {
-                tracing::warn!("Delta rate limited, backing off 1s: {}", message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("Delta rate limited, backing off ~1s with jitter: {}", message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by Delta: {}", message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -290,6 +290,10 @@ impl Exchange for DeltaExchange {
         let json = self.send_signed("GET", &path, None).await?;
 
         let status_str = json["state"].as_str().unwrap_or("unknown");
+        if status_str == "unknown" {
+            tracing::warn!(context = "fetch_order_status", raw = %json["state"],
+                "Delta: order state field missing");
+        }
         let mapped_status = match status_str {
             "open" => "NEW",
             "filled" => "FILLED",

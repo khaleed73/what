@@ -57,8 +57,8 @@ impl BitgetClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("Bitget rate limited, backing off 1s: {}", message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("Bitget rate limited, backing off ~1s with jitter: {}", message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by Bitget: {}", message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -185,7 +185,7 @@ impl Exchange for BitgetClient {
         let json = self
             .signed_post("/api/spot/v1/trade/orders", body.clone())
             .await?;
-        let client_oid = body["clientOid"].as_str().unwrap_or("").to_string();
+        let client_oid = extract_client_order_id(&body["clientOid"], "clientOid", "Bitget");
         let mut resp = self.parse_order_response(&json, &client_oid)?;
         if resp.filled_qty == Decimal::ZERO {
             match self.fetch_order_status(&order.symbol, &resp.order_id).await {
@@ -216,7 +216,7 @@ impl Exchange for BitgetClient {
         let json = self
             .signed_post("/api/spot/v1/trade/orders", body.clone())
             .await?;
-        let client_oid = body["clientOid"].as_str().unwrap_or("").to_string();
+        let client_oid = extract_client_order_id(&body["clientOid"], "clientOid", "Bitget");
         let mut resp = self.parse_order_response(&json, &client_oid)?;
         if resp.filled_qty == Decimal::ZERO {
             match self.fetch_order_status(&order.symbol, &resp.order_id).await {
@@ -299,7 +299,10 @@ impl Exchange for BitgetClient {
                         0.0
                     });
                 if free > 0.0 {
-                    let coin = item["coinName"].as_str().unwrap_or("").to_uppercase();
+                    let coin = match extract_currency(&item["coinName"], "coinName", "Bitget") {
+                        Some(c) => c.to_uppercase(),
+                        None => continue,
+                    };
                     balances.insert(coin, balance_f64_to_decimal(free, "bitget", &coin));
                 }
             }
@@ -347,7 +350,12 @@ impl Exchange for BitgetClient {
             &order["fillPrice"]
         });
         let fee = parse_json_decimal(&order["totalFee"]);
-        let status = match order["status"].as_str().unwrap_or("") {
+        let status_raw = order["status"].as_str().unwrap_or("");
+        if status_raw.is_empty() {
+            tracing::warn!(context = "fetch_order_status", raw = %order["status"],
+                "Bitget: order status field missing");
+        }
+        let status = match status_raw {
             "new" => "NEW",
             "partial_fill" => "PARTIALLY_FILLED",
             "full_fill" => "FILLED",

@@ -83,8 +83,8 @@ impl HtxClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("HTX rate limited, backing off 1s: {}", message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("HTX rate limited, backing off ~1s with jitter: {}", message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by HTX: {}", message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -325,7 +325,10 @@ impl Exchange for HtxClient {
                         0.0
                     });
                 if free > 0.0 {
-                    let currency = b["currency"].as_str().unwrap_or("").to_uppercase();
+                    let currency = match extract_currency(&b["currency"], "currency", "HTX") {
+                        Some(c) => c.to_uppercase(),
+                        None => continue,
+                    };
                     balances.insert(currency, balance_f64_to_decimal(free, "htx", &currency));
                 }
             }
@@ -362,7 +365,12 @@ impl Exchange for HtxClient {
         let resp = self.http.get(&url).send().await?;
         let json: serde_json::Value = resp.json().await?;
         let o = &json["data"];
-        let status = match o["state"].as_str().unwrap_or("") {
+        let status_raw = o["state"].as_str().unwrap_or("");
+        if status_raw.is_empty() {
+            tracing::warn!(context = "fetch_order_status", raw = %o["state"],
+                "HTX: order state field missing");
+        }
+        let status = match status_raw {
             "submitted" => "NEW",
             "partial-filled" => "PARTIALLY_FILLED",
             "filled" => "FILLED",
@@ -516,7 +524,10 @@ impl Exchange for HtxClient {
             })
             .unwrap_or_default();
 
-        let timestamp_ms = tick["ts"].as_u64().unwrap_or(0);
+        let timestamp_ms = tick["ts"].as_u64().unwrap_or_else(|| {
+                tracing::warn!(exchange = "HTX", raw = %tick["ts"], "orderbook timestamp missing, using Poisson fallback");
+                chrono::Utc::now().timestamp_millis() as u64
+            });
 
         Ok(OrderBookSnapshot {
             symbol: symbol.to_string(),

@@ -53,8 +53,8 @@ impl DeribitExchange {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name(), message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -365,7 +365,10 @@ impl Exchange for DeribitExchange {
         {
             if let Some(arr) = json["result"].as_array() {
                 for entry in arr {
-                    let curr = entry["currency"].as_str().unwrap_or("");
+                    let curr = match extract_currency(&entry["currency"], "currency", "Deribit") {
+                        Some(c) => c,
+                        None => continue,
+                    };
                     let equity = parse_json_decimal(&entry["equity"]);
                     if !curr.is_empty() && equity > Decimal::ZERO {
                         balances.insert(curr.to_string(), equity);
@@ -433,6 +436,10 @@ impl Exchange for DeribitExchange {
         let order = &json["result"]["order"];
 
         let status_str = order["state"].as_str().unwrap_or("unknown");
+        if status_str == "unknown" {
+            tracing::warn!(context = "fetch_order_status", raw = %order["state"],
+                "Deribit: order state field missing");
+        }
         let mapped_status = match status_str {
             "open" | "unfilled" => "NEW",
             "filled" => "FILLED",

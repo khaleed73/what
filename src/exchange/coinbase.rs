@@ -66,8 +66,8 @@ impl CoinbaseClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name, message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name, message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name, message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -229,7 +229,10 @@ impl Exchange for CoinbaseClient {
         let mut balances = HashMap::new();
         if let Some(accounts) = json.as_array() {
             for acc in accounts {
-                let currency = acc["currency"].as_str().unwrap_or("");
+                let currency = match extract_currency(&acc["currency"], "currency", "Coinbase") {
+                        Some(c) => c,
+                        None => continue,
+                    };
                 let available = parse_json_decimal(&acc["available_balance"]["value"]);
                 if available > Decimal::ZERO {
                     balances.insert(currency.to_uppercase(), available);

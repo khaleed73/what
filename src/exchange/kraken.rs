@@ -47,8 +47,8 @@ impl KrakenClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name(), message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -278,7 +278,12 @@ impl Exchange for KrakenClient {
         let fee = parse_json_decimal(&order_data["fee"]);
         let vol_exec = parse_json_decimal(&order_data["vol_exec"]);
         let vol = parse_json_decimal(&order_data["vol"]);
-        let status = match order_data["status"].as_str().unwrap_or("unknown") {
+        let raw_status = order_data["status"].as_str().unwrap_or("unknown");
+        if raw_status == "unknown" {
+            tracing::warn!(context = "fetch_order_status", raw = %order_data["status"],
+                "Kraken: order status field missing");
+        }
+        let status = match raw_status {
             "pending" | "open" => "NEW".to_string(),
             // Kraken "closed" covers FILLED, PARTIALLY_FILLED (canceled with
             // partial fill), and CANCELED (no fill). Disambiguate via vol_exec.

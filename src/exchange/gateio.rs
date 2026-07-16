@@ -63,8 +63,8 @@ impl GateioClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name(), message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -200,7 +200,7 @@ impl Exchange for GateioClient {
 
         Ok(OrderResponse {
             order_id,
-            client_order_id: json["text"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["text"], "text", "GateIO"),
             status: if filled_qty > Decimal::ZERO {
                 "FILLED".to_string()
             } else {
@@ -239,7 +239,7 @@ impl Exchange for GateioClient {
 
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: json["text"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["text"], "text", "GateIO"),
             status: "CANCELED".to_string(),
             filled_qty,
             avg_price,
@@ -339,7 +339,7 @@ impl Exchange for GateioClient {
 
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: json["text"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["text"], "text", "GateIO"),
             status: Self::normalize_status(json["status"].as_str().unwrap_or("unknown")),
             filled_qty,
             avg_price,
@@ -502,7 +502,7 @@ impl Exchange for GateioClient {
 
         Ok(OrderResponse {
             order_id,
-            client_order_id: json["text"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["text"], "text", "GateIO"),
             status: if filled_qty > Decimal::ZERO {
                 "PARTIALLY_FILLED".to_string()
             } else {

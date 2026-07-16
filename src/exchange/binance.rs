@@ -181,7 +181,7 @@ impl Exchange for BinanceClient {
             .map(String::from);
         Ok(OrderResponse {
             order_id: extract_order_id(&json["orderId"])?,
-            client_order_id: json["clientOrderId"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["clientOrderId"], "clientOrderId", "Binance"),
             status: json["status"].as_str().unwrap_or("UNKNOWN").to_string(),
             filled_qty: executed_qty,
             avg_price,
@@ -263,7 +263,10 @@ impl Exchange for BinanceClient {
         let mut balances = HashMap::new();
         if let Some(bals) = json["balances"].as_array() {
             for b in bals {
-                let asset = b["asset"].as_str().unwrap_or("").to_string();
+                let asset = match extract_currency(&b["asset"], "asset", "Binance") {
+                Some(a) => a,
+                None => continue,
+            };
                 let free: f64 = b["free"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
@@ -368,7 +371,7 @@ impl Exchange for BinanceClient {
             .map(String::from);
         Ok(OrderResponse {
             order_id: extract_order_id(&json["orderId"])?,
-            client_order_id: json["clientOrderId"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["clientOrderId"], "clientOrderId", "Binance"),
             status: json["status"].as_str().unwrap_or("UNKNOWN").to_string(),
             filled_qty,
             avg_price,
@@ -440,7 +443,7 @@ impl Exchange for BinanceClient {
         };
         Ok(OrderResponse {
             order_id: extract_order_id(&json["orderId"])?,
-            client_order_id: json["clientOrderId"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&json["clientOrderId"], "clientOrderId", "Binance"),
             status: json["status"].as_str().unwrap_or("UNKNOWN").to_string(),
             filled_qty: executed_qty,
             avg_price,

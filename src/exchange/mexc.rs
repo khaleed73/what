@@ -47,8 +47,8 @@ impl MexcExchange {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name(), message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -234,7 +234,10 @@ impl Exchange for MexcExchange {
 
         if let Some(balances_arr) = json["balances"].as_array() {
             for b in balances_arr {
-                let asset = b["asset"].as_str().unwrap_or("").to_uppercase();
+                let asset = match extract_currency(&b["asset"], "asset", "MEXC") {
+                        Some(a) => a.to_uppercase(),
+                        None => continue,
+                    };
                 let free: f64 = b["free"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
@@ -311,6 +314,10 @@ impl Exchange for MexcExchange {
         let json = self.handle_response(resp).await?;
 
         let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
+        if status_str == "UNKNOWN" && json["status"].is_null() {
+            tracing::warn!(context = "fetch_order_status", raw = %json["status"],
+                "MEXC: order status field missing/null");
+        }
         let mapped_status = match status_str {
             "NEW" => "NEW",
             "PARTIALLY_FILLED" => "PARTIALLY_FILLED",
@@ -321,10 +328,7 @@ impl Exchange for MexcExchange {
 
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: json["clientOrderId"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            client_order_id: extract_client_order_id(&json["clientOrderId"], "clientOrderId", "MEXC"),
             status: mapped_status.to_string(),
             filled_qty: parse_json_decimal(&json["filledQty"]),
             avg_price: parse_json_decimal(&json["avgPrice"]),

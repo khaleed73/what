@@ -9,6 +9,7 @@ use rust_decimal::prelude::ToPrimitive;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use tokio::sync::Mutex;
+use rand::Rng;
 use tracing::{debug, error, info, warn};
 
 use crate::protections::RiskManager;
@@ -195,15 +196,16 @@ where
                 }
 
                 if attempt + 1 < max_retries {
-                    let d = (base_delay_ms * (1 << attempt)).min(2000); // cap at 2s
+                    let base_d = (base_delay_ms * (1 << attempt)).min(2000) as f64;
+                    let d = (base_d * (0.75 + 0.5 * rand::thread_rng().gen::<f64>())) as u64;
                     warn!(
                         attempt = attempt + 1,
                         max_retries,
                         delay_ms = d,
                         error = %e,
-                        "Retrying after error"
+                        "Retrying after error (with jitter)"
                     );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(d)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(d.max(10))).await;
                 }
             }
         }

@@ -391,6 +391,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // so tri arb loops and cross-exchange targets are built from live data.
 
     let mut execution_pool: HashMap<u16, Arc<dyn PrivateExchangeClient>> = HashMap::new();
+    let mut live_init_failures: Vec<(u16, String, String)> = Vec::new();
 
     // Exchange 0 → Binance
     if let Some(exch) = config.exchanges.get(&0u16) {
@@ -718,6 +719,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // In live mode, any exchange init failure is a HARD ERROR.
+    // Silently falling back to paper while the operator thinks they're live
+    // would cause real capital asymmetry (some legs paper, some live).
+    if !forced_paper && !live_init_failures.is_empty() {
+        eprintln!();
+        eprintln!("==============================================================");
+        eprintln!("  FATAL: Exchange client initialization failed in LIVE mode");
+        eprintln!("==============================================================");
+        for (id, name, err) in &live_init_failures {
+            eprintln!("  Exchange {} (ID {}): {}", name, id, err);
+        }
+        eprintln!("--------------------------------------------------------------");
+        eprintln!("  FIX: Check API keys, network, and exchange status.");
+        eprintln!("  To force paper mode: set force_live_mode = false in config.");
+        eprintln!("==============================================================");
+        eprintln!();
+        std::process::exit(1);
+    }
+
     let execution_pool = Arc::new(execution_pool);
     println!("Execution pool: {} exchange client(s) loaded", execution_pool.len());
 
@@ -809,7 +829,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .tcp_nodelay(true)
                 .build()
-                .expect("failed to build execution HTTP client"),
+                .map_err(|e| anyhow::anyhow!("failed to build execution HTTP client: {}", e))?,
             rest_urls.clone(),
             Arc::clone(&signers_pool),
         )
@@ -1053,7 +1073,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .timeout(std::time::Duration::from_secs(15))
             .connect_timeout(std::time::Duration::from_secs(5))
             .build()
-            .expect("failed to build fee manager HTTP client"),
+            .map_err(|e| anyhow::anyhow!("failed to build fee manager HTTP client: {}", e))?,
         Arc::clone(&execution_pool),
         rest_urls.clone(),
     ));
@@ -1929,7 +1949,9 @@ async fn run_integration_test(
         timestamp: chrono::Utc::now().timestamp_millis(),
         exchange_health: HashMap::new(),
     };
-    let _ = state_tx.send(state).await;
+    if state_tx.send(state).await.is_err() {
+        tracing::error!("state_tx receiver dropped -- state snapshots are no longer being persisted to disk!");
+    }
     println!("  Persistence: State snapshot queued for disk write");
 
     // --- Step 9: Test freeze / unfreeze ---

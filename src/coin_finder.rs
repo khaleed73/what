@@ -1042,6 +1042,7 @@ impl CoinFinder {
     ) -> Result<Self, String> {
         let http = Client::builder()
             .timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(3))
             .pool_max_idle_per_host(2)
             .build()
             .map_err(|e| format!("failed to build HTTP client: {}", e))?;

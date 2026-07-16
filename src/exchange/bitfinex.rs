@@ -57,8 +57,8 @@ impl BitfinexClient {
     async fn handle_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
         let status = resp.status();
         if status.as_u16() == 429 {
-            tracing::warn!("Bitfinex rate limited (HTTP 429), backing off 1s");
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tracing::warn!("Bitfinex rate limited (HTTP 429), backing off ~1s with jitter");
+            jittered_rate_limit_sleep().await;
             anyhow::bail!("Rate limited by Bitfinex (HTTP 429)");
         }
         if !status.is_success() {
@@ -289,7 +289,10 @@ impl Exchange for BitfinexClient {
                     0.0
                 });
                 if free > 0.0 {
-                    let currency = w[1].as_str().unwrap_or("").to_uppercase();
+                    let currency = match extract_currency(&w[1], "currency[1]", "Bitfinex") {
+                        Some(c) => c.to_uppercase(),
+                        None => continue,
+                    };
                     balances.insert(currency, balance_f64_to_decimal(free, "bitfinex", &currency));
                 }
             }

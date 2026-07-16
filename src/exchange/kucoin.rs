@@ -45,8 +45,8 @@ impl KucoinClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name(), message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -66,7 +66,7 @@ impl KucoinClient {
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         Ok(OrderResponse {
             order_id: extract_order_id(&data["orderId"])?,
-            client_order_id: data["clientOid"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&data["clientOid"], "clientOid", "KuCoin"),
             status: "NEW".to_string(),
             filled_qty: Decimal::ZERO,
             avg_price: Decimal::ZERO,
@@ -229,7 +229,10 @@ impl Exchange for KucoinClient {
                     });
                 if available > 0.0 {
                     balances.insert(
-                        account["currency"].as_str().unwrap_or("").to_string(),
+                        match extract_currency(&account["currency"], "currency", "KuCoin") {
+                            Some(c) => c,
+                            None => continue,
+                        },
                         available,
                     );
                 }
@@ -299,8 +302,15 @@ impl Exchange for KucoinClient {
         let deal_funds = parse_json_decimal(&data["dealFunds"]);
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: data["clientOid"].as_str().unwrap_or("").to_string(),
-            status: data["status"].as_str().unwrap_or("unknown").to_string(),
+            client_order_id: extract_client_order_id(&data["clientOid"], "clientOid", "KuCoin"),
+            status: match data["status"].as_str() {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    tracing::warn!(context = "fetch_order_status", raw = %data["status"],
+                        "KuCoin: order status field missing, defaulting to UNKNOWN");
+                    "UNKNOWN".to_string()
+                }
+            },
             filled_qty,
             avg_price: if filled_qty > Decimal::ZERO {
                 deal_funds / filled_qty
@@ -630,7 +640,10 @@ impl Exchange for KucoinClient {
             })
             .unwrap_or_default();
 
-        let timestamp_ms = data["time"].as_u64().unwrap_or(0);
+        let timestamp_ms = data["time"].as_u64().unwrap_or_else(|| {
+                tracing::warn!(exchange = "KuCoin", raw = %data["time"], "orderbook timestamp missing, using Poisson fallback");
+                chrono::Utc::now().timestamp_millis() as u64
+            });
 
         Ok(OrderBookSnapshot {
             symbol: symbol.to_string(),

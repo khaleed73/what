@@ -355,6 +355,19 @@ fn f64_to_decimal(val: f64, field: &str) -> Result<Decimal, Box<dyn std::error::
     })
 }
 
+
+/// Assert that a percentage value is strictly positive (> 0, <= 1).
+/// Used for profit minimums and loss caps where 0 would be financially dangerous.
+fn validate_strictly_positive_pct(value: Decimal, field: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if value <= Decimal::ZERO || value > Decimal::ONE {
+        return Err(format!(
+            "Field '{}' = {} must be strictly between 0 and 1 (exclusive of 0)",
+            field, value
+        )
+        .into());
+    }
+    Ok(())
+}
 /// Validate that an `i64` is strictly positive (> 0).
 fn validate_positive_i64(value: i64, field: &str) -> Result<(), Box<dyn std::error::Error>> {
     if value <= 0 {
@@ -409,7 +422,7 @@ impl EngineConfig {
             let r = &raw.strategies.cross_exchange;
             let min_spread_pct = parse_decimal(&r.min_spread_pct,
                 "strategies.cross_exchange.min_spread_pct")?;
-            validate_pct_range(min_spread_pct, "strategies.cross_exchange.min_spread_pct")?;
+            validate_strictly_positive_pct(min_spread_pct, "strategies.cross_exchange.min_spread_pct")?;
 
             let min_l2_liquidity_usd = parse_decimal(&r.min_l2_liquidity_usd,
                 "strategies.cross_exchange.min_l2_liquidity_usd")?;
@@ -477,7 +490,7 @@ impl EngineConfig {
 
             let min_net_profit_pct = parse_decimal(&r.min_net_profit_pct,
                 "risk_limits.min_net_profit_pct")?;
-            validate_pct_range(min_net_profit_pct, "risk_limits.min_net_profit_pct")?;
+            validate_strictly_positive_pct(min_net_profit_pct, "risk_limits.min_net_profit_pct")?;
 
             validate_positive_i64(r.max_equity_staleness_seconds,
                 "risk_limits.max_equity_staleness_seconds")?;
@@ -489,11 +502,11 @@ impl EngineConfig {
 
             let pct_hard_loss_cap = parse_decimal(&r.pct_hard_loss_cap,
                 "risk_limits.pct_hard_loss_cap")?;
-            validate_pct_range(pct_hard_loss_cap, "risk_limits.pct_hard_loss_cap")?;
+            validate_strictly_positive_pct(pct_hard_loss_cap, "risk_limits.pct_hard_loss_cap")?;
 
             let max_drawdown_pct = parse_decimal(&r.max_drawdown_pct,
                 "risk_limits.max_drawdown_pct")?;
-            validate_pct_range(max_drawdown_pct, "risk_limits.max_drawdown_pct")?;
+            validate_strictly_positive_pct(max_drawdown_pct, "risk_limits.max_drawdown_pct")?;
 
             let max_total_exposure_pct = parse_decimal(&r.max_total_exposure_pct,
                 "risk_limits.max_total_exposure_pct")?;

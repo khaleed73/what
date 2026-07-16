@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::connect_async;
 use serde_json;
+use rand::Rng;
 use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -334,16 +335,18 @@ impl LowLatencyWsListener {
                         );
                         return;
                     }
-                    let delay_secs = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
-                        .min(MAX_DELAY_SECS);
+                    let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
+                        .min(MAX_DELAY_SECS) as f64;
+                    let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
+                    let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
                     error!(
                         exchange_id = ex,
                         error = %e,
                         consecutive_failures,
                         delay_secs,
-                        "websocket connect failed, reconnecting with exponential backoff"
+                        "websocket connect failed, reconnecting with jittered exponential backoff"
                     );
-                    sleep(Duration::from_secs(delay_secs)).await;
+                    sleep(Duration::from_secs(delay_secs.max(1))).await;
                     continue;
                 }
             }
@@ -359,15 +362,17 @@ impl LowLatencyWsListener {
                 );
                 return;
             }
-            let delay_secs = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
-                .min(MAX_DELAY_SECS);
+            let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
+                .min(MAX_DELAY_SECS) as f64;
+            let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
+            let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
             warn!(
                 exchange_id = ex,
                 consecutive_failures,
                 delay_secs,
-                "reconnecting with exponential backoff"
+                "reconnecting with jittered exponential backoff"
             );
-            sleep(Duration::from_secs(delay_secs)).await;
+            sleep(Duration::from_secs(delay_secs.max(1))).await;
         }
     }
 }

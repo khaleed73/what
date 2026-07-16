@@ -89,8 +89,13 @@ impl DiscordWorker {
             receiver: rx,
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
+                .connect_timeout(std::time::Duration::from_secs(3))
+                .pool_max_idle_per_host(2)
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .unwrap_or_else(|e| {
+                    tracing::error!("failed to build Discord HTTP client: {}, using default", e);
+                    reqwest::Client::new()
+                }),
         };
         (worker, tx)
     }
@@ -138,12 +143,14 @@ impl DiscordWorker {
                             );
                             break;
                         }
-                        let delay = std::time::Duration::from_millis(100 * (1 << attempt));
+                        let base_ms = 100.0 * (1u32 << attempt) as f64;
+                        let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
+                        let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(
                             %status,
                             attempt,
-                            next_retry_ms = delay.as_millis() as u64,
-                            "discord webhook non-success, retrying"
+                            next_retry_ms = delay.as_millis(),
+                            "discord webhook non-success, retrying with jitter"
                         );
                         tokio::time::sleep(delay).await;
                     }
@@ -157,12 +164,14 @@ impl DiscordWorker {
                             );
                             break;
                         }
-                        let delay = std::time::Duration::from_millis(100 * (1 << attempt));
+                        let base_ms = 100.0 * (1u32 << attempt) as f64;
+                        let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
+                        let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(
                             error = %e,
                             attempt,
-                            next_retry_ms = delay.as_millis() as u64,
-                            "discord notification error, retrying"
+                            next_retry_ms = delay.as_millis(),
+                            "discord notification error, retrying with jitter"
                         );
                         tokio::time::sleep(delay).await;
                     }

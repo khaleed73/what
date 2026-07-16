@@ -39,8 +39,8 @@ impl BitmexClient {
     async fn handle_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
         let status = resp.status();
         if status.as_u16() == 429 {
-            tracing::warn!("BitMEX rate limited (HTTP 429), backing off 1s");
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tracing::warn!("BitMEX rate limited (HTTP 429), backing off ~1s with jitter");
+            jittered_rate_limit_sleep().await;
             anyhow::bail!("Rate limited by BitMEX (HTTP 429)");
         }
         if !status.is_success() {
@@ -374,8 +374,15 @@ impl Exchange for BitmexClient {
         });
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: o["clOrdID"].as_str().unwrap_or("").to_string(),
-            status: o["ordStatus"].as_str().unwrap_or("UNKNOWN").to_string(),
+            client_order_id: extract_client_order_id(&o["clOrdID"], "clOrdID", "BitMEX"),
+            status: match o["ordStatus"].as_str() {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    tracing::warn!(context = "fetch_order_status", raw = %o["ordStatus"],
+                        "BitMEX: ordStatus field missing, defaulting to UNKNOWN");
+                    "UNKNOWN".to_string()
+                }
+            },
             filled_qty: parse_json_decimal(&o["cumQty"]),
             avg_price: parse_json_decimal(&o["avgPx"]),
             exchange: self.name.clone(),

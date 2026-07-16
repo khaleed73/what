@@ -64,8 +64,8 @@ impl OkxClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("{} rate limited, backing off 1s: {}", self.name(), message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -303,7 +303,10 @@ impl Exchange for OkxClient {
                     for detail in details {
                         let avail: f64 = parse_json_f64(&detail["availBal"]);
                         if avail > 0.0 {
-                            let ccy = detail["ccy"].as_str().unwrap_or("");
+                            let ccy = match extract_currency(&detail["ccy"], "ccy", "OKX") {
+                            Some(c) => c,
+                            None => continue,
+                        };
                             let d = balance_f64_to_decimal(avail, "okx", ccy);
                             if d > Decimal::ZERO {
                                 balances.insert(ccy.to_string(), d);
@@ -365,7 +368,7 @@ impl Exchange for OkxClient {
         let fee_currency = data["feeCcy"].as_str().map(String::from);
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: data["clOrdId"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&data["clOrdId"], "clOrdId", "OKX"),
             status: Self::normalize_okx_state(data["state"].as_str().unwrap_or("unknown")),
             filled_qty: parse_json_decimal(&data["fillSz"]),
             avg_price: parse_json_decimal(&data["avgPx"]),

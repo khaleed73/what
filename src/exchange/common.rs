@@ -211,6 +211,53 @@ pub fn build_pinned_http_client(
     }
 }
 
+/// Extract a client order ID from a JSON value, logging a warning if the field
+/// is missing, null, or empty.  Returns the string (may be empty).
+#[inline]
+/// Extract a currency/asset string from JSON, skipping empty values.
+/// Returns `None` if the field is missing, null, or empty -- callers should
+/// skip the balance entry entirely to avoid polluting the balance map.
+#[inline]
+pub fn extract_currency(v: &serde_json::Value, field: &str, exchange: &str) -> Option<String> {
+    match v.as_str() {
+        Some(s) if !s.is_empty() => Some(s.to_string()),
+        _ => {
+            tracing::warn!(
+                exchange = exchange,
+                field = field,
+                raw = %v,
+                "balance currency field missing/empty -- skipping entry"
+            );
+            None
+        }
+    }
+}
+
+pub fn extract_client_order_id(v: &serde_json::Value, field: &str, exchange: &str) -> String {
+    match v.as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            tracing::warn!(
+                exchange = exchange,
+                field = field,
+                raw = %v,
+                "client_order_id field missing/empty -- order tracking may break"
+            );
+            String::new()
+        }
+    }
+}
+
+/// Sleep for approximately 1 second with +/-25% random jitter.
+/// This prevents all exchanges from retrying at exactly the same moment
+/// when multiple exchanges rate-limit simultaneously (e.g. during network partitions).
+pub async fn jittered_rate_limit_sleep() {
+    use rand::Rng;
+    let base_ms = 1000.0_f64;
+    let jittered = base_ms * (0.75 + 0.5 * rand::thread_rng().gen::<f64>());
+    tokio::time::sleep(Duration::from_millis(jittered as u64)).await;
+}
+
 // ---------------------------------------------------------------------------
 // parse_exchange_response — generic JSON error checker
 // ---------------------------------------------------------------------------

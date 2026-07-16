@@ -45,8 +45,8 @@ impl LbankClient {
                 message,
                 ..
             }) => {
-                tracing::warn!("LBank rate limited, backing off 1s: {}", message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("LBank rate limited, backing off ~1s with jitter: {}", message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by LBank: {}", message);
             }
             Err(e) => Err(into_anyhow(e)),

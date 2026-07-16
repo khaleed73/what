@@ -60,8 +60,8 @@ impl IbankExchange {
                 message,
                 ..
             }) => {
-                tracing::warn!("Ibank rate limited, backing off 1s: {}", message);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::warn!("Ibank rate limited, backing off ~1s with jitter: {}", message);
+                jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by Ibank: {}", message);
             }
             Err(e) => Err(into_anyhow(e)),
@@ -402,7 +402,10 @@ impl Exchange for IbankExchange {
                         "Filled" => "FILLED",
                         "PartiallyFilled" => "PARTIALLY_FILLED",
                         "Cancelled" => "CANCELED",
-                        _ => status_str,
+                        _ => {
+                    tracing::warn!(status = %status_str, "Ibank: unknown closed-order status, passing through as-is");
+                    status_str
+                },
                     };
 
                     return Ok(OrderResponse {

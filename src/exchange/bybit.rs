@@ -284,7 +284,11 @@ impl Exchange for BybitClient {
                                 0.0
                             });
                         if free > 0.0 {
-                            balances.insert(coin["coin"].as_str().unwrap_or("").to_string(), free);
+                            let coin_name = match extract_currency(&coin["coin"], "coin", "Bybit") {
+                    Some(c) => c,
+                    None => continue,
+                };
+                balances.insert(coin_name, free);
                         }
                     }
                 }
@@ -365,7 +369,7 @@ impl Exchange for BybitClient {
         };
         Ok(OrderResponse {
             order_id: order_id.to_string(),
-            client_order_id: result["orderLinkId"].as_str().unwrap_or("").to_string(),
+            client_order_id: extract_client_order_id(&result["orderLinkId"], "orderLinkId", "Bybit"),
             status,
             filled_qty: parse_json_decimal(&result["cumExecQty"]),
             avg_price: parse_json_decimal(&result["avgPrice"]),
@@ -508,7 +512,11 @@ impl Exchange for BybitClient {
             })
             .unwrap_or_default();
 
-        let timestamp_us = json["result"]["ts"].as_u64().unwrap_or(0) * 1000;
+        let raw_ts = json["result"]["ts"].as_u64().unwrap_or_else(|| {
+                tracing::warn!(exchange = "Bybit", raw = %json["result"]["ts"], "orderbook timestamp missing, using Poisson fallback");
+                chrono::Utc::now().timestamp_millis() as u64
+            });
+            let timestamp_us = raw_ts * 1000;
 
         Ok(OrderBookSnapshot {
             symbol: symbol.to_string(),
