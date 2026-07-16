@@ -80,7 +80,7 @@ impl TimestampSynchronizer {
         }
 
         self.offset_ms.store(offset, Ordering::SeqCst);
-        *self.last_sync.lock().unwrap() = Instant::now();
+        *self.last_sync.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
 
         let abs_offset = offset.abs();
 
@@ -130,7 +130,7 @@ impl TimestampSynchronizer {
 
     /// Returns `true` if sync is stale and needs re-syncing.
     pub fn needs_resync(&self) -> bool {
-        let guard = self.last_sync.lock().unwrap();
+        let guard = self.last_sync.lock().unwrap_or_else(|e| e.into_inner());
         guard.elapsed() >= self.sync_interval
     }
 
@@ -239,7 +239,7 @@ mod tests {
         assert!(!sync.needs_resync());
 
         // Manually age the last_sync.
-        *sync.last_sync.lock().unwrap() = Instant::now() - Duration::from_millis(200);
+        *sync.last_sync.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now() - Duration::from_millis(200);
         assert!(sync.needs_resync());
     }
 }

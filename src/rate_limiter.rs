@@ -55,7 +55,7 @@ impl ExchangeRateState {
         if self.is_paused.load(Ordering::SeqCst) {
             // Check if cooldown has elapsed.
             let should_resume = {
-                let guard = self.paused_at.lock().unwrap();
+                let guard = self.paused_at.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(paused_at) = *guard {
                     paused_at.elapsed() >= self.cooldown_duration
                 } else {
@@ -65,14 +65,14 @@ impl ExchangeRateState {
 
             if should_resume {
                 self.is_paused.store(false, Ordering::SeqCst);
-                *self.paused_at.lock().unwrap() = None;
+                *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 // Reset weight counter for new window.
                 self.used_weight.store(weight, Ordering::SeqCst);
                 return RateLimitStatus::Ok;
             }
             return RateLimitStatus::Paused {
                 remaining_ms: {
-                    let guard = self.paused_at.lock().unwrap();
+                    let guard = self.paused_at.lock().unwrap_or_else(|e| e.into_inner());
                     guard
                         .map(|t| {
                             let remaining = self.cooldown_duration.saturating_sub(t.elapsed());
@@ -91,7 +91,7 @@ impl ExchangeRateState {
         if current >= (max * threshold / 10_000) {
             // Trip the pause.
             self.is_paused.store(true, Ordering::SeqCst);
-            *self.paused_at.lock().unwrap() = Some(Instant::now());
+            *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 
             let violations = self.consecutive_violations.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -338,7 +338,7 @@ mod tests {
         cb.reset_window("binance");
         if let Some(ex) = cb.exchanges.get("binance") {
             ex.is_paused.store(false, Ordering::SeqCst);
-            *ex.paused_at.lock().unwrap() = None;
+            *ex.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
         let s2 = cb.record_weight("binance", 900);
         if let RateLimitStatus::Tripped { violations, .. } = s2 {

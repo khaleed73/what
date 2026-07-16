@@ -232,7 +232,7 @@ impl RebalanceMatrixEngine {
             && (h == prev_hash
                 || (now - last_time) < self.min_rebalance_interval_secs)
         {
-            return self.last_compute_result.lock().unwrap().clone();
+            return self.last_compute_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
         }
 
         // --- Slow-path: full recomputation ---
@@ -243,7 +243,7 @@ impl RebalanceMatrixEngine {
         self.last_compute_hash.store(h, Ordering::Release);
         self.last_compute_time.store(now, Ordering::Release);
         {
-            let mut cache = self.last_compute_result.lock().unwrap();
+            let mut cache = self.last_compute_result.lock().unwrap_or_else(|e| e.into_inner());
             *cache = result.clone();
         }
 

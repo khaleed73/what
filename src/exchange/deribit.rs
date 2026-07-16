@@ -74,7 +74,7 @@ impl DeribitExchange {
     async fn ensure_auth(&self) -> Result<String> {
         // Check cached token
         {
-            let guard = self.access_token.lock().expect("DeribitExchange token mutex poisoned");
+            let guard = self.access_token.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref token) = *guard {
                 return Ok(token.clone());
             }
@@ -144,7 +144,7 @@ impl DeribitExchange {
 
         // Cache it
         {
-            let mut guard = self.access_token.lock().expect("DeribitExchange token mutex poisoned");
+            let mut guard = self.access_token.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(token.clone());
         }
 
@@ -234,7 +234,7 @@ impl DeribitExchange {
             let code = error["code"].as_i64().unwrap_or(0);
             if code == -32602 || msg.contains("token") || msg.contains("auth") {
                 let mut guard =
-                    self.access_token.lock().expect("DeribitExchange token mutex poisoned");
+                    self.access_token.lock().unwrap_or_else(|e| e.into_inner());
                 *guard = None;
             }
             anyhow::bail!("Deribit RPC error ({}): {}", method, msg);

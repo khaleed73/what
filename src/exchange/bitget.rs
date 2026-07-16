@@ -34,8 +34,8 @@ impl BitgetClient {
 
         // B8 FIX: Bitget V2 requires passphrase to be HMAC-SHA256 encrypted
         // with the API secret, base64-encoded. Pre-compute at construction.
-        let encrypted_passphrase = match config.passphrase.as_deref() {
-            Some(pp) if !pp.is_empty() => sign_kucoin_passphrase(config.api_secret.expose(), pp)?,
+        let encrypted_passphrase = match &config.passphrase {
+            Some(pp) if !pp.expose().is_empty() => sign_kucoin_passphrase(config.api_secret.expose(), pp.expose())?,
             _ => String::new(),
         };
 

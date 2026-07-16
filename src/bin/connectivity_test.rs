@@ -333,7 +333,10 @@ async fn main() {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
-        .expect("reqwest client");
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to build reqwest client: {}", e);
+            std::process::exit(1);
+        });
 
     let mut rest_ok = 0usize;
     let mut rest_fail = 0usize;

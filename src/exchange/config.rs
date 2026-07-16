@@ -9,7 +9,7 @@ pub struct ExchangeConfig {
     pub api_key: SecretString,
     pub api_secret: SecretString,
     pub base_url: String,
-    pub passphrase: Option<String>,
+    pub passphrase: Option<SecretString>,
     pub http_timeout_secs: Option<u64>,
 }
 
@@ -26,6 +26,15 @@ impl std::fmt::Debug for ExchangeConfig {
 }
 
 impl ExchangeConfig {
+    /// Return the passphrase as a `&str`, or `""` if not set.
+    /// This is the safe accessor — never exposes the secret through `Deref`.
+    pub fn passphrase_str(&self) -> &str {
+        match &self.passphrase {
+            Some(p) => p.expose(),
+            None => "",
+        }
+    }
+
     pub fn new(
         api_key: &str,
         api_secret: &str,
@@ -50,7 +59,7 @@ impl ExchangeConfig {
             api_key: SecretString::new(api_key),
             api_secret: SecretString::new(api_secret),
             base_url: base_url.to_owned(),
-            passphrase: Some(passphrase.to_owned()),
+            passphrase: Some(SecretString::new(passphrase)),
             http_timeout_secs: None,
         }
     }

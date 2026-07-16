@@ -267,6 +267,16 @@ impl LowLatencyWsListener {
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                                // Reject oversized messages to prevent OOM from
+                                // a malicious or buggy server.
+                                if text.len() > 65_536 {
+                                    warn!(
+                                        exchange_id = ex,
+                                        msg_len = text.len(),
+                                        "WS message exceeds 64 KiB, dropping"
+                                    );
+                                    continue;
+                                }
                                 if let Some((token_id, bid, ask)) =
                                     parse_raw_bytes_fast(text.as_bytes())
                                 {

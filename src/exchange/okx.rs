@@ -37,7 +37,7 @@ impl OkxClient {
         //
         // The caller (main.rs) should validate that the passphrase is set when
         // mode == Live before starting the engine.
-        let passphrase = config.passphrase.as_deref().unwrap_or("");
+        let passphrase = config.passphrase_str();
         if passphrase.is_empty() {
             tracing::warn!(
                 "OKX client '{}' created without passphrase — authenticated requests will fail. \
@@ -90,7 +90,7 @@ impl OkxClient {
             .header("OK-ACCESS-TIMESTAMP", &timestamp)
             .header(
                 "OK-ACCESS-PASSPHRASE",
-                self.config.passphrase.as_deref().unwrap_or(""),
+                self.config.passphrase_str(),
             )
             .header("Content-Type", "application/json")
             .body(body_str)
@@ -234,7 +234,7 @@ impl Exchange for OkxClient {
             .header("OK-ACCESS-TIMESTAMP", &timestamp)
             .header(
                 "OK-ACCESS-PASSPHRASE",
-                self.config.passphrase.as_deref().unwrap_or(""),
+                self.config.passphrase_str(),
             )
             .header("Content-Type", "application/json")
             .body(body_str)
@@ -289,7 +289,7 @@ impl Exchange for OkxClient {
             .header("OK-ACCESS-TIMESTAMP", &timestamp)
             .header(
                 "OK-ACCESS-PASSPHRASE",
-                self.config.passphrase.as_deref().unwrap_or(""),
+                self.config.passphrase_str(),
             )
             .send()
             .await?;
@@ -353,7 +353,7 @@ impl Exchange for OkxClient {
             .header("OK-ACCESS-TIMESTAMP", &timestamp)
             .header(
                 "OK-ACCESS-PASSPHRASE",
-                self.config.passphrase.as_deref().unwrap_or(""),
+                self.config.passphrase_str(),
             )
             .send()
             .await?;
@@ -416,7 +416,7 @@ impl Exchange for OkxClient {
                 .header("OK-ACCESS-TIMESTAMP", &timestamp)
                 .header(
                     "OK-ACCESS-PASSPHRASE",
-                    self.config.passphrase.as_deref().unwrap_or(""),
+                    self.config.passphrase_str(),
                 )
                 .header("Content-Type", "application/json")
                 .body(body_str)

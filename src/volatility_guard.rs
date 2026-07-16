@@ -75,7 +75,7 @@ impl VolatilityGuard {
     pub fn set_exchange_ceiling(&self, exchange_id: u16, ceiling_bps: u64) {
         self.exchange_overrides
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(exchange_id, ceiling_bps);
     }
 
@@ -107,7 +107,7 @@ impl VolatilityGuard {
         let alpha = Decimal::from(2u64) / Decimal::from(period + 1);
         let one_minus_alpha = Decimal::ONE - alpha;
         let ema_bps = {
-            let mut ema_guard = self.ema_spread_bps.lock().unwrap();
+            let mut ema_guard = self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner());
             match *ema_guard {
                 None => {
                     // Seed EMA with the first observation.
@@ -124,7 +124,7 @@ impl VolatilityGuard {
 
         // Get the effective ceiling for this exchange.
         let ceiling_bps = {
-            let overrides = self.exchange_overrides.lock().unwrap();
+            let overrides = self.exchange_overrides.lock().unwrap_or_else(|e| e.into_inner());
             *overrides.get(&exchange_id).unwrap_or(&self.spread_ceiling_bps.load(Ordering::SeqCst))
         };
 
@@ -172,7 +172,7 @@ impl VolatilityGuard {
     /// Returns the current EMA-smoothed spread in basis points, or `None` if
     /// no spread observations have been made yet.
     pub fn spread_ema_bps(&self) -> Option<Decimal> {
-        *self.ema_spread_bps.lock().unwrap()
+        *self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Updates the EMA period. Higher values produce smoother (slower)
@@ -181,7 +181,7 @@ impl VolatilityGuard {
     /// observation.
     pub fn update_ema_period(&self, period: u64) {
         self.ema_period.store(period.max(2), Ordering::SeqCst);
-        *self.ema_spread_bps.lock().unwrap() = None;
+        *self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 

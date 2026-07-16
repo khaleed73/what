@@ -123,6 +123,22 @@ impl OrderBook {
             self.last_update_id = delta.last_update_id;
         }
         self.last_update_ns = delta.last_update_ns;
+
+        // Cap depth to prevent unbounded memory growth from adversarial
+        // or buggy feeds.  Trim the worst (furthest from spread) levels.
+        const MAX_LEVELS_PER_SIDE: usize = 500;
+        while self.bids.len() > MAX_LEVELS_PER_SIDE {
+            // Remove the worst bid (lowest price = first in BTreeMap).
+            if let Some(k) = self.bids.keys().next().copied() {
+                self.bids.remove(&k);
+            }
+        }
+        while self.asks.len() > MAX_LEVELS_PER_SIDE {
+            // Remove the worst ask (highest price = last in BTreeMap).
+            if let Some(k) = self.asks.keys().next_back().copied() {
+                self.asks.remove(&k);
+            }
+        }
     }
 
     /// Checks whether a price is within 0.1×–10× of a reference price.
@@ -2051,6 +2067,15 @@ impl L2OrderBookListener {
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                                // Reject oversized messages to prevent OOM.
+                                if text.len() > 1_048_576 {
+                                    warn!(
+                                        exchange_id = ex,
+                                        msg_len = text.len(),
+                                        "L2 WS message exceeds 1 MiB, dropping"
+                                    );
+                                    continue;
+                                }
                                 // DESIGN NOTE: Each L2 WS listener is intended to
                                 // subscribe to a single symbol.  We take `.first()`
                                 // from the watch channel as the target symbol for

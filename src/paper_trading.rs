@@ -31,7 +31,7 @@ fn lcg_next() -> u32 {
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
             Some((LCG_A.wrapping_mul(s).wrapping_add(LCG_C)) % LCG_M)
         })
-        .expect("LCG fetch_update: closure always returns Some, this cannot fail") as u32
+        .unwrap_or(1) as u32
 }
 
 /// Returns a pseudo-random slippage in the range **1–5 basis points** using a

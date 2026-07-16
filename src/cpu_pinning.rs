@@ -72,7 +72,10 @@ where
             }
             f()
         })
-        .expect("Failed to spawn pinned trading thread")
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to spawn pinned trading thread, running unpinned");
+            std::thread::spawn(f)
+        })
 }
 
 /// Get the number of available CPU cores.

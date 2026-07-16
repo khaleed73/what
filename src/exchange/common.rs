@@ -115,7 +115,7 @@ impl KrakenNonce {
     pub fn next(&self) -> u64 {
         // Poisoned mutex is unrecoverable in a nonce generator — use expect
         // to provide a clear diagnostic message rather than a bare unwrap.
-        let mut last = self.last.lock().expect("KrakenNonce mutex poisoned");
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         *last += 1;
         *last
     }
@@ -158,10 +158,13 @@ pub struct TlsPinningConfig {
 /// Uses system TLS trust anchors.  For certificate pinning, use
 /// [`build_pinned_http_client`] instead.
 pub fn build_http_client(timeout_secs: u64) -> anyhow::Result<reqwest::Client> {
+    let timeout_secs = timeout_secs.max(5); // floor at 5s
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .connect_timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(timeout_secs.min(10))) // cap connect at 10s
         .pool_max_idle_per_host(4)
+        .pool_idle_timeout(Duration::from_secs(90)) // evict idle connections
+        .tcp_keepalive(Duration::from_secs(30))
         .build()
         .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))?;
     Ok(client)
@@ -183,6 +186,7 @@ pub fn build_pinned_http_client(
     timeout_secs: u64,
     tls: &TlsPinningConfig,
 ) -> anyhow::Result<reqwest::Client> {
+    let timeout_secs = timeout_secs.max(5);
     match &tls.ca_cert_pem {
         Some(pem) => {
             let cert = reqwest::Certificate::from_pem(pem.as_bytes())
@@ -190,8 +194,10 @@ pub fn build_pinned_http_client(
 
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(timeout_secs))
-                .connect_timeout(Duration::from_secs(timeout_secs))
+                .connect_timeout(Duration::from_secs(timeout_secs.min(10)))
                 .pool_max_idle_per_host(4)
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_keepalive(Duration::from_secs(30))
                 .use_native_tls()
                 .add_root_certificate(cert)
                 .min_tls_version(reqwest::tls::Version::TLS_1_2)

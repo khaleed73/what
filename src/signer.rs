@@ -182,7 +182,7 @@ pub fn hmac_signature(message: &str, secret: &str) -> String {
 fn epoch_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("system clock before UNIX epoch")
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
         .as_millis() as u64
 }
 

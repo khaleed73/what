@@ -57,7 +57,7 @@ impl KucoinClient {
     fn encrypted_passphrase(&self) -> Result<String> {
         sign_kucoin_passphrase(
             self.config.api_secret.expose(),
-            self.config.passphrase.as_deref().unwrap_or(""),
+            self.config.passphrase_str(),
         )
     }
 

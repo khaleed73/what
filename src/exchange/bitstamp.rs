@@ -45,7 +45,7 @@ impl BitstampExchange {
 
     /// Generate the next monotonic nonce.
     fn next_nonce(&self) -> u64 {
-        let mut n = self.nonce.lock().expect("BitstampExchange nonce mutex poisoned");
+        let mut n = self.nonce.lock().unwrap_or_else(|e| e.into_inner());
         *n += 1;
         *n
     }

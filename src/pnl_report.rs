@@ -141,7 +141,7 @@ impl TradeLog {
 
         // Append to in-memory store.
         {
-            let mut records = self.records.lock().unwrap();
+            let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             records.push(record.clone());
         }
 
@@ -218,7 +218,7 @@ impl TradeLog {
         };
 
         {
-            let mut records = self.records.lock().unwrap();
+            let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             if let Err(e) = self.append_to_file(&buy_record) {
                 error!(file = %self.file_path, error = %e, "Failed to append buy leg to JSONL");
             }
@@ -329,7 +329,7 @@ impl TradeLog {
         };
 
         {
-            let mut records = self.records.lock().unwrap();
+            let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             for rec in [&record1, &record2, &record3] {
                 if let Err(e) = self.append_to_file(rec) {
                     error!(file = %self.file_path, error = %e, "Failed to append triangular leg to JSONL");
@@ -354,7 +354,7 @@ impl TradeLog {
 
     /// Generate a `PnlReport` from all recorded trades.
     pub async fn generate_report(&self) -> PnlReport {
-        let records = self.records.lock().unwrap();
+        let records = self.records.lock().unwrap_or_else(|e| e.into_inner());
         let trades = records.clone();
 
         let mut total_pnl = Decimal::ZERO;
@@ -400,7 +400,7 @@ impl TradeLog {
             Ok(contents) => {
                 let mut loaded = 0usize;
                 let mut parse_errors = 0usize;
-                let mut records = self.records.lock().unwrap();
+                let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
 
                 for line in contents.lines() {
                     let line = line.trim();
@@ -489,7 +489,7 @@ impl TradeLog {
 
     /// Export all trades to a CSV file at the given path.
     pub async fn export_csv(&self, path: &str) {
-        let records = self.records.lock().unwrap();
+        let records = self.records.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut csv_lines: Vec<String> = Vec::with_capacity(records.len() + 1);
 

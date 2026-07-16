@@ -80,7 +80,7 @@ impl CapitalStarvationDetector {
             };
 
             self.is_starved.store(true, Ordering::SeqCst);
-            *self.last_event.lock().unwrap() = Some(event.clone());
+            *self.last_event.lock().unwrap_or_else(|e| e.into_inner()) = Some(event.clone());
 
             tracing::warn!(
                 exchange_id,
@@ -110,13 +110,13 @@ impl CapitalStarvationDetector {
     /// Clears the starvation flag (e.g. after rebalance completes).
     pub fn clear_starvation(&self) {
         self.is_starved.store(false, Ordering::SeqCst);
-        *self.last_event.lock().unwrap() = None;
+        *self.last_event.lock().unwrap_or_else(|e| e.into_inner()) = None;
         tracing::info!("Capital starvation cleared");
     }
 
     /// Returns the last starvation event, if any.
     pub fn last_event(&self) -> Option<StarvationEvent> {
-        self.last_event.lock().unwrap().clone()
+        self.last_event.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Registers a callback that is invoked whenever starvation is detected

@@ -168,6 +168,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = EngineConfig::load_and_validate("config.toml")?;
     println!("Configuration loaded: {} exchange(s) configured", config.exchanges.len());
 
+    // ------------------------------------------------------------------
+    // 2b. Startup sanity checks — fail fast on dangerous config values
+    // ------------------------------------------------------------------
+    if config.exchanges.is_empty() {
+        return Err("No exchanges configured — nothing to trade. Add at least one [exchanges.<name>] section to config.toml.".into());
+    }
+    if config.exchanges.len() > 64 {
+        return Err(format!(
+            "Too many exchanges configured ({}). Maximum is 64 due to u64 bitmask constraints in the strategy engine.",
+            config.exchanges.len()
+        ).into());
+    }
+    if config.risk.min_net_profit_pct <= Decimal::ZERO {
+        return Err("risk_limits.min_net_profit_pct must be > 0 — a zero threshold would trade at a guaranteed loss.".into());
+    }
+    println!("Startup sanity checks passed");
+
     // Size the arena by the *highest* exchange ID, not the count.
     // Exchange IDs from config are used directly as array indices, so
     // the arena must have at least `max(id) + 1` rows.  If IDs are not
@@ -1050,7 +1067,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     let trade_log = Arc::new(TradeLog::new("trade_log.jsonl".to_string()));
     trade_log.load_existing().await;
-    let existing_count = trade_log.records.lock().unwrap().len();
+    let existing_count = trade_log.records.lock().unwrap_or_else(|e| e.into_inner()).len();
     println!("Trade log initialized — {} existing trades loaded from trade_log.jsonl", existing_count);
     start_daily_pnl_printer(Arc::clone(&trade_log));
 

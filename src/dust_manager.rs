@@ -95,7 +95,7 @@ impl DustManager {
 
         if usd_value < self.dust_threshold_usd {
             // This is dust.
-            let mut inventory = self.dust_inventory.lock().unwrap();
+            let mut inventory = self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner());
 
             // Update existing entry or add new one.
             if let Some(entry) = inventory.iter_mut().find(|e| {
@@ -116,7 +116,7 @@ impl DustManager {
 
     /// Check if total dust exceeds sweep threshold and generate conversion requests.
     pub fn evaluate_and_generate_requests(&self) -> Vec<DustConversionRequest> {
-        let inventory = self.dust_inventory.lock().unwrap();
+        let inventory = self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner());
         let total_dust: Decimal = inventory.iter().map(|e| e.estimated_usd_value).sum();
 
         if total_dust < self.sweep_threshold_usd {
@@ -139,17 +139,17 @@ impl DustManager {
 
     /// Clear the dust inventory (called after a successful sweep).
     pub fn clear_inventory(&self) {
-        self.dust_inventory.lock().unwrap().clear();
+        self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Returns the current dust inventory.
     pub fn get_inventory(&self) -> Vec<DustEntry> {
-        self.dust_inventory.lock().unwrap().clone()
+        self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Returns the total estimated dust value in USD.
     pub fn total_dust_usd(&self) -> Decimal {
-        let inventory = self.dust_inventory.lock().unwrap();
+        let inventory = self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner());
         inventory.iter().map(|e| e.estimated_usd_value).sum()
     }
 }
