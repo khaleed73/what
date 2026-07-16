@@ -705,13 +705,19 @@ impl HighFrequencyExecutionEngine {
         let _lock = match self.execution_mutex.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
-                return Err("execution mutex: another blast is in-flight, signal dropped".into());
+                return Err(format!(
+                    "execution mutex: another blast is in-flight [{}:{} vs {}:{}], signal dropped",
+                    leg_a.exchange_id, leg_a.symbol, leg_b.exchange_id, leg_b.symbol
+                ));
             }
         };
 
         // 0b. Volatility circuit breaker.
         if self.volatility_circuit.load(Ordering::Relaxed) {
-            return Err("aborted: volatility circuit breaker is active (flash crash detected)".into());
+            return Err(format!(
+                "aborted: volatility circuit breaker active [{}:{} vs {}:{}], signal dropped",
+                leg_a.exchange_id, leg_a.symbol, leg_b.exchange_id, leg_b.symbol
+            ));
         }
 
         // 0c. Daily loss limit check (configurable via risk_limits.daily_loss_limit_usd).
@@ -725,7 +731,10 @@ impl HighFrequencyExecutionEngine {
 
         // 2. Stablecoin depeg circuit-breaker.
         if self.depeg_circuit.is_depeg_active().await {
-            return Err("aborted: stablecoin depeg circuit-breaker is active".into());
+            return Err(format!(
+                "aborted: stablecoin depeg circuit-breaker active [{}:{} vs {}:{}], signal dropped",
+                leg_a.exchange_id, leg_a.symbol, leg_b.exchange_id, leg_b.symbol
+            ));
         }
 
         // 3. Pipeline selection.
@@ -885,7 +894,8 @@ impl HighFrequencyExecutionEngine {
         .await
         .map_err(|_| {
             tracing::warn!(
-                "blast_arbitrage_legs total timeout (500ms) — orders may be in-flight, attempting cancellation"
+                "blast_arbitrage_legs total timeout (500ms) [{}:{} vs {}:{}], orders may be in-flight",
+                leg_a.exchange_id, leg_a.symbol, leg_b.exchange_id, leg_b.symbol
             );
             // Note: per-leg 200ms timeouts will handle their own counter-orders if they
             // haven't already fired. In-flight orders that passed per-leg timeout but
@@ -935,13 +945,19 @@ impl HighFrequencyExecutionEngine {
         let _lock = match self.execution_mutex.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
-                return Err("execution mutex: another blast is in-flight, signal dropped".into());
+                return Err(format!(
+                    "execution mutex: another blast is in-flight [{}:{} | {}:{} | {}:{}], signal dropped",
+                    legs[0].exchange_id, legs[0].symbol, legs[1].exchange_id, legs[1].symbol, legs[2].exchange_id, legs[2].symbol
+                ));
             }
         };
 
         // 0b. Volatility circuit breaker.
         if self.volatility_circuit.load(Ordering::Relaxed) {
-            return Err("aborted: volatility circuit breaker is active (flash crash detected)".into());
+            return Err(format!(
+                "aborted: volatility circuit breaker active [{}:{} | {}:{} | {}:{}], signal dropped",
+                legs[0].exchange_id, legs[0].symbol, legs[1].exchange_id, legs[1].symbol, legs[2].exchange_id, legs[2].symbol
+            ));
         }
 
         // 0c. Daily loss limit check (configurable via risk_limits.daily_loss_limit_usd).
@@ -955,7 +971,10 @@ impl HighFrequencyExecutionEngine {
 
         // 2. Stablecoin depeg circuit-breaker.
         if self.depeg_circuit.is_depeg_active().await {
-            return Err("aborted: stablecoin depeg circuit-breaker is active".into());
+            return Err(format!(
+                "aborted: stablecoin depeg circuit-breaker active [{}:{} | {}:{} | {}:{}], signal dropped",
+                legs[0].exchange_id, legs[0].symbol, legs[1].exchange_id, legs[1].symbol, legs[2].exchange_id, legs[2].symbol
+            ));
         }
 
         // 3. Pipeline selection.

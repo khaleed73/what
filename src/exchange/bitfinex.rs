@@ -283,10 +283,14 @@ impl Exchange for BitfinexClient {
         let mut balances = HashMap::new();
         if let Some(arr) = json.as_array() {
             for w in arr {
-                let free: f64 = w[2].as_f64().unwrap_or(0.0);
+                let free: f64 = w[2].as_f64().unwrap_or_else(|| {
+                    let cur = w[1].as_str().unwrap_or("?");
+                    parse_balance_f64(&w[2], "bitfinex", cur);
+                    0.0
+                });
                 if free > 0.0 {
                     let currency = w[1].as_str().unwrap_or("").to_uppercase();
-                    balances.insert(currency, Decimal::from_f64(free).unwrap_or(Decimal::ZERO));
+                    balances.insert(currency, balance_f64_to_decimal(free, "bitfinex", &currency));
                 }
             }
         }

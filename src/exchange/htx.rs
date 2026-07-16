@@ -319,10 +319,14 @@ impl Exchange for HtxClient {
                 let free: f64 = b["balance"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        let cur = b["currency"].as_str().unwrap_or("?");
+                        parse_balance_f64(&b["balance"], "htx", cur);
+                        0.0
+                    });
                 if free > 0.0 {
                     let currency = b["currency"].as_str().unwrap_or("").to_uppercase();
-                    balances.insert(currency, Decimal::from_f64(free).unwrap_or(Decimal::ZERO));
+                    balances.insert(currency, balance_f64_to_decimal(free, "htx", &currency));
                 }
             }
         }

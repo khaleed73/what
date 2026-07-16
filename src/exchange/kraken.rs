@@ -243,7 +243,10 @@ impl Exchange for KrakenClient {
         let mut balances = HashMap::new();
         if let Some(result) = json["result"].as_object() {
             for (asset, val) in result {
-                let free: f64 = val.as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                let free: f64 = val.as_str().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+                    parse_balance_f64(val, "kraken", asset);
+                    0.0
+                });
                 if free > 0.0 {
                     balances.insert(asset.to_string(), free);
                 }
@@ -251,7 +254,7 @@ impl Exchange for KrakenClient {
         }
         Ok(balances
             .into_iter()
-            .map(|(k, v)| (k, Decimal::from_f64(v).unwrap_or(Decimal::ZERO)))
+            .map(|(k, v)| (k, balance_f64_to_decimal(v, "kraken", &k)))
             .collect())
     }
 

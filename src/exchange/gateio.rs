@@ -275,7 +275,11 @@ impl Exchange for GateioClient {
                 let available: f64 = account["available"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        let cur = account["currency"].as_str().unwrap_or("?");
+                        parse_balance_f64(&account["available"], "gateio", cur);
+                        0.0
+                    });
                 if available > 0.0 {
                     balances.insert(
                         account["currency"]
@@ -289,7 +293,7 @@ impl Exchange for GateioClient {
         }
         Ok(balances
             .into_iter()
-            .map(|(k, v)| (k, Decimal::from_f64(v).unwrap_or(Decimal::ZERO)))
+            .map(|(k, v)| (k, balance_f64_to_decimal(v, "gateio", &k)))
             .collect())
     }
 
@@ -592,6 +596,7 @@ impl Exchange for GateioClient {
 
         let timestamp_us = json["current"]
             .as_f64()
+            .filter(|t| t.is_finite() && *t >= 0.0)
             .map(|t| (t * 1000.0) as u64)
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64 * 1000);
 

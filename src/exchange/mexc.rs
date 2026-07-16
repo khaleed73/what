@@ -234,15 +234,18 @@ impl Exchange for MexcExchange {
 
         if let Some(balances_arr) = json["balances"].as_array() {
             for b in balances_arr {
+                let asset = b["asset"].as_str().unwrap_or("").to_uppercase();
                 let free: f64 = b["free"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        parse_balance_f64(&b["free"], "mexc", &asset);
+                        0.0
+                    });
                 if free > 0.0 {
-                    let asset = b["asset"].as_str().unwrap_or("").to_uppercase();
                     balances.insert(
                         asset,
-                        Decimal::from_f64(free).unwrap_or(Decimal::ZERO),
+                        balance_f64_to_decimal(free, "mexc", &asset),
                     );
                 }
             }

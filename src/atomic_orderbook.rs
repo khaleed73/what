@@ -37,7 +37,13 @@ impl AtomicLevel {
     /// Converts a Decimal to fixed-point u64 (9 decimal places).
     fn decimal_to_fp(d: Decimal) -> u64 {
         let scaled = d * Decimal::from(FP_SCALE_U64);
-        scaled.trunc_with_scale(0).to_string().parse::<u64>().unwrap_or(0)
+        match scaled.trunc_with_scale(0).to_string().parse::<u64>() {
+            Ok(fp) => fp,
+            Err(_) => {
+                tracing::warn!(value = %d, "atomic_orderbook decimal_to_fp: parse overflow, defaulting to 0");
+                0
+            }
+        }
     }
 
     /// Converts a fixed-point u64 back to Decimal.

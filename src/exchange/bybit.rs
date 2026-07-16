@@ -278,7 +278,11 @@ impl Exchange for BybitClient {
                             .or_else(|| coin["free"].as_str())
                             .or_else(|| coin["availableToWithdraw"].as_str())
                             .and_then(|s| s.parse().ok())
-                            .unwrap_or(0.0);
+                            .unwrap_or_else(|| {
+                                let coin_name = coin["coin"].as_str().unwrap_or("?");
+                                parse_balance_f64(&coin["availableToTrade"], "bybit", coin_name);
+                                0.0
+                            });
                         if free > 0.0 {
                             balances.insert(coin["coin"].as_str().unwrap_or("").to_string(), free);
                         }
@@ -288,7 +292,7 @@ impl Exchange for BybitClient {
         }
         Ok(balances
             .into_iter()
-            .map(|(k, v)| (k, Decimal::from_f64(v).unwrap_or(Decimal::ZERO)))
+            .map(|(k, v)| (k, balance_f64_to_decimal(v, "bybit", &k)))
             .collect())
     }
 

@@ -222,7 +222,11 @@ impl Exchange for KucoinClient {
                 let available: f64 = account["available"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        let cur = account["currency"].as_str().unwrap_or("?");
+                        parse_balance_f64(&account["available"], "kucoin", cur);
+                        0.0
+                    });
                 if available > 0.0 {
                     balances.insert(
                         account["currency"].as_str().unwrap_or("").to_string(),
@@ -233,7 +237,7 @@ impl Exchange for KucoinClient {
         }
         Ok(balances
             .into_iter()
-            .map(|(k, v)| (k, Decimal::from_f64(v).unwrap_or(Decimal::ZERO)))
+            .map(|(k, v)| (k, balance_f64_to_decimal(v, "kucoin", &k)))
             .collect())
     }
 

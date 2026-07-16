@@ -4,12 +4,14 @@
 // Every exchange client in the `exchange` module imports from here:
 //   `use crate::exchange::common::*;`
 
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use base64::Engine;
 use ring::hmac;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -260,20 +262,51 @@ pub async fn parse_exchange_response(
 // ---------------------------------------------------------------------------
 
 pub fn parse_json_decimal(v: &Value) -> Decimal {
+    parse_json_decimal_inner(v, None)
+}
+
+/// Like [`parse_json_decimal`] but emits a `warn` log when the value cannot be
+/// parsed and falls back to `Decimal::ZERO`. Use this in balance/price
+/// parsing paths where silent zero is dangerous.
+pub fn parse_json_decimal_verbose(v: &Value, context: &str) -> Decimal {
+    parse_json_decimal_inner(v, Some(context))
+}
+
+fn parse_json_decimal_inner(v: &Value, context: Option<&str>) -> Decimal {
     if let Some(s) = v.as_str() {
-        Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+        match Decimal::from_str(s) {
+            Ok(d) => d,
+            Err(e) => {
+                if let Some(ctx) = context {
+                    tracing::warn!(context = ctx, raw = %s, error = %e,
+                        "parse_json_decimal: unparseable string, falling back to ZERO");
+                }
+                Decimal::ZERO
+            }
+        }
     } else if let Some(n) = v.as_i64() {
         Decimal::from(n)
     } else if let Some(f) = v.as_f64() {
-        Decimal::from_f64(f).unwrap_or(Decimal::ZERO)
+        match Decimal::from_f64(f) {
+            Some(d) => d,
+            None => {
+                if let Some(ctx) = context {
+                    tracing::warn!(context = ctx, raw = %f,
+                        "parse_json_decimal: f64 conversion failed (NaN/Inf), falling back to ZERO");
+                }
+                Decimal::ZERO
+            }
+        }
     } else {
+        if let Some(ctx) = context {
+            tracing::warn!(context = ctx, value = %v,
+                "parse_json_decimal: unexpected JSON type, falling back to ZERO");
+        }
         Decimal::ZERO
     }
 }
 
-// Internal trait to avoid importing rust_decimal::prelude in call sites.
-use std::str::FromStr;
-use rust_decimal::prelude::FromPrimitive;
+// Internal trait re-exports — already imported at the top of this file.
 
 // ---------------------------------------------------------------------------
 // extract_order_id — pull an order ID from various JSON shapes
@@ -429,6 +462,39 @@ pub fn sign_kraken(
 pub fn parse_json_f64(v: &Value) -> f64 {
     v.as_f64()
         .unwrap_or(0.0)
+}
+
+/// Parse a balance string to f64, logging when the value is unparseable.
+/// Returns the parsed value or 0.0 on failure (with a warning).
+pub fn parse_balance_f64(v: &Value, exchange: &str, asset: &str) -> f64 {
+    match v.as_str().and_then(|s| s.parse::<f64>().ok()) {
+        Some(f) => f,
+        None => {
+            tracing::warn!(
+                exchange = exchange,
+                asset = asset,
+                raw = %v,
+                "balance value unparseable, defaulting to 0.0"
+            );
+            0.0
+        }
+    }
+}
+
+/// Convert f64 to Decimal for balance, logging when conversion fails (NaN/Inf).
+pub fn balance_f64_to_decimal(f: f64, exchange: &str, asset: &str) -> Decimal {
+    match Decimal::from_f64(f) {
+        Some(d) => d,
+        None => {
+            tracing::warn!(
+                exchange = exchange,
+                asset = asset,
+                raw = %f,
+                "balance f64→Decimal failed (NaN/Inf), defaulting to ZERO"
+            );
+            Decimal::ZERO
+        }
+    }
 }
 
 /// HMAC-SHA256 hex (LBank style).

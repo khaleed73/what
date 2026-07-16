@@ -187,7 +187,14 @@ fn parse_u64_skip_dot(bytes: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     } else {
         // Truncate: divide by 10^(decimal_places - TARGET_DECIMALS)
         let trim = decimal_places - TARGET_DECIMALS;
-        raw_val / 10u64.checked_pow(trim).unwrap_or(1)
+        let divisor = match 10u64.checked_pow(trim) {
+            Some(v) => v,
+            None => {
+                tracing::warn!(trim = trim, "price_normalization: 10^pow overflow, returning None");
+                return None;
+            }
+        };
+        raw_val / divisor
     };
 
     Some((normalized, end))

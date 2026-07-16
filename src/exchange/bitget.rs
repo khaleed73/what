@@ -293,10 +293,14 @@ impl Exchange for BitgetClient {
                 let free: f64 = item["available"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
+                    .unwrap_or_else(|| {
+                        let coin = item["coinName"].as_str().unwrap_or("?");
+                        parse_balance_f64(&item["available"], "bitget", coin);
+                        0.0
+                    });
                 if free > 0.0 {
                     let coin = item["coinName"].as_str().unwrap_or("").to_uppercase();
-                    balances.insert(coin, Decimal::from_f64(free).unwrap_or(Decimal::ZERO));
+                    balances.insert(coin, balance_f64_to_decimal(free, "bitget", &coin));
                 }
             }
         }

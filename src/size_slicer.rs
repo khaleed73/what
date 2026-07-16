@@ -95,7 +95,17 @@ impl SizeSlicer {
 
         // Calculate number of slices.
         let num_slices_f = total_notional / self.max_slice_usd;
-        let num_slices = num_slices_f.ceil().to_u64().unwrap_or(1) as usize;
+        let num_slices = match num_slices_f.ceil().to_u64() {
+            Some(n) => n as usize,
+            None => {
+                tracing::warn!(
+                    total_notional = %total_notional,
+                    max_slice = %self.max_slice_usd,
+                    "size_slicer: num_slices overflow, falling back to 1"
+                );
+                1usize
+            }
+        };
         let num_slices = num_slices.max(1);
 
         // Per-slice quantity (evenly distributed).

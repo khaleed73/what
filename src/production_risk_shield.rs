@@ -236,7 +236,16 @@ impl ProductionRiskShield {
 
 // Helper functions
 fn decimal_to_fp(d: Decimal) -> u64 {
-    (d * Decimal::from(1_000_000_000u64)).to_u64().unwrap_or(0)
+    match (d * Decimal::from(1_000_000_000u64)).to_u64() {
+        Some(fp) => fp,
+        None => {
+            tracing::warn!(
+                value = %d,
+                "decimal_to_fp: overflow capping to u64::MAX — trade will use max fixed-point value"
+            );
+            u64::MAX
+        }
+    }
 }
 
 fn fp_to_decimal(fp: u64) -> Decimal {

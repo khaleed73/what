@@ -275,13 +275,16 @@ impl Exchange for BitstampExchange {
                 // Bitstamp balance keys look like "btc_available", "usd_balance", etc.
                 let amount = val.as_f64().or_else(|| {
                     val.as_str().and_then(|s| s.parse().ok())
-                }).unwrap_or(0.0);
+                }).unwrap_or_else(|| {
+                    parse_balance_f64(val, "bitstamp", key);
+                    0.0
+                });
                 if amount > 0.0 {
                     // Extract asset name from key prefix (e.g. "btc_available" -> "BTC")
                     let asset = key.split('_').next().unwrap_or(key);
                     balances.insert(
                         asset.to_uppercase(),
-                        Decimal::from_f64(amount).unwrap_or(Decimal::ZERO),
+                        balance_f64_to_decimal(amount, "bitstamp", asset),
                     );
                 }
             }

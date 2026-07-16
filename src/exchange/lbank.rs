@@ -325,11 +325,14 @@ impl Exchange for LbankClient {
         if let Some(funds) = json["data"]["funds"].as_object() {
             if let Some(free) = funds.get("free").and_then(|v| v.as_object()) {
                 for (asset, val) in free {
-                    let amount: f64 = val.as_str().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                    let amount: f64 = val.as_str().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+                        parse_balance_f64(val, "lbank", asset);
+                        0.0
+                    });
                     if amount > 0.0 {
                         balances.insert(
                             asset.to_uppercase(),
-                            Decimal::from_f64(amount).unwrap_or(Decimal::ZERO),
+                            balance_f64_to_decimal(amount, "lbank", asset),
                         );
                     }
                 }

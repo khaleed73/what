@@ -303,17 +303,17 @@ impl Exchange for OkxClient {
                     for detail in details {
                         let avail: f64 = parse_json_f64(&detail["availBal"]);
                         if avail > 0.0 {
-                            balances
-                                .insert(detail["ccy"].as_str().unwrap_or("").to_string(), avail);
+                            let ccy = detail["ccy"].as_str().unwrap_or("");
+                            let d = balance_f64_to_decimal(avail, "okx", ccy);
+                            if d > Decimal::ZERO {
+                                balances.insert(ccy.to_string(), d);
+                            }
                         }
                     }
                 }
             }
         }
-        Ok(balances
-            .into_iter()
-            .map(|(k, v)| (k, Decimal::from_f64(v).unwrap_or(Decimal::ZERO)))
-            .collect())
+        Ok(balances)
     }
 
     async fn fetch_symbols(&self) -> Result<Vec<String>> {
@@ -602,7 +602,7 @@ impl Exchange for OkxClient {
         let timestamp_ms = data["ts"]
             .as_str()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64);
 
         Ok(OrderBookSnapshot {
             symbol: symbol.to_string(),
