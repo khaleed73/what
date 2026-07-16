@@ -37,7 +37,7 @@ impl ExchangeRateState {
         Self {
             used_weight: AtomicU64::new(0),
             max_weight: AtomicU64::new(max_weight),
-            pause_threshold: AtomicU32::new((pause_threshold_pct * 10_000.0) as u32),
+            pause_threshold: AtomicU32::new((pause_threshold_pct * 10_000.0).round() as u32),
             is_paused: AtomicBool::new(false),
             paused_at: std::sync::Mutex::new(None),
             cooldown_duration: cooldown,

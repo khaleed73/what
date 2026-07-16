@@ -134,7 +134,7 @@ impl OkxClient {
         if fill_sz > Decimal::ZERO {
             filled_qty = fill_sz;
             avg_price = parse_json_decimal(&data["avgPx"]);
-            status = Self::normalize_okx_state(data["state"].as_str().unwrap_or("filled"));
+            status = Self::normalize_okx_state(data["state"].as_str().unwrap_or("unknown"));
             fee = parse_json_decimal(&data["fee"]);
         }
 

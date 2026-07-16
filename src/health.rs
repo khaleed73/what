@@ -88,7 +88,7 @@ impl HealthMonitor {
     /// * `exchange_id` — Numeric exchange identifier (e.g. 1 = Binance, 2 = Bybit).
     pub fn record_feed_update(&self, exchange_id: u16) {
         let now_ms = Self::now_ms() as i64;
-        let mut map = self.last_feed_update.write().unwrap();
+        let mut map = self.last_feed_update.write().unwrap_or_else(|e| e.into_inner());
         map.entry(exchange_id)
             .or_insert_with(|| AtomicI64::new(now_ms))
             .store(now_ms, Ordering::Relaxed);
@@ -98,7 +98,7 @@ impl HealthMonitor {
     /// within the last `FEED_STALENESS_MS` milliseconds (10 seconds).
     /// Returns `false` if the exchange is not registered or the feed is stale.
     pub fn is_feed_healthy(&self, exchange_id: u16) -> bool {
-        let map = self.last_feed_update.read().unwrap();
+        let map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
         if let Some(ts) = map.get(&exchange_id) {
             let now_ms = Self::now_ms() as i64;
             now_ms.saturating_sub(ts.load(Ordering::Relaxed)) < FEED_STALENESS_MS
@@ -110,7 +110,7 @@ impl HealthMonitor {
     /// Returns `true` if **all** registered data feeds are healthy.
     /// If no feeds have been registered yet, returns `true` (vacuously).
     fn all_feeds_healthy(&self) -> bool {
-        let map = self.last_feed_update.read().unwrap();
+        let map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
         if map.is_empty() {
             return true;
         }
@@ -153,7 +153,7 @@ impl HealthMonitor {
         self.is_healthy.store(healthy, Ordering::Relaxed);
 
         // Build per-exchange feed liveness map.
-        let feed_map = self.last_feed_update.read().unwrap();
+        let feed_map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
         let now_i64 = now as i64;
         let feed_healthy: HashMap<u16, bool> = feed_map
             .iter()

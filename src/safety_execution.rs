@@ -131,7 +131,7 @@ impl SafetyExecutionEngine {
                     }
                 }
             }
-            _ => unreachable!(),
+            other => return Err(format!("Invalid order side '{}'", other)),
         }
 
         // Guard 5: Symbol must be non-empty

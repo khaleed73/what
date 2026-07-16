@@ -373,13 +373,23 @@ impl AutoCapitalRebalancer {
             let network = "arbitrum";
 
             // Build exchange-specific withdrawal payload.
-            let (payload_str, auth_headers) = self.build_withdrawal_request(
+            let (payload_str, auth_headers) = match self.build_withdrawal_request(
                 &req,
                 target_address,
                 network,
                 signer,
                 withdrawal_endpoint,
-            );
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(
+                        from = req.from_exchange_id,
+                        error = %e,
+                        "Stage 2 ABORTED: failed to build withdrawal request"
+                    );
+                    continue;
+                }
+            };
 
             // 5. Payload sanity check — unknown exchanges produce empty payloads.
             //    Sending an empty body to an API endpoint is guaranteed to fail,
@@ -533,8 +543,23 @@ impl AutoCapitalRebalancer {
         network: &str,
         signer: &PrivateApiSigner,
         _endpoint: &str,
-    ) -> (String, reqwest::header::HeaderMap) {
+    ) -> Result<(String, reqwest::header::HeaderMap), String> {
         use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+
+        /// Insert a header, returning Err if the value is not valid ASCII.
+        /// This prevents silently sending empty auth headers that would
+        /// mask internal errors as exchange rejections.
+        fn insert_header(
+            headers: &mut HeaderMap,
+            name: &str,
+            value: &str,
+        ) -> Result<(), String> {
+            headers.insert(
+                name,
+                HeaderValue::from_str(value).map_err(|e| format!("{} header value invalid: {}", name, e))?,
+            );
+            Ok(())
+        }
 
         match req.from_exchange_id {
             // ── Binance withdrawal ─────────────────────────────────────
@@ -556,12 +581,9 @@ impl AutoCapitalRebalancer {
 
                 let mut headers = HeaderMap::new();
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/x-www-form-urlencoded"));
-                headers.insert(
-                    "X-MBX-APIKEY",
-                    HeaderValue::from_str(signer.api_key()).unwrap_or(HeaderValue::from_static("")),
-                );
+                insert_header(&mut headers, "X-MBX-APIKEY", signer.api_key())?;
 
-                (signed_query, headers)
+            Ok((signed_query, headers))
             }
 
             // ── Bybit V5 withdrawal ───────────────────────────────────
@@ -590,12 +612,12 @@ impl AutoCapitalRebalancer {
 
                 let mut headers = HeaderMap::new();
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.insert("X-BAPI-API-KEY", HeaderValue::from_str(signer.api_key()).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("X-BAPI-SIGN", HeaderValue::from_str(&sign).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("X-BAPI-TIMESTAMP", HeaderValue::from_str(&timestamp).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("X-BAPI-RECV-WINDOW", HeaderValue::from_str(&recv_window).unwrap_or(HeaderValue::from_static("")));
+                insert_header(&mut headers, "X-BAPI-API-KEY", signer.api_key())?;
+                insert_header(&mut headers, "X-BAPI-SIGN", &sign)?;
+                insert_header(&mut headers, "X-BAPI-TIMESTAMP", &timestamp)?;
+                insert_header(&mut headers, "X-BAPI-RECV-WINDOW", &recv_window)?;
 
-                (body_str, headers)
+                Ok((body_str, headers))
             }
 
             // ── OKX V5 withdrawal ─────────────────────────────────────
@@ -628,12 +650,12 @@ impl AutoCapitalRebalancer {
 
                 let mut headers = HeaderMap::new();
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.insert("OK-ACCESS-KEY", HeaderValue::from_str(signer.api_key()).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("OK-ACCESS-SIGN", HeaderValue::from_str(&signature).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("OK-ACCESS-TIMESTAMP", HeaderValue::from_str(&timestamp).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("OK-ACCESS-PASSPHRASE", HeaderValue::from_str(signer.passphrase.as_ref().map(|p| p.expose()).unwrap_or("")).unwrap_or(HeaderValue::from_static("")));
+                insert_header(&mut headers, "OK-ACCESS-KEY", signer.api_key())?;
+                insert_header(&mut headers, "OK-ACCESS-SIGN", &signature)?;
+                insert_header(&mut headers, "OK-ACCESS-TIMESTAMP", &timestamp)?;
+                insert_header(&mut headers, "OK-ACCESS-PASSPHRASE", signer.passphrase.as_ref().map(|p| p.expose()).unwrap_or(""))?;
 
-                (body_str, headers)
+                Ok((body_str, headers))
             }
 
             // ── Gate.io V4 withdrawal ─────────────────────────────────
@@ -655,11 +677,11 @@ impl AutoCapitalRebalancer {
 
                 let mut headers = HeaderMap::new();
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.insert("KEY", HeaderValue::from_str(signer.api_key()).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("SIGN", HeaderValue::from_str(&signature).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("Timestamp", HeaderValue::from_str(&timestamp).unwrap_or(HeaderValue::from_static("")));
+                insert_header(&mut headers, "KEY", signer.api_key())?;
+                insert_header(&mut headers, "SIGN", &signature)?;
+                insert_header(&mut headers, "Timestamp", &timestamp)?;
 
-                (body_str, headers)
+                Ok((body_str, headers))
             }
 
             // ── KuCoin V1 withdrawal ──────────────────────────────────
@@ -698,22 +720,18 @@ impl AutoCapitalRebalancer {
 
                 let mut headers = HeaderMap::new();
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.insert("KC-API-KEY", HeaderValue::from_str(signer.api_key()).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("KC-API-SIGN", HeaderValue::from_str(&signature).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("KC-API-TIMESTAMP", HeaderValue::from_str(&timestamp).unwrap_or(HeaderValue::from_static("")));
-                headers.insert("KC-API-PASSPHRASE", HeaderValue::from_str(&passphrase_sign).unwrap_or(HeaderValue::from_static("")));
+                insert_header(&mut headers, "KC-API-KEY", signer.api_key())?;
+                insert_header(&mut headers, "KC-API-SIGN", &signature)?;
+                insert_header(&mut headers, "KC-API-TIMESTAMP", &timestamp)?;
+                insert_header(&mut headers, "KC-API-PASSPHRASE", &passphrase_sign)?;
                 headers.insert("KC-API-KEY-VERSION", HeaderValue::from_static("2"));
 
-                (body_str, headers)
+                Ok((body_str, headers))
             }
 
             // ── Unknown exchange — should never reach here ────────────
             _ => {
-                error!(
-                    exchange_id = req.from_exchange_id,
-                    "Unknown source exchange ID for withdrawal — aborting"
-                );
-                (String::new(), HeaderMap::new())
+                Err(format!("Unknown source exchange ID {} for withdrawal", req.from_exchange_id))
             }
         }
     }

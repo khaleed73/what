@@ -40,6 +40,8 @@ impl PayloadBuffer {
     /// Returns the current written length.
     #[inline(always)]
     pub fn len(&self) -> usize {
+        // SAFETY: Single-threaded by design — `PayloadArena` is `!Send`/`!Sync`.
+        // Only one task ever accesses this buffer at a time.
         unsafe { *self.len.get() }
     }
 
@@ -52,6 +54,7 @@ impl PayloadBuffer {
     /// Clears the buffer (sets length to 0).
     #[inline(always)]
     pub fn clear(&self) {
+        // SAFETY: Single-threaded by design (see `len()`).
         unsafe {
             *self.len.get() = 0;
         }
@@ -65,6 +68,10 @@ impl PayloadBuffer {
         if new_len > PAYLOAD_BUFFER_SIZE {
             return false;
         }
+        // SAFETY: Single-threaded by design (see `len()`).
+        // Bounds check above guarantees `current_len + data.len()` fits within
+        // `PAYLOAD_BUFFER_SIZE`. `copy_nonoverlapping` is safe because
+        // source and destination regions do not overlap (appending to end).
         unsafe {
             let dst = (*self.data.get()).as_mut_ptr() as *mut u8;
             std::ptr::copy_nonoverlapping(data.as_ptr(), dst.add(current_len), data.len());
@@ -90,7 +97,13 @@ impl PayloadBuffer {
     }
 
     /// Returns the written portion as a `&str` (must be valid UTF-8).
+    ///
+    /// # Safety Invariant
+    /// Callers must only write valid UTF-8 data (ASCII param strings).
+    /// If binary data were written, this would be UB.
     pub fn as_str(&self) -> &str {
+        // SAFETY: Single-threaded by design (see `len()`).
+        // All callers write only ASCII param strings, which are valid UTF-8.
         unsafe {
             let ptr = (*self.data.get()).as_ptr() as *const u8;
             let slice = std::slice::from_raw_parts(ptr, self.len());
@@ -100,6 +113,9 @@ impl PayloadBuffer {
 
     /// Returns the written portion as a `&[u8]`.
     pub fn as_bytes(&self) -> &[u8] {
+        // SAFETY: Single-threaded by design (see `len()`).
+        // `self.len()` bytes have been written via `append()`, so the
+        // slice is fully initialized.
         unsafe {
             let ptr = (*self.data.get()).as_ptr() as *const u8;
             std::slice::from_raw_parts(ptr, self.len())

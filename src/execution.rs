@@ -644,22 +644,23 @@ impl HighFrequencyExecutionEngine {
     }
 
     /// Attempt to cancel a live order on the exchange.
-    /// Returns the fill state at the time of cancellation.
+    /// Returns `Ok(true)` if the exchange confirmed cancellation,
+    /// `Ok(false)` if no cancel infrastructure exists (paper mode),
+    /// `Err` if the cancel request failed (order may still be open).
     async fn attempt_exchange_cancel(
         &self,
         exchange_id: u16,
         symbol: &str,
         order_id: &str,
-    ) {
+    ) -> Result<bool, anyhow::Error> {
         let (http, pool) = match (&self.cancel_http_client, &self.cancel_pool) {
             (Some(h), Some(p)) => (h, p),
-            _ => return, // no cancel infrastructure (paper mode)
+            _ => return Ok(false), // no cancel infrastructure (paper mode)
         };
         let client = match pool.get(&exchange_id) {
             Some(c) => c,
             None => {
-                warn!(exchange = exchange_id, "no typed client for cancellation");
-                return;
+                anyhow::bail!("no typed client for exchange {} — cannot cancel", exchange_id);
             }
         };
         match client.cancel_order(http, symbol, order_id).await {
@@ -670,6 +671,7 @@ impl HighFrequencyExecutionEngine {
                     was_filled = result.filled_qty > Decimal::ZERO,
                     "exchange cancellation succeeded"
                 );
+                Ok(true)
             }
             Err(e) => {
                 error!(
@@ -678,9 +680,9 @@ impl HighFrequencyExecutionEngine {
                     error = %e,
                     "exchange cancellation FAILED — order may still be open"
                 );
+                Err(e)
             }
         }
-        self.order_tracker.remove(order_id);
     }
 
     /// Execute a two-leg arbitrage (e.g. buy on exchange A, sell on exchange B).
@@ -1885,12 +1887,21 @@ pub fn spawn_order_cancellation_sweeper(
                         age_secs = age_secs,
                         "cancelling stale live order"
                     );
-                    engine.attempt_exchange_cancel(
+                    match engine.attempt_exchange_cancel(
                         order.exchange_id,
                         &order.symbol,
                         &order.order_id,
-                    ).await;
-                    cancelled += 1;
+                    ).await {
+                        Ok(true) => cancelled += 1,
+                        Ok(false) => {}
+                        Err(e) => {
+                            error!(
+                                order_id = %order.order_id,
+                                error = %e,
+                                "cancel failed for stale order — manual intervention may be needed"
+                            );
+                        }
+                    }
                 }
             }
 

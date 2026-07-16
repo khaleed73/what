@@ -117,12 +117,12 @@ impl TcpOptimizer {
 
     /// Get the pre-built client for an exchange.
     ///
-    /// Panics if the exchange is not registered.
-    pub fn get_client(&self, exchange_id: &str) -> Arc<reqwest::Client> {
+    /// Returns an error if the exchange is not registered.
+    pub fn get_client(&self, exchange_id: &str) -> anyhow::Result<Arc<reqwest::Client>> {
         self.clients
             .get(&exchange_id.to_lowercase())
             .cloned()
-            .unwrap_or_else(|| panic!("Exchange '{}' not registered in TcpOptimizer", exchange_id))
+            .ok_or_else(|| anyhow::anyhow!("Exchange '{}' not registered in TcpOptimizer", exchange_id))
     }
 
     /// Build a single optimized `reqwest::Client`.
@@ -195,8 +195,8 @@ mod tests {
         opt.register_exchange_default("bybit");
 
         assert_eq!(opt.exchange_count(), 2);
-        let _r1 = opt.get_client("binance").post("https://test.com").timeout(std::time::Duration::from_secs(5));
-        let _r2 = opt.get_client("bybit").post("https://test.com").timeout(std::time::Duration::from_secs(5));
+        let _r1 = opt.get_client("binance").unwrap().post("https://test.com").timeout(std::time::Duration::from_secs(5));
+        let _r2 = opt.get_client("bybit").unwrap().post("https://test.com").timeout(std::time::Duration::from_secs(5));
     }
 
     #[test]

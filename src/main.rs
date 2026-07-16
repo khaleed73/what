@@ -1544,7 +1544,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|s| format!("{}USDT", s))
                         .collect();
                     // Only push if the list changed (watch channel ignores dupes).
-                    let _ = signal_symbol_watch.send(syms);
+                    if signal_symbol_watch.send(syms).is_err() {
+                        warn!("signal_symbol_watch receiver dropped — symbol list updates will stop");
+                    }
                 }
             }
 
