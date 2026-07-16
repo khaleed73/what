@@ -634,7 +634,7 @@ impl HighFrequencyExecutionEngine {
     /// `profit_cents` can be negative (loss) or positive (gain).
     fn record_daily_pnl(&self, profit_cents: i64) {
         if profit_cents >= 0 {
-            self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Relaxed);
+            self.daily_profit_cents.fetch_add(profit_cents.unsigned_abs(), Ordering::Relaxed);
         } else {
             self.daily_loss_cents.fetch_add(profit_cents.unsigned_abs(), Ordering::Relaxed);
         }

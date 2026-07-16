@@ -17,7 +17,13 @@ const DEFAULT_SPREAD_CEILING_BPS: u64 = 80;
 
 /// Stores a Decimal as fixed-point u64 with 9 decimal places.
 fn decimal_to_fp(d: Decimal) -> u64 {
-    (d * Decimal::from(1_000_000_000u64)).to_u64().unwrap_or(0)
+    match (d * Decimal::from(1_000_000_000u64)).to_u64() {
+        Some(fp) => fp,
+        None => {
+            tracing::warn!(value = %d, "volatility_guard decimal_to_fp: overflow, capping to u64::MAX (will appear maximally stale)");
+            u64::MAX
+        }
+    }
 }
 
 fn fp_to_decimal(fp: u64) -> Decimal {

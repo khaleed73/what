@@ -1588,15 +1588,29 @@ pub mod bitmex {
     }
 
     /// Parse a Decimal from a JSON Value (string, i64, or f64).
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -1963,15 +1977,29 @@ pub mod bitget {
     }
 
     /// Parse a Decimal from a JSON Value (string, i64, or f64).
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -2286,15 +2314,29 @@ pub mod bitfinex {
     }
 
     /// Parse a Decimal from a JSON Value (string, i64, or f64).
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -2607,15 +2649,29 @@ pub mod kraken {
     }
 
     /// Parse a Decimal from a JSON Value (string, i64, or f64).
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -3069,15 +3125,29 @@ pub mod htx {
     }
 
     /// Parse a Decimal from a JSON Value (string, i64, or f64).
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -3339,7 +3409,11 @@ pub mod lbank {
             let order = &json_val["data"][0];
             let filled_qty = parse_json_decimal(&order["dealQuantity"]);
             let avg_price = parse_json_decimal(&order["avgPrice"]);
-            let status_code = order["status"].as_u64().unwrap_or(0);
+            let status_code = order["status"].as_u64().unwrap_or_else(|| {
+                tracing::warn!(exchange = "LBank (legacy)", raw = %order["status"],
+                    "order status missing — treating as UNKNOWN to prevent phantom order");
+                99 // 99 is not in 0|1|2, so success=false
+            });
             let success = matches!(status_code, 0 | 1 | 2); // 0=NEW, 1=PARTIAL, 2=FILLED
 
             Ok(OrderResult {
@@ -3357,15 +3431,29 @@ pub mod lbank {
     }
 
     /// Parse a Decimal from a JSON Value (string, i64, or f64).
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -3632,15 +3720,29 @@ pub mod bitstamp {
         }
     }
 
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -3951,15 +4053,29 @@ pub mod deribit {
         }
     }
 
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -4198,15 +4314,29 @@ pub mod delta {
         }
     }
 
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -4506,15 +4636,29 @@ pub mod mexc {
         }
     }
 
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }
@@ -4781,15 +4925,29 @@ pub mod ibank {
         }
     }
 
+    /// WARNING: Legacy function — uses silent ZERO fallback with warning logs.
     fn parse_json_decimal(v: &Value) -> Decimal {
         use std::str::FromStr;
         if let Some(s) = v.as_str() {
-            Decimal::from_str(s).unwrap_or(Decimal::ZERO)
+            match Decimal::from_str(s) {
+                Ok(d) => d,
+                Err(_) => {
+                    tracing::warn!(raw = %s, "legacy parse_json_decimal: string parse failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else if let Some(n) = v.as_i64() {
             Decimal::from(n)
         } else if let Some(f) = v.as_f64() {
-            rust_decimal::prelude::FromPrimitive::from_f64(f).unwrap_or(Decimal::ZERO)
+            match rust_decimal::prelude::FromPrimitive::from_f64(f) {
+                Some(d) => d,
+                None => {
+                    tracing::warn!(raw = %f, "legacy parse_json_decimal: f64->Decimal failed, defaulting to ZERO");
+                    Decimal::ZERO
+                }
+            }
         } else {
+            tracing::warn!(raw = %v, "legacy parse_json_decimal: unexpected JSON type, defaulting to ZERO");
             Decimal::ZERO
         }
     }

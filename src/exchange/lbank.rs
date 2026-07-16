@@ -388,12 +388,20 @@ impl Exchange for LbankClient {
         } else {
             &order["fee"]
         });
-        let status = match order["status"].as_u64().unwrap_or(0) {
-            0 => "NEW",
-            1 => "PARTIALLY_FILLED",
-            2 => "FILLED",
-            3 => "CANCELED",
-            _ => "UNKNOWN",
+        let status_raw = order["status"].as_u64();
+        let status = match status_raw {
+            Some(0) => "NEW",
+            Some(1) => "PARTIALLY_FILLED",
+            Some(2) => "FILLED",
+            Some(3) => "CANCELED",
+            Some(code) => {
+                tracing::warn!(exchange = "LBank", code = code, "unrecognized order status code");
+                "UNKNOWN"
+            }
+            None => {
+                tracing::warn!(exchange = "LBank", raw = %order["status"], "order status field missing/null — defaulting to UNKNOWN to prevent phantom order");
+                "UNKNOWN"
+            }
         }
         .to_string();
         Ok(OrderResponse {

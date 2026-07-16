@@ -848,13 +848,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wire the configurable daily loss limit (USD → cents) from config.
     let daily_loss_cents = (config.risk.daily_loss_limit_usd * Decimal::from(100u32))
         .to_u64()
-        .unwrap_or(10_000); // fallback to $100 if conversion overflows
+        .unwrap_or_else(|| {
+            tracing::error!(
+                configured = %config.risk.daily_loss_limit_usd,
+                "daily_loss_limit_usd overflowed u64 — disabling daily loss limit (u64::MAX)"
+            );
+            u64::MAX
+        }); // on overflow, disable the limit rather than tightening to $100
     engine.set_daily_loss_limit_cents(daily_loss_cents);
 
     // In live mode, attach the cancellation infrastructure so the engine
     // can cancel unfilled orders on the actual exchange.
     if !forced_paper {
-        engine.cancel_http_client = Some(reqwest::Client::new());
+        engine.cancel_http_client = Some(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .tcp_nodelay(true)
+                .build()
+                .map_err(|e| anyhow::anyhow!("failed to build cancel HTTP client: {}", e))?
+        );
         engine.cancel_pool = Some(Arc::clone(&execution_pool));
         println!("Live order cancellation wired — unfilled orders will be cancelled on-exchange");
     }

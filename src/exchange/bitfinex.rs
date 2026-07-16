@@ -490,7 +490,7 @@ impl Exchange for BitfinexClient {
         let status = resp.status();
         if status.as_u16() == 429 {
             tracing::warn!("Bitfinex rate limited (HTTP 429) on book {}", bfx_symbol);
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            jittered_rate_limit_sleep().await;
             anyhow::bail!("Rate limited by Bitfinex (HTTP 429) on {}", bfx_symbol);
         }
         if !status.is_success() {

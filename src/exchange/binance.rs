@@ -49,6 +49,23 @@ impl BinanceClient {
         self.rate_limiter.throttle().await;
     }
 
+    /// Handle exchange response with rate limit detection and backoff.
+    async fn handle_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
+        match parse_exchange_response(resp, self.name()).await {
+            Ok(json) => Ok(json),
+            Err(ExchangeError::ApiError {
+                is_rate_limited: true,
+                message,
+                ..
+            }) => {
+                tracing::warn!("{} rate limited, backing off ~1s with jitter: {}", self.name(), message);
+                jittered_rate_limit_sleep().await;
+                anyhow::bail!("Rate limited by {}: {}", self.name(), message);
+            }
+            Err(e) => Err(into_anyhow(e)),
+        }
+    }
+
     /// Cancel all open orders for a single symbol via DELETE /api/v3/openOrders.
     async fn cancel_all_for_symbol(&self, binance_symbol: &str) -> Result<OrderResponse> {
         let timestamp = self.get_binance_timestamp().await?;
@@ -67,7 +84,7 @@ impl BinanceClient {
             .send()
             .await?;
         // Binance returns 200 with empty body on success
-        parse_exchange_response(resp, "Binance").await?;
+        self.handle_response(resp).await?;
         Ok(OrderResponse {
             order_id: format!("cancel-all-{}", binance_symbol),
             client_order_id: String::new(),

@@ -28,7 +28,7 @@ impl CoinbaseClient {
         let timeout_secs = config.http_timeout_secs.unwrap_or(30);
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
-            .connect_timeout(Duration::from_secs(timeout_secs))
+            .connect_timeout(Duration::from_secs(timeout_secs.min(10)))
             .pool_max_idle_per_host(4)
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
@@ -211,7 +211,17 @@ impl Exchange for CoinbaseClient {
         Ok(OrderResponse {
             order_id: order_id.to_string(),
             client_order_id: String::new(),
-            status: json["status"].as_str().unwrap_or("CANCELED").to_string(),
+            status: match json["status"].as_str() {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    tracing::warn!(
+                        context = "cancel_order",
+                        raw = %json["status"],
+                        "Coinbase: cancel response status missing — cannot confirm cancellation"
+                    );
+                    "UNKNOWN".to_string()
+                }
+            },
             filled_qty: Decimal::ZERO,
             avg_price: Decimal::ZERO,
             exchange: self.name.clone(),
