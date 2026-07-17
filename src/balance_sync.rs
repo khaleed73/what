@@ -14,15 +14,25 @@ use tracing::{error, info, warn};
 use crate::balance_allocator::LocalCapitalAllocator;
 use crate::signer::PrivateExchangeClient;
 
-/// Query a single exchange's USDT balance and update the allocator.
+/// Query a single exchange's balance for the given token symbol and update the allocator.
+///
+/// **FIX**: The token symbol is resolved from the `LocalCapitalAllocator` token
+/// registry using `token_id`.  This was previously hardcoded to "USDT", which
+/// meant the sync loop could never be used for BTC, ETH, or other tokens.
 async fn sync_exchange_balance(
     client: &dyn PrivateExchangeClient,
     http: &reqwest::Client,
     exchange_id: u16,
     allocator: &LocalCapitalAllocator,
-    token_id: usize, // usually 0 = USDT
+    token_id: usize,
 ) -> Result<Decimal, String> {
-    let balance = client.get_balance(http, "USDT").await?;
+    // Resolve the token symbol from the allocator's registry.
+    // Fall back to "USDT" if the token_id is not registered (should not happen
+    // in normal operation since USDT is always registered at id 0).
+    let symbol = allocator
+        .get_symbol(token_id as u16)
+        .unwrap_or_else(|| "USDT".to_string());
+    let balance = client.get_balance(http, &symbol).await?;
     allocator.update_balance_atomic(exchange_id as usize, token_id, balance);
     Ok(balance)
 }
