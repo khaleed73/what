@@ -32,6 +32,12 @@ pub struct StablecoinProtectionCircuit {
     /// Depeg detection threshold — if `|price - 1.0| > threshold`, trip.
     /// Default: 0.005 (0.5% off peg).
     threshold: Decimal,
+    /// Number of consecutive in-range price updates required before
+    /// clearing a depeg state (hysteresis).  Default: 10.
+    recovery_ticks_required: AtomicU64,
+    /// Current count of consecutive in-range ticks (reset to 0 on any
+    /// depegged tick).
+    recovery_tick_count: AtomicU64,
     /// Last known price of the stablecoin.
     last_price: std::sync::atomic::AtomicU64,
     /// Volatility multiplier in fixed-point (10000 = 1.0x). The effective
@@ -50,6 +56,8 @@ impl StablecoinProtectionCircuit {
             target_symbol: symbol.to_uppercase(),
             is_depegged: AtomicBool::new(false),
             threshold: dec!(0.005),
+            recovery_ticks_required: AtomicU64::new(10),
+            recovery_tick_count: AtomicU64::new(0),
             last_price: std::sync::atomic::AtomicU64::new(1_000_000u64), // $1.00 in fixed-point (6 decimals)
             volatility_multiplier: AtomicU64::new(10_000), // 1.0x in fixed-point
         }
@@ -62,6 +70,8 @@ impl StablecoinProtectionCircuit {
             target_symbol: symbol.to_uppercase(),
             is_depegged: AtomicBool::new(false),
             threshold,
+            recovery_ticks_required: AtomicU64::new(10),
+            recovery_tick_count: AtomicU64::new(0),
             last_price: std::sync::atomic::AtomicU64::new(1_000_000u64),
             volatility_multiplier: AtomicU64::new(10_000), // 1.0x in fixed-point
         }
@@ -118,25 +128,41 @@ impl StablecoinProtectionCircuit {
         let should_depeg = deviation > effective_threshold;
         let was_depegged = self.is_depegged.load(Ordering::SeqCst);
 
-        if should_depeg && !was_depegged {
-            tracing::warn!(
-                symbol = %self.target_symbol,
-                price = %price,
-                deviation = %deviation,
-                threshold = %self.threshold,
-                "DEPEG detected — trading frozen for {}",
-                self.target_symbol
-            );
-        } else if !should_depeg && was_depegged {
-            tracing::info!(
-                symbol = %self.target_symbol,
-                price = %price,
-                "Peg restored — trading resumed for {}",
-                self.target_symbol
-            );
-        }
+        if should_depeg {
+            // Reset recovery counter on any depegged tick.
+            self.recovery_tick_count.store(0, Ordering::SeqCst);
 
-        self.is_depegged.store(should_depeg, Ordering::SeqCst);
+            if !was_depegged {
+                tracing::warn!(
+                    symbol = %self.target_symbol,
+                    price = %price,
+                    deviation = %deviation,
+                    threshold = %self.threshold,
+                    "DEPEG detected — trading frozen for {}",
+                    self.target_symbol
+                );
+            }
+            self.is_depegged.store(true, Ordering::SeqCst);
+        } else if was_depegged {
+            // Hysteresis: require N consecutive in-range ticks before clearing.
+            let count = self.recovery_tick_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let required = self.recovery_ticks_required.load(Ordering::SeqCst).max(1);
+            if count >= required {
+                tracing::info!(
+                    symbol = %self.target_symbol,
+                    price = %price,
+                    recovery_ticks = count,
+                    "Peg restored after {} consecutive in-range ticks — trading resumed for {}",
+                    count,
+                    self.target_symbol
+                );
+                self.is_depegged.store(false, Ordering::SeqCst);
+                self.recovery_tick_count.store(0, Ordering::SeqCst);
+            }
+        } else {
+            // Normal state — reset counter.
+            self.recovery_tick_count.store(0, Ordering::SeqCst);
+        }
     }
 
     /// Returns the current depeg state.

@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Default spread ceiling: 0.08% (80 basis points).
+/// Default spread ceiling: 0.80% (80 basis points).
 const DEFAULT_SPREAD_CEILING_BPS: u64 = 80;
 
 /// Stores a Decimal as fixed-point u64 with 9 decimal places.

@@ -137,7 +137,7 @@ impl Exchange for MexcExchange {
         let json = self.handle_response(resp).await?;
 
         let order_id = extract_order_id(&json["orderId"])
-            .unwrap_or_else(|_| "unknown".to_string());
+            .map_err(|e| anyhow::anyhow!("MEXC: failed to extract order ID: {}", e))?;
 
         let filled_qty = parse_json_decimal(&json["filledQty"]);
         let avg_price = parse_json_decimal(&json["avgPrice"]);
@@ -478,7 +478,7 @@ impl Exchange for MexcExchange {
         let json = self.handle_response(resp).await?;
 
         let order_id = extract_order_id(&json["orderId"])
-            .unwrap_or_else(|_| "unknown".to_string());
+            .map_err(|e| anyhow::anyhow!("MEXC: failed to extract order ID: {}", e))?;
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         Ok(OrderResponse {
@@ -573,7 +573,7 @@ impl Exchange for MexcExchange {
         let json = self.handle_response(resp).await?;
 
         let order_id = extract_order_id(&json["orderId"])
-            .unwrap_or_else(|_| "unknown".to_string());
+            .map_err(|e| anyhow::anyhow!("MEXC: failed to extract order ID: {}", e))?;
 
         let filled_qty = parse_json_decimal(&json["filledQty"]);
         let avg_price = parse_json_decimal(&json["avgPrice"]);

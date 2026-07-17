@@ -336,8 +336,31 @@ impl Exchange for BitfinexClient {
         let parsed_id = order_id
             .parse::<i64>()
             .map_err(|_| anyhow::anyhow!("Bitfinex: invalid order_id '{}'", order_id))?;
+        // Try open orders first, then fall back to history.
+        // Bitfinex splits orders: active ones in /auth/r/orders, closed in /auth/r/orders/hist.
         let body = serde_json::json!([0, "order_multi", null, { "ids": [parsed_id] }]);
-        let json = self.auth_post("/auth/r/orders/hist", body).await?;
+        let json = match self.auth_post("/auth/r/orders", body.clone()).await {
+            Ok(j) => {
+                let arr = j.as_array();
+                // If the open-orders endpoint returned a non-empty array with our order, use it.
+                if let Some(orders) = arr {
+                    if orders.iter().any(|ord| {
+                        ord.as_array()
+                            .and_then(|a| a.get(0))
+                            .and_then(|v| v.as_i64())
+                            == Some(parsed_id)
+                    }) {
+                        j
+                    } else {
+                        // Not found in open orders — try history.
+                        self.auth_post("/auth/r/orders/hist", body).await?
+                    }
+                } else {
+                    self.auth_post("/auth/r/orders/hist", body).await?
+                }
+            }
+            Err(_) => self.auth_post("/auth/r/orders/hist", body).await?,
+        };
 
         // Bitfinex order history returns an array of order objects.
         // Each order is itself an array with indices:

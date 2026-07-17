@@ -141,7 +141,9 @@ impl TriPathFinder {
 
         let mut best_profit = vec![f64::INFINITY; n];
         let mut predecessor = vec![-1isize; n];
-        let mut predecessor_edge = vec![0usize; n];
+        // Stores the predecessor node index (source node of the best edge).
+        // Named `_predecessor_node` to clarify it is NOT an edge index.
+        let mut _predecessor_node = vec![0usize; n];
         let mut profitable_paths = Vec::new();
 
         // Bellman-Ford relaxation (exactly 3 iterations for triangular).
@@ -153,7 +155,7 @@ impl TriPathFinder {
                     if new_dist < best_profit[edge.to] {
                         best_profit[edge.to] = new_dist;
                         predecessor[edge.to] = u as isize;
-                        predecessor_edge[edge.to] = u; // store source for pair lookup
+                        _predecessor_node[edge.to] = u;
                         updated = true;
                     }
                 }

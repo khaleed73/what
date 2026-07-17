@@ -1225,11 +1225,16 @@ impl HighFrequencyExecutionEngine {
             exchange_id: original.exchange_id,
             token_id: original.token_id,
             qty: filled.filled_qty.max(Decimal::ZERO),
-            // Nudge price 0.1% in adverse direction to ensure the counter-order fills.
+            // Nudge price 0.1% in adverse direction to guarantee the counter-order fills.
+            // Counter-order is the OPPOSITE side of the original, so:
+            //   - Original was BUY (we hold long) → counter is SELL → nudge DOWN (accept less)
+            //   - Original was SELL (we hold short) → counter is BUY → nudge UP (pay more)
             price: if original.is_buy {
-                filled.avg_price * (Decimal::new(1001, 3)) // 1.001 → +0.1%
-            } else {
+                // Counter: SELL — nudge price DOWN 0.1% to accept a worse sell price
                 filled.avg_price * (Decimal::new(999, 3)) // 0.999 → -0.1%
+            } else {
+                // Counter: BUY — nudge price UP 0.1% to pay a worse buy price
+                filled.avg_price * (Decimal::new(1001, 3)) // 1.001 → +0.1%
             },
             is_buy: !original.is_buy,
             symbol: original.symbol.clone(),

@@ -120,19 +120,13 @@ impl AsyncPersistenceWorker {
                             }
                         }
                         Err(err) => {
-                            // File doesn't exist yet or is corrupt – write a fresh default.
+                            // File doesn't exist yet or is corrupt — skip this
+                            // tick.  Writing a default state here would wipe the
+                            // in-memory P&L and balances, which is catastrophic.
                             tracing::warn!(
                                 error = %err,
-                                "periodic flush could not load state; writing default"
+                                "periodic flush could not load state; skipping write to avoid wiping in-memory data"
                             );
-                            let default = PersistentState::default();
-                            if let Err(err) = self.save_state(&default).await {
-                                tracing::error!(
-                                    path = %self.state_file_path,
-                                    error = %err,
-                                    "failed to write default state during periodic flush"
-                                );
-                            }
                         }
                     }
                 }

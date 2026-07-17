@@ -53,11 +53,18 @@ impl ExchangeRateState {
 
     fn record_weight(&self, weight: u64) -> RateLimitStatus {
         if self.is_paused.load(Ordering::SeqCst) {
-            // Check if cooldown has elapsed.
+            // Check if cooldown has elapsed — use extended cooldown
+            // when consecutive violations exceed the threshold.
             let should_resume = {
                 let guard = self.paused_at.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(paused_at) = *guard {
-                    paused_at.elapsed() >= self.cooldown_duration
+                    let violations = self.consecutive_violations.load(Ordering::SeqCst);
+                    let effective_cooldown = if violations >= self.max_violations_before_extended {
+                        self.cooldown_duration * 3
+                    } else {
+                        self.cooldown_duration
+                    };
+                    paused_at.elapsed() >= effective_cooldown
                 } else {
                     false
                 }
@@ -66,16 +73,23 @@ impl ExchangeRateState {
             if should_resume {
                 self.is_paused.store(false, Ordering::SeqCst);
                 *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                // Reset weight counter for new window.
+                // Reset weight counter and violation count for new window.
                 self.used_weight.store(weight, Ordering::SeqCst);
+                self.consecutive_violations.store(0, Ordering::SeqCst);
                 return RateLimitStatus::Ok;
             }
             return RateLimitStatus::Paused {
                 remaining_ms: {
                     let guard = self.paused_at.lock().unwrap_or_else(|e| e.into_inner());
+                    let violations = self.consecutive_violations.load(Ordering::SeqCst);
+                    let effective_cooldown = if violations >= self.max_violations_before_extended {
+                        self.cooldown_duration * 3
+                    } else {
+                        self.cooldown_duration
+                    };
                     guard
                         .map(|t| {
-                            let remaining = self.cooldown_duration.saturating_sub(t.elapsed());
+                            let remaining = effective_cooldown.saturating_sub(t.elapsed());
                             remaining.as_millis() as u64
                         })
                         .unwrap_or(0)

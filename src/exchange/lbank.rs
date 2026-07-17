@@ -349,7 +349,7 @@ impl Exchange for LbankClient {
         let pairs: Vec<String> = text
             .trim_matches('"')
             .split(',')
-            .map(|s| s.trim().to_string())
+            .map(|s| s.trim().to_string().replace("_", "/"))
             .filter(|s| !s.is_empty())
             .collect();
         Ok(pairs)

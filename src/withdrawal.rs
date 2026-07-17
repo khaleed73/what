@@ -661,9 +661,10 @@ impl WithdrawalExecutor {
             .map_err(|e| format!("GateIO body serialize: {}", e))?;
 
         let timestamp = epoch_secs().to_string();
-        let signature = hmac_hex(&creds.api_secret, &body_str);
-
         let url = format!("{}/api/v4/withdrawals", base_url);
+        let path = "/api/v4/withdrawals";
+        let preimage = format!("{}{}{}{}", timestamp, "POST", path, body_str);
+        let signature = hmac_hex(&creds.api_secret, &preimage);
 
         let resp = self
             .http_client
@@ -746,7 +747,7 @@ impl WithdrawalExecutor {
             "currency": req.currency,
             "amount": req.amount.to_string(),
             "address": req.address,
-            "chain": format!("{}_{}", req.network, req.network),
+            "chain": req.network.clone(),
             "memo": "",
         });
         let body_str = serde_json::to_string(&body_map)

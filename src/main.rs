@@ -1309,11 +1309,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source_balance = %best_bal,
                 "starvation_callback: dispatching rebalance request"
             );
+            // Look up the USDT token ID dynamically from the allocator's
+            // registry rather than hardcoding 0.  This prevents breakage if
+            // the token registration order in main() ever changes.
+            let usdt_token_id = cb_allocator
+                .get_id("USDT")
+                .unwrap_or(0); // fallback: 0 is the convention for USDT
             let send_result = cb_rebalance_tx.try_send(
                 rebalancer::RebalanceRequest {
                     from_exchange_id: best_src,
                     to_exchange_id: starved_exchange_id,
-                    token_id: 0,
+                    token_id: usdt_token_id,
                     amount: transfer_amount,
                     token_symbol: "USDT".to_string(),
                 },

@@ -152,7 +152,7 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
         i += 1;
     }
 
-    if is_execution_report && !trade_id_str.is_empty() && balance_decimal > Decimal::ZERO {
+    if is_execution_report && !trade_id_str.is_empty() && balance_decimal >= Decimal::ZERO {
         Some(ExecutionReport {
             token_id,
             trade_id_str,

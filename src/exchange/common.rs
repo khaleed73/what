@@ -75,7 +75,7 @@ impl RateLimiter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
-        let last = self.last_call.load(Ordering::Relaxed);
+        let last = self.last_call.load(Ordering::Acquire);
 
         if last > 0 {
             if let Some(sleep_us) = (last + self.min_interval_us).checked_sub(now_us) {
@@ -85,7 +85,7 @@ impl RateLimiter {
             }
         }
 
-        self.last_call.store(now_us, Ordering::Relaxed);
+        self.last_call.store(now_us, Ordering::Release);
     }
 }
 

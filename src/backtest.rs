@@ -132,9 +132,9 @@ impl BacktestResult {
         lines.push("═".repeat(60));
         lines.push("  BACKTEST RESULTS".to_string());
         lines.push("═".repeat(60));
-        lines.push(format!("  Total P&L:        ${:.2}", self.total_pnl));
+        lines.push(format!("  Gross P&L:        ${:.2}", self.total_pnl + self.total_fees));
         lines.push(format!("  Total Fees:       ${:.2}", self.total_fees));
-        lines.push(format!("  Net P&L:          ${:.2}", self.total_pnl - self.total_fees));
+        lines.push(format!("  Net P&L:          ${:.2}", self.total_pnl));
         lines.push(format!("  Total Trades:     {}", self.total_trades));
         lines.push(format!("  Win Rate:         {:.2}%", self.win_rate * Decimal::from(100u64)));
         lines.push(format!("  Max Drawdown:     {:.2}%", self.max_drawdown * Decimal::from(100u64)));

@@ -619,8 +619,8 @@ impl Exchange for DeribitExchange {
                 arr.iter()
                     .take(depth as usize)
                     .filter_map(|entry| {
-                        let price = parse_json_decimal(&entry[1]);
-                        let quantity = parse_json_decimal(&entry[2]);
+                        let price = parse_json_decimal(&entry[0]);
+                        let quantity = parse_json_decimal(&entry[1]);
                         if price > Decimal::ZERO {
                             Some(OrderBookLevel { price, quantity })
                         } else {
@@ -637,8 +637,8 @@ impl Exchange for DeribitExchange {
                 arr.iter()
                     .take(depth as usize)
                     .filter_map(|entry| {
-                        let price = parse_json_decimal(&entry[1]);
-                        let quantity = parse_json_decimal(&entry[2]);
+                        let price = parse_json_decimal(&entry[0]);
+                        let quantity = parse_json_decimal(&entry[1]);
                         if price > Decimal::ZERO {
                             Some(OrderBookLevel { price, quantity })
                         } else {

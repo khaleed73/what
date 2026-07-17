@@ -21,14 +21,14 @@ use crate::execution::HighFrequencyExecutionEngine;
 /// Configuration for the metrics HTTP endpoint.
 #[derive(Debug, Clone)]
 pub struct MetricsConfig {
-    /// Bind address for the metrics server (default "0.0.0.0:9090").
+    /// Bind address for the metrics server (default "127.0.0.1:9090").
     pub bind_addr: String,
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "0.0.0.0:9090".to_string(),
+            bind_addr: "127.0.0.1:9090".to_string(),
         }
     }
 }

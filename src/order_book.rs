@@ -151,7 +151,7 @@ impl OrderBook {
             _ => return true, // No valid reference — allow everything
         };
         if price <= Decimal::ZERO {
-            return true; // Zero-price removals are handled elsewhere
+            return false; // Reject zero and negative prices
         }
         let upper = ref_price * Decimal::from(10u32);
         let lower = ref_price / Decimal::from(10u32);

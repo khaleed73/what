@@ -81,13 +81,17 @@ impl CrossExchangeTarget {
     /// Add an exchange to the bitmask.
     #[inline]
     pub fn add_exchange(&mut self, exchange_id: u16) {
-        self.exchange_mask |= 1u64 << exchange_id;
+        if exchange_id < 64 {
+            self.exchange_mask |= 1u64 << exchange_id;
+        }
     }
 
     /// Remove an exchange from the bitmask.
     #[inline]
     pub fn remove_exchange(&mut self, exchange_id: u16) {
-        self.exchange_mask &= !(1u64 << exchange_id);
+        if exchange_id < 64 {
+            self.exchange_mask &= !(1u64 << exchange_id);
+        }
     }
 
     /// Check if an exchange carries this token.

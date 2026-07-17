@@ -68,10 +68,12 @@ impl HealthMonitor {
     }
 
     /// Increment the trade-error counter.
+    /// NOTE: This does NOT update `last_trade_time_ms` — only successful
+    /// trades should reset the staleness timer.  Otherwise, a stream of
+    /// errors would make the system appear healthy.
     #[inline]
     pub fn record_trade_error(&self) {
         self.total_trade_errors.fetch_add(1, Ordering::Relaxed);
-        self.last_trade_time_ms.store(Self::now_ms(), Ordering::Relaxed);
     }
 
     /// Increment the WebSocket reconnect counter.

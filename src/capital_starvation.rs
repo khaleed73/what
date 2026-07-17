@@ -80,7 +80,10 @@ impl CapitalStarvationDetector {
             };
 
             self.is_starved.store(true, Ordering::SeqCst);
-            *self.last_event.lock().unwrap_or_else(|e| e.into_inner()) = Some(event.clone());
+            {
+                let mut guard = self.last_event.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = Some(event.clone());
+            } // Lock dropped before callback invocation.
 
             tracing::warn!(
                 exchange_id,
@@ -91,6 +94,8 @@ impl CapitalStarvationDetector {
             );
 
             // Invoke the starvation callback if one is registered.
+            // The lock is NOT held here — this prevents deadlock if the
+            // callback calls `clear_starvation()`.
             if let Some(ref cb) = self.starvation_callback {
                 cb(exchange_id as u16);
             }

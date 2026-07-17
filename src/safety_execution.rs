@@ -224,9 +224,14 @@ impl SafetyExecutionEngine {
 
     /// Builds a counter-order (emergency unwind) for risk mitigation.
     /// Used when a multi-leg execution fails on one leg and existing fills must be reversed.
+    ///
+    /// `filled_quantity_override` — if `Some(q)`, use the actual filled quantity
+    /// instead of `original.quantity`.  This prevents reversing more than was
+    /// actually filled on partial IOC fills.
     pub fn build_counter_order(
         original: &SafeOrderPayload,
         adverse_nudge_bps: u64,
+        filled_quantity_override: Option<Decimal>,
     ) -> SafeOrderPayload {
         let nudge_factor = Decimal::from(adverse_nudge_bps) / dec!(10000.0);
         let counter_side = if original.side == "BUY" { "SELL" } else { "BUY" };
@@ -238,6 +243,12 @@ impl SafetyExecutionEngine {
             original.price * (Decimal::ONE + nudge_factor)
         };
 
+        // Use the actual filled quantity when available, otherwise fall back
+        // to the original requested quantity.
+        let counter_qty = filled_quantity_override
+            .filter(|q| *q > Decimal::ZERO)
+            .unwrap_or(original.quantity);
+
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -248,7 +259,7 @@ impl SafetyExecutionEngine {
             side: counter_side.to_string(),
             order_type: SafeOrderType::Ioc, // Always IOC for emergency unwinds
             price: counter_price,
-            quantity: original.quantity,
+            quantity: counter_qty,
             time_in_force: "IOC".to_string(),
             client_order_id: format!("COUNTER-{}-{}-{:x}", original.exchange_id, timestamp_ms, timestamp_ms % 9999),
             timestamp_ms,
@@ -396,7 +407,7 @@ mod tests {
             Some(dec!(49990.0)), Some(dec!(50000.0)),
         ).unwrap();
 
-        let counter = SafetyExecutionEngine::build_counter_order(&original, 10); // 10 bps adverse
+        let counter = SafetyExecutionEngine::build_counter_order(&original, 10, None); // 10 bps adverse
         assert_eq!(counter.side, "SELL");
         assert_eq!(counter.order_type, SafeOrderType::Ioc);
         assert!(counter.price < original.price); // Sell at slightly lower price
@@ -410,7 +421,7 @@ mod tests {
             Some(dec!(50000.0)), Some(dec!(50010.0)),
         ).unwrap();
 
-        let counter = SafetyExecutionEngine::build_counter_order(&original, 10);
+        let counter = SafetyExecutionEngine::build_counter_order(&original, 10, None);
         assert_eq!(counter.side, "BUY");
         assert!(counter.price > original.price); // Buy at slightly higher price
     }

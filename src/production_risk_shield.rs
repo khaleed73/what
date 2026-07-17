@@ -177,9 +177,14 @@ impl ProductionRiskShield {
         // Apply lot step truncation (floor to exchange step size).
         let truncated_qty = self.truncate_lot_step(total_qty);
 
-        // Compute VWAP.
-        let vwap = if truncated_qty > Decimal::ZERO {
-            total_cost / truncated_qty
+        // Recompute the cost for the truncated quantity to get an accurate VWAP.
+        // Walking the book again for the truncated qty is expensive, so we
+        // approximate: scale total_cost proportionally to the truncation ratio.
+        let vwap = if truncated_qty > Decimal::ZERO && total_qty > Decimal::ZERO {
+            // Scale cost by the ratio of truncated to total.
+            let truncation_ratio = truncated_qty / total_qty;
+            let scaled_cost = total_cost * truncation_ratio;
+            scaled_cost / truncated_qty
         } else {
             Decimal::ZERO
         };

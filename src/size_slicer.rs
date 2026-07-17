@@ -110,35 +110,37 @@ impl SizeSlicer {
 
         // Per-slice quantity (evenly distributed).
         let base_qty = quantity / Decimal::from(num_slices);
-        let remainder = quantity - base_qty * Decimal::from(num_slices);
+        let remainder_units = (quantity - base_qty * Decimal::from(num_slices)).to_u64().unwrap_or(0) as usize;
 
         let mut slices = Vec::with_capacity(num_slices);
         let mut allocated = Decimal::ZERO;
+        let mut merged_qty = Decimal::ZERO;
 
         for i in 0..num_slices {
-            // Distribute remainder across first N slices.
-            let extra = if i < remainder.to_u64().unwrap_or(0) as usize {
-                Decimal::ONE / Decimal::from(num_slices)
+            // Distribute one unit of remainder across first N slices.
+            let extra = if i < remainder_units {
+                Decimal::ONE
             } else {
                 Decimal::ZERO
             };
 
-            let slice_qty = base_qty + extra;
+            let slice_qty = base_qty + extra + merged_qty;
+            merged_qty = Decimal::ZERO; // merged qty applied to this slice
 
             // Don't create slices below minimum notional (except the last one).
             let slice_notional = slice_qty * price;
             if slice_notional < self.min_slice_usd && i < num_slices - 1 {
-                // Merge into next slice.
-                allocated += slice_qty;
+                // Merge into next slice — accumulate the quantity rather than losing it.
+                merged_qty = slice_qty;
                 continue;
             }
 
             slices.push(OrderSlice {
-                index: i,
+                index: slices.len(), // Re-index after potential merges
                 quantity: slice_qty,
                 price,
                 notional: slice_notional,
-                total_slices: num_slices,
+                total_slices: 0, // Will be set after the loop
             });
 
             allocated += slice_qty;
@@ -153,6 +155,12 @@ impl SizeSlicer {
                 notional: total_notional,
                 total_slices: 1,
             });
+        } else {
+            // Fix total_slices to reflect actual count after merges.
+            let actual_count = slices.len();
+            for s in slices.iter_mut() {
+                s.total_slices = actual_count;
+            }
         }
 
         slices
