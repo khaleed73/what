@@ -6,10 +6,8 @@
 //! Supports market and limit order types with rate limit detection and backoff.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::time::Duration;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;
@@ -276,7 +274,7 @@ impl Exchange for BitstampExchange {
                 let amount = val.as_f64().or_else(|| {
                     val.as_str().and_then(|s| s.parse().ok())
                 }).unwrap_or_else(|| {
-                    parse_balance_f64(val, "bitstamp", key);
+                    let _ = parse_balance_f64(val, "bitstamp", key);
                     0.0
                 });
                 if amount > 0.0 && key.ends_with("_available") {

@@ -5,11 +5,9 @@
 //! order types with rate limit detection and backoff.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;
@@ -330,7 +328,7 @@ impl Exchange for HtxClient {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| {
                         let cur = b["currency"].as_str().unwrap_or("?");
-                        parse_balance_f64(&b["balance"], "htx", cur);
+                        let _ = parse_balance_f64(&b["balance"], "htx", cur);
                         0.0
                     });
                 if free > 0.0 {

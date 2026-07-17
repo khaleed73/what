@@ -5,10 +5,8 @@
 //! limit, IOC, and FOK order types with rate limit detection and backoff.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::time::Duration;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;
@@ -244,7 +242,7 @@ impl Exchange for KrakenClient {
         if let Some(result) = json["result"].as_object() {
             for (asset, val) in result {
                 let free: f64 = val.as_str().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    parse_balance_f64(val, "kraken", asset);
+                    let _ = parse_balance_f64(val, "kraken", asset);
                     0.0
                 });
                 if free > 0.0 {

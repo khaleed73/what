@@ -6,10 +6,8 @@
 //! are performed in both directions.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::time::Duration;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;
@@ -277,7 +275,7 @@ impl Exchange for GateioClient {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| {
                         let cur = account["currency"].as_str().unwrap_or("?");
-                        parse_balance_f64(&account["available"], "gateio", cur);
+                        let _ = parse_balance_f64(&account["available"], "gateio", cur);
                         0.0
                     });
                 if available > 0.0 {

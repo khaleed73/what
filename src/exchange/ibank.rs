@@ -16,7 +16,6 @@ use base64::Engine;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;

@@ -136,7 +136,7 @@ fn parse_u16_at(bytes: &[u8], mut pos: usize) -> Option<(u16, usize)> {
 const TARGET_DECIMALS: u32 = 9;
 
 #[inline]
-fn parse_u64_skip_dot(bytes: &[u8], mut pos: usize) -> Option<(u64, usize)> {
+fn parse_u64_skip_dot(bytes: &[u8], pos: usize) -> Option<(u64, usize)> {
     let len = bytes.len();
     let start = pos;
 

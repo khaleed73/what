@@ -5,10 +5,8 @@
 //! and FOK order types with rate limit detection and backoff.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use std::time::Duration;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;
@@ -295,7 +293,7 @@ impl Exchange for BitgetClient {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| {
                         let coin = item["coinName"].as_str().unwrap_or("?");
-                        parse_balance_f64(&item["available"], "bitget", coin);
+                        let _ = parse_balance_f64(&item["available"], "bitget", coin);
                         0.0
                     });
                 if free > 0.0 {

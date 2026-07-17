@@ -844,8 +844,8 @@ struct BinanceDepth {
     #[allow(dead_code)]
     s: Option<String>,
     /// Last update ID.
-    #[serde(default)]
-    lastUpdateId: u64,
+    #[serde(rename = "lastUpdateId", default)]
+    last_update_id: u64,
     /// Bids: `[["price", "qty"], ...]`
     b: Vec<Vec<serde_json::Value>>,
     /// Asks: `[["price", "qty"], ...]`
@@ -868,15 +868,16 @@ struct OkxArg {
     #[allow(dead_code)]
     channel: Option<String>,
     #[allow(dead_code)]
-    instId: Option<String>,
+    #[serde(rename = "instId")]
+    inst_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct OkxBookData {
     bids: Vec<Vec<serde_json::Value>>,
     asks: Vec<Vec<serde_json::Value>>,
-    #[serde(default)]
-    seqId: Option<String>,
+    #[serde(rename = "seqId", default)]
+    seq_id: Option<String>,
 }
 
 // --- Bybit orderbook ---
@@ -961,8 +962,8 @@ struct GateIOBookResult {
     s: Option<String>,
     bids: Option<Vec<Vec<serde_json::Value>>>,
     asks: Option<Vec<Vec<serde_json::Value>>>,
-    #[serde(default)]
-    lastUpdateId: u64,
+    #[serde(rename = "lastUpdateId", default)]
+    last_update_id: u64,
 }
 
 // --- Bitfinex book ---

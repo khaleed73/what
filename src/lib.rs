@@ -2,6 +2,8 @@
 //
 // Exposes modules needed by integration tests and E2E test binaries.
 
+#![allow(dead_code)]
+
 pub mod exchange;
 pub mod strategies;
 pub mod protections;

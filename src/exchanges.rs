@@ -3342,7 +3342,7 @@ pub mod lbank {
             http_client: &reqwest::Client,
             asset: &str,
         ) -> Result<Decimal, String> {
-            let mut params: Vec<(&str, String)> = vec![
+            let params: Vec<(&str, String)> = vec![
                 ("api_key", self.api_key.expose().to_string()),
                 ("timestamp", Utc::now().timestamp_millis().to_string()),
             ];
@@ -3382,7 +3382,7 @@ pub mod lbank {
             symbol: &str,
             order_id: &str,
         ) -> Result<OrderResult, String> {
-            let mut params: Vec<(&str, String)> = vec![
+            let params: Vec<(&str, String)> = vec![
                 ("api_key", self.api_key.expose().to_string()),
                 ("order_id", order_id.to_string()),
                 ("symbol", Self::lbank_symbol(symbol)),
@@ -3407,7 +3407,7 @@ pub mod lbank {
             symbol: &str,
             order_id: &str,
         ) -> Result<OrderResult, String> {
-            let mut params: Vec<(&str, String)> = vec![
+            let params: Vec<(&str, String)> = vec![
                 ("api_key", self.api_key.expose().to_string()),
                 ("order_id", order_id.to_string()),
                 ("symbol", Self::lbank_symbol(symbol)),

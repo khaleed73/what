@@ -5,7 +5,6 @@
 //! back to fetch_order_status when fills are not immediately available.
 
 use async_trait::async_trait;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
@@ -282,7 +281,7 @@ impl Exchange for BybitClient {
                             .and_then(|s| s.parse().ok())
                             .unwrap_or_else(|| {
                                 let coin_name = coin["coin"].as_str().unwrap_or("?");
-                                parse_balance_f64(&coin["availableToTrade"], "bybit", coin_name);
+                                let _ = parse_balance_f64(&coin["availableToTrade"], "bybit", coin_name);
                                 0.0
                             });
                         if free > 0.0 {

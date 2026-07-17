@@ -3,6 +3,8 @@
 //! Usage:  cargo run --bin connectivity_test
 //!
 //! Tests:
+
+#![allow(dead_code)]
 //!   1. REST health endpoint (unauthenticated GET) — verifies DNS, TLS, HTTP.
 //!   2. REST fetch_symbols (public, unauthenticated) — verifies API structure.
 //!   3. WebSocket connect + subscribe — verifies WSS handshake + subscription ack.

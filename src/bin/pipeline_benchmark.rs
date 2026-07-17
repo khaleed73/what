@@ -3,6 +3,8 @@
 //! ═══════════════════════════════════════════════════════════════════════════════
 //!
 //! Measures MICROSECOND-LEVEL latency for each pipeline stage:
+
+#![allow(dead_code)]
 //!
 //!   Stage 0: HEALTH CHECK     — REST connectivity to each exchange
 //!   Stage 1: ORDERBOOK FETCH  — REST orderbook download per (exchange, token)
@@ -250,7 +252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("│ {:<12} │ {:<6} │ {:>8} μs │ EMPTY │", meta.name, tok, us);
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     let us = t0.elapsed().as_micros();
                     println!("│ {:<12} │ {:<6} │ {:>8} μs │ ERR   │", meta.name, tok, us);
                 }

@@ -2,7 +2,7 @@
 //!
 //! Master bootstrapper. Pins computation to a dedicated CPU core, loads
 
-#![allow(unused_imports)]
+#![allow(unused_imports, dead_code)]
 //! configuration, wires every subsystem together, and either starts live
 //! WebSocket feeds or runs the built-in integration smoke-test.
 
@@ -1185,7 +1185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 12f. Withdrawal Executor (for rebalancer)
     // ------------------------------------------------------------------
-    let withdrawal_executor = WithdrawalExecutor::new(
+    let _withdrawal_executor = WithdrawalExecutor::new(
         reqwest::Client::new(),
         Arc::clone(&execution_pool),
         rest_urls.clone(),

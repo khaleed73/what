@@ -214,9 +214,6 @@ pub fn build_pinned_http_client(
     }
 }
 
-/// Extract a client order ID from a JSON value, logging a warning if the field
-/// is missing, null, or empty.  Returns the string (may be empty).
-#[inline]
 /// Extract a currency/asset string from JSON, skipping empty values.
 /// Returns `None` if the field is missing, null, or empty -- callers should
 /// skip the balance entry entirely to avoid polluting the balance map.

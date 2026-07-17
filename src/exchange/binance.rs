@@ -288,14 +288,14 @@ impl Exchange for BinanceClient {
                     .as_str()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| {
-                        parse_balance_f64(&b["free"], "binance", &asset);
+                        let _ = parse_balance_f64(&b["free"], "binance", &asset);
                         0.0
                     });
                 let locked: f64 = b["locked"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(|| {
-                        parse_balance_f64(&b["locked"], "binance", &asset);
+                        let _ = parse_balance_f64(&b["locked"], "binance", &asset);
                         0.0
                     });
                 let total = free + locked;

@@ -275,7 +275,7 @@ impl TradeLog {
         let loop_pnl = final_received - initial_cost - total_fees;
 
         // Split P&L evenly across the three legs for per-leg reporting.
-        let per_leg_pnl = loop_pnl / Decimal::from(3);
+        let _per_leg_pnl = loop_pnl / Decimal::from(3);
 
         // Clone symbols so we can still reference them in the info! macro
         // after the original values are moved into the TradeRecords.
