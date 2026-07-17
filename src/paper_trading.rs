@@ -34,7 +34,9 @@ fn lcg_next() -> u32 {
     // Lazy-init seed from system time on first call.
     if LCG_INITIALISED.load(Ordering::Relaxed) == 0 {
         let seed = std::time::SystemTime::now()
-            .as_nanos() as u64;
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(42);
         LCG_STATE.store(seed, Ordering::Relaxed);
         LCG_INITIALISED.store(1, Ordering::Relaxed);
     }

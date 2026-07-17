@@ -607,14 +607,14 @@ impl AutoCapitalRebalancer {
                         let net_amount = req.amount - effective_gas;
 
                         // max_blind_credit_amount safety check
-                        const MAX_BLIND_CREDIT_AMOUNT: Decimal = Decimal::from(1_000u64); // $1000
-                        if net_amount > MAX_BLIND_CREDIT_AMOUNT {
+                        let max_blind_credit_amount = Decimal::from(1_000u64); // $1000
+                        if net_amount > max_blind_credit_amount {
                             error!(
                                 from = req.from_exchange_id,
                                 to = req.to_exchange_id,
                                 token = %req.token_symbol,
                                 unconfirmed_amount = %net_amount,
-                                max_safe = %MAX_BLIND_CREDIT_AMOUNT,
+                                max_safe = %max_blind_credit_amount,
                                 "Stage 3.5: CRITICAL — all retries exhausted for LARGE unconfirmed deposit. \
                                  NOT crediting balance. Manual investigation required."
                             );

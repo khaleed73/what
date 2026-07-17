@@ -214,7 +214,7 @@ impl PrivateWsFeedListener {
 
         // Non-blocking lock: if another task is already refreshing this
         // exchange, skip.
-        match mutex.try_lock() {
+        let result = match mutex.try_lock() {
             Ok(_guard) => {
                 // In production this would call the exchange's listen-key
                 // renewal or OAuth refresh endpoint.  For now, just log.
@@ -230,7 +230,8 @@ impl PrivateWsFeedListener {
                 );
                 Ok(false)
             }
-        }
+        };
+        result
     }
 }
 

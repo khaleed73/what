@@ -132,7 +132,8 @@ impl DustManager {
         inventory
             .iter()
             .filter_map(|entry| {
-                let target = self.target_tokens.read().unwrap_or_else(|e| e.into_inner()).get(&entry.exchange_id)?;
+                let read_guard = self.target_tokens.read().unwrap_or_else(|e| e.into_inner());
+                let target = read_guard.get(&entry.exchange_id)?;
                 Some(DustConversionRequest {
                     exchange_id: entry.exchange_id,
                     token_symbol: entry.token_symbol.clone(),

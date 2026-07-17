@@ -315,7 +315,7 @@ impl BacktestEngine {
             // intra-timestamp look-ahead bias.  Without this, strategy 2's
             // balance check would see strategy 1's trade applied at the same
             // timestamp, which is information it shouldn't have.
-            let balances_snapshot: HashMap<u16, Decimal> = self.exchange_balances.clone();
+            let _balances_snapshot: HashMap<u16, Decimal> = self.exchange_balances.clone();
             for (symbol, symbol_bars) in &by_symbol {
                 if symbol_bars.len() < 2 {
                     continue;
@@ -591,7 +591,7 @@ impl BacktestEngine {
             // Random walk: ±0.05% per tick with mean reversion.
             let noise = (next_rand() - 0.5) * 0.001;
             // H-2 / L-5 fix: Use per-symbol base price for mean reversion.
-            let base_ref_price = base_prices.get(symbol).copied().unwrap_or(dec!(43000.0));
+            let base_ref_price = base_prices.get(symbol).copied().unwrap_or_else(|| Decimal::from(43000u64));
             let mean_reversion = (base - base_ref_price)
                 * Decimal::from_str_radix("0.0001", 10).unwrap_or(Decimal::ZERO);
             let adj_noise = Decimal::from_f64_retain(noise).unwrap_or(Decimal::ZERO);
