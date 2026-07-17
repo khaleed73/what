@@ -917,10 +917,18 @@ impl HighFrequencyExecutionEngine {
         }
 
         // Estimate P&L for daily tracking.
-        // P&L = (sell_notional - buy_notional) in cents.
+        // C4 FIX: Determine buy/sell by the `is_buy` flag on the ORIGINAL intents,
+        // not by position in the tuple.  Previously the code assumed result.0
+        // was always the buy leg and result.1 was the sell leg, but
+        // blast_arbitrage_legs accepts arbitrary OrderIntent pairs.
         if total_result.0.success && total_result.1.success {
-            let buy_notional = total_result.0.filled_qty * total_result.0.avg_price;
-            let sell_notional = total_result.1.filled_qty * total_result.1.avg_price;
+            let (buy_result, sell_result) = if leg_a_original.is_buy {
+                (&total_result.0, &total_result.1)
+            } else {
+                (&total_result.1, &total_result.0)
+            };
+            let buy_notional = buy_result.filled_qty * buy_result.avg_price;
+            let sell_notional = sell_result.filled_qty * sell_result.avg_price;
             let profit = sell_notional - buy_notional;
             let profit_cents = (profit * Decimal::from(100u64))
                 .trunc()
@@ -966,10 +974,15 @@ impl HighFrequencyExecutionEngine {
         self.check_daily_loss_limit()?;
 
         // 1. Risk gate. Convert Decimal notional to fixed-point u64.
+        // M6 FIX: Check ALL legs' exchanges, not just legs[0].  Previously
+        // only legs[0].exchange_id was validated — if legs[1] or legs[2]
+        // targeted a risk-paused exchange, the trade proceeded anyway.
         let size_fp = decimal_to_fp(legs[0].qty * legs[0].price);
-        self.risk_manager
-            .pre_trade_check(profit_bps, size_fp, capital_fp, legs[0].exchange_id)
-            .map_err(|rejection| format!("pre-trade risk rejection: {}", rejection))?;
+        for leg in &legs {
+            self.risk_manager
+                .pre_trade_check(profit_bps, size_fp, capital_fp, leg.exchange_id)
+                .map_err(|rejection| format!("pre-trade risk rejection (ex={}): {}", leg.exchange_id, rejection))?;
+        }
 
         // 2. Stablecoin depeg circuit-breaker.
         if self.depeg_circuit.is_depeg_active().await {
@@ -1107,6 +1120,32 @@ impl HighFrequencyExecutionEngine {
             }
         }
 
+        // M7 FIX: Record P&L for triangular arbitrage (was missing — triangular
+        // profits/losses were invisible to the daily loss limit).
+        // For a proper triangular P&L, we'd need to know which legs are buys
+        // and which are sells and compute the net.  As an approximation, sum
+        // the notional of sell legs minus buy legs.
+        let mut buy_notional = Decimal::ZERO;
+        let mut sell_notional = Decimal::ZERO;
+        for (i, result) in total_result.iter().enumerate() {
+            if result.success && result.filled_qty > Decimal::ZERO {
+                let notional = result.filled_qty * result.avg_price;
+                if legs[i].is_buy {
+                    buy_notional += notional;
+                } else {
+                    sell_notional += notional;
+                }
+            }
+        }
+        if buy_notional > Decimal::ZERO || sell_notional > Decimal::ZERO {
+            let profit = sell_notional - buy_notional;
+            let profit_cents = (profit * Decimal::from(100u64))
+                .trunc()
+                .to_i64()
+                .unwrap_or(0);
+            self.record_daily_pnl(profit_cents);
+        }
+
         Ok(total_result)
     }
 
@@ -1213,28 +1252,55 @@ impl HighFrequencyExecutionEngine {
     }
 
     /// Emergency counter-order: fires an opposite-side order with the already-filled
-    /// quantity (or zero if no fill) at a 0.1% nudged price to guarantee execution.
+    /// quantity at a nudged price to guarantee execution.
     /// This is the HFT safety net for partial-fill or timeout scenarios.
+    ///
+    /// C3 FIX: If `filled_qty` is zero (timeout before any fill), we skip the
+    /// counter-order entirely — there is no position to close.  Previously this
+    /// sent qty=0, price=0 orders that the exchange would reject, wasting API
+    /// budget and leaving the operator with a false sense of safety.
     async fn fire_counter_order(
         &self,
         pipeline: &Arc<dyn OrderPipeline>,
         original: &OrderIntent,
         filled: &OrderResult,
     ) {
+        let fill_qty = filled.filled_qty.max(Decimal::ZERO);
+        if fill_qty <= Decimal::ZERO {
+            // No fill occurred — nothing to roll back.  Log and return.
+            tracing::warn!(
+                exchange = original.exchange_id,
+                symbol = %original.symbol,
+                "counter-order skipped: no fill to roll back (timeout before execution)"
+            );
+            return;
+        }
+
+        // Use the filled average price if available, otherwise fall back to the
+        // original signal price (the order may have been acknowledged but the
+        // fill details not yet returned in the timeout window).
+        let base_price = if filled.avg_price > Decimal::ZERO {
+            filled.avg_price
+        } else {
+            original.price
+        };
+
         let counter = OrderIntent {
             exchange_id: original.exchange_id,
             token_id: original.token_id,
-            qty: filled.filled_qty.max(Decimal::ZERO),
-            // Nudge price 0.1% in adverse direction to guarantee the counter-order fills.
+            qty: fill_qty,
+            // Nudge price 0.5% in adverse direction to guarantee the counter-order fills.
             // Counter-order is the OPPOSITE side of the original, so:
             //   - Original was BUY (we hold long) → counter is SELL → nudge DOWN (accept less)
             //   - Original was SELL (we hold short) → counter is BUY → nudge UP (pay more)
+            // C3 FIX: Increased from 0.1% to 0.5% nudge to improve fill probability
+            // during volatile market conditions when the counter-order is most needed.
             price: if original.is_buy {
-                // Counter: SELL — nudge price DOWN 0.1% to accept a worse sell price
-                filled.avg_price * (Decimal::new(999, 3)) // 0.999 → -0.1%
+                // Counter: SELL — nudge price DOWN 0.5% to accept a worse sell price
+                base_price * (Decimal::new(995, 3)) // 0.995 → -0.5%
             } else {
-                // Counter: BUY — nudge price UP 0.1% to pay a worse buy price
-                filled.avg_price * (Decimal::new(1001, 3)) // 1.001 → +0.1%
+                // Counter: BUY — nudge price UP 0.5% to pay a worse buy price
+                base_price * (Decimal::new(1005, 3)) // 1.005 → +0.5%
             },
             is_buy: !original.is_buy,
             symbol: original.symbol.clone(),

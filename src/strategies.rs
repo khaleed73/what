@@ -433,7 +433,7 @@ impl MarketArena {
 
                             // Direction 1: buy on i, sell on j
                             if bid_j > ask_i && ask_i > 0 {
-                                let raw_spread_bps = ((bid_j - ask_i) * BPS_SCALE) / ask_i;
+                                let raw_spread_bps = (bid_j - ask_i).saturating_mul(BPS_SCALE) / ask_i;
 
                                 // Fee-aware: deduct round-trip taker fees.
                                 let net_spread_bps = if self.fee_aware_enabled.load(Ordering::Relaxed) {
@@ -464,7 +464,7 @@ impl MarketArena {
 
                             // Direction 2: buy on j, sell on i
                             if bid_i > ask_j && ask_j > 0 {
-                                let raw_spread_bps = ((bid_i - ask_j) * BPS_SCALE) / ask_j;
+                                let raw_spread_bps = (bid_i - ask_j).saturating_mul(BPS_SCALE) / ask_j;
 
                                 let net_spread_bps = if self.fee_aware_enabled.load(Ordering::Relaxed) {
                                     if let Ok(fees) = self.fee_schedule.try_read() {

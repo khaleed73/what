@@ -406,6 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(0, Arc::new(PaperExchangeClient::new(0)));
+                    live_init_failures.push((0, "Binance".to_string(), e.to_string()));
                     println!("WARNING: Binance init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -425,6 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(1, Arc::new(PaperExchangeClient::new(1)));
+                    live_init_failures.push((1, "Bybit".to_string(), e.to_string()));
                     println!("WARNING: Bybit init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -445,6 +447,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(2, Arc::new(PaperExchangeClient::new(2)));
+                    live_init_failures.push((2, "OKX".to_string(), e.to_string()));
                     println!("WARNING: OKX init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -464,6 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(3, Arc::new(PaperExchangeClient::new(3)));
+                    live_init_failures.push((3, "GateIO".to_string(), e.to_string()));
                     println!("WARNING: GateIO init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -484,6 +488,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(4, Arc::new(PaperExchangeClient::new(4)));
+                    live_init_failures.push((4, "KuCoin".to_string(), e.to_string()));
                     println!("WARNING: KuCoin init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -503,6 +508,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(5, Arc::new(PaperExchangeClient::new(5)));
+                    live_init_failures.push((5, "Bitfinex".to_string(), e.to_string()));
                     println!("WARNING: Bitfinex init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -523,6 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(6, Arc::new(PaperExchangeClient::new(6)));
+                    live_init_failures.push((6, "Bitget".to_string(), e.to_string()));
                     println!("WARNING: Bitget init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -542,6 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(7, Arc::new(PaperExchangeClient::new(7)));
+                    live_init_failures.push((7, "BitMEX".to_string(), e.to_string()));
                     println!("WARNING: BitMEX init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -561,6 +569,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(8, Arc::new(PaperExchangeClient::new(8)));
+                    live_init_failures.push((8, "Coinbase".to_string(), e.to_string()));
                     println!("WARNING: Coinbase init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -580,6 +589,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(9, Arc::new(PaperExchangeClient::new(9)));
+                    live_init_failures.push((9, "HTX".to_string(), e.to_string()));
                     println!("WARNING: HTX init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -599,6 +609,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(10, Arc::new(PaperExchangeClient::new(10)));
+                    live_init_failures.push((10, "Kraken".to_string(), e.to_string()));
                     println!("WARNING: Kraken init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -618,6 +629,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(11, Arc::new(PaperExchangeClient::new(11)));
+                    live_init_failures.push((11, "LBank".to_string(), e.to_string()));
                     println!("WARNING: LBank init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -637,6 +649,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(12, Arc::new(PaperExchangeClient::new(12)));
+                    live_init_failures.push((12, "Bitstamp".to_string(), e.to_string()));
                     println!("WARNING: Bitstamp init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -656,6 +669,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(13, Arc::new(PaperExchangeClient::new(13)));
+                    live_init_failures.push((13, "Deribit".to_string(), e.to_string()));
                     println!("WARNING: Deribit init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -675,6 +689,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(14, Arc::new(PaperExchangeClient::new(14)));
+                    live_init_failures.push((14, "Delta".to_string(), e.to_string()));
                     println!("WARNING: Delta init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -694,6 +709,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(15, Arc::new(PaperExchangeClient::new(15)));
+                    live_init_failures.push((15, "MEXC".to_string(), e.to_string()));
                     println!("WARNING: MEXC init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -713,6 +729,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     execution_pool.insert(16, Arc::new(PaperExchangeClient::new(16)));
+                    live_init_failures.push((16, "Ibank".to_string(), e.to_string()));
                     println!("WARNING: Ibank init failed ({}) → falling back to PAPER", e);
                 }
             }
@@ -1259,7 +1276,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_risk = Arc::clone(&risk_manager);
     let signal_depeg = Arc::clone(&depeg_circuit);
     let num_exch = num_exchanges;
-    let paper_capital_fp = initial_capital_fp;
+    // C2 FIX: In live mode, use the actual live capital (sum of real exchange
+    // balances) for the risk manager's equity tracker.  Using the paper
+    // constant would make all 14 risk layers operate on the wrong equity
+    // figure, allowing trades at 2×+ intended risk.
+    let live_capital_fp = decimal_to_fp(live_capital);
+    let paper_capital_fp = if forced_paper { initial_capital_fp } else { live_capital_fp };
     let signal_health = Arc::clone(&health);
     let signal_symbol_watch = symbol_watch_tx;
 
@@ -1356,11 +1378,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     /// Build a pair symbol from base token, formatted for the given exchange.
     /// Exchange 2 (OKX) uses "BASE-QUOTE", exchange 3 (GateIO) uses "BASE_QUOTE",
-    /// all others use "BASEQUOTE" (e.g. "BTCUSDT").
+    /// exchange 8 (Coinbase) uses "BASE-QUOTE", all others use "BASEQUOTE".
     fn build_pair_symbol(base: &str, quote: &str, exchange_id: u16) -> String {
         match exchange_id {
             2 => format!("{}-{}", base, quote), // OKX: BTC-USDT
-            3 => format!("{}_{}", base, quote),  // GateIO: BTC_USDT (already uppercase)
+            3 => format!("{}_{}", base, quote),  // GateIO: BTC_USDT
+            8 => format!("{}-{}", base, quote),  // Coinbase: BTC-USDT
             _ => format!("{}{}", base, quote),   // Binance/Bybit/KuCoin: BTCUSDT
         }
     }
@@ -1596,7 +1619,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(tokens) = signal_arena.active_tokens.try_lock() {
                     let syms: Vec<String> = tokens.iter()
                         .filter_map(|&tid| signal_allocator.get_symbol(tid))
-                        .map(|s| format!("{}USDT", s))
+                        .map(|s| format!("{}USDT", s))  // WS subscriptions use BASEQUOTE for most feeds
                         .collect();
                     // Only push if the list changed (watch channel ignores dupes).
                     if signal_symbol_watch.send(syms).is_err() {
@@ -1695,10 +1718,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ------------------------------------------------------------------
         // 12d. Flash-crash volatility circuit breaker (live mode only)
         // ------------------------------------------------------------------
-        // Monitors BTC price on exchange 0. If BTC moves >1.5% in any
-        // 5-minute rolling window, halts ALL trading until the market calms.
+        // Monitors BTC price by dynamically looking up BTC's token ID
+        // from the allocator registry (was hardcoded to exchange 0, token 10).
+        // Scans all exchanges for a valid BTC price and uses the first found.
         let flash_engine = Arc::clone(&engine);
         let flash_arena = Arc::clone(&arena);
+        let flash_allocator = Arc::clone(&allocator_arc);
         let _flash_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(
                 std::time::Duration::from_secs(5),
@@ -1713,13 +1738,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 interval.tick().await;
                 tick_count += 1;
 
-                // Read BTC price from exchange 0, token 10 (if registered).
-                // BTC is stored at 8-decimal fixed-point: divide by 100_000_000.
-                let btc_fp = flash_arena
-                    .bid_prices
-                    .get(flash_arena.get_index(0, 10))
-                    .map(|a| a.load(Ordering::Relaxed))
-                    .unwrap_or(0);
+                // Dynamically look up BTC's token ID from the allocator registry.
+                // Falls back to token 10 (the conventional ID) if BTC is not
+                // yet registered by the coin finder.
+                let btc_token_id = flash_allocator.get_id("BTC").unwrap_or(10);
+
+                // Scan exchanges 0..3 for a valid BTC price (cover the most
+                // liquid exchanges without scanning all 17 every 5 seconds).
+                let mut btc_fp: u64 = 0;
+                for exch in 0..std::cmp::min(num_exchanges, 3) {
+                    let idx = flash_arena.get_index(exch, btc_token_id as usize);
+                    if idx < flash_arena.bid_prices.len() {
+                        let val = flash_arena.bid_prices[idx].load(Ordering::Relaxed);
+                        if val > 0 {
+                            btc_fp = val;
+                            break;
+                        }
+                    }
+                }
 
                 if btc_fp == 0 {
                     continue; // no BTC price data yet
@@ -1992,7 +2028,12 @@ async fn run_integration_test(
 // ---------------------------------------------------------------------------
 
 /// Convert a `Decimal` dollar value to fixed-point u64 (dollars * 1_000_000).
+/// Clamps negative values to 0 (with a warning) rather than silently zeroizing.
 fn decimal_to_fp(d: Decimal) -> u64 {
+    if d < Decimal::ZERO {
+        tracing::warn!(value = %d, "main decimal_to_fp: negative value clamped to 0");
+        return 0;
+    }
     let scaled = d * Decimal::from(FP_SCALE);
     let s = format!("{}", scaled);
     let parts: Vec<&str> = s.split('.').collect();

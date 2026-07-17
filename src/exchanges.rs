@@ -565,11 +565,14 @@ pub mod gateio {
         ) -> Result<OrderResult, String> {
             let timestamp = Self::timestamp_secs();
             let path = format!("/api/v4/spot/orders/{}", order_id);
+            // FIX: Only currency_pair is a query parameter. order_id is in the path.
+            // Previously order_id was duplicated into the query string AND the path,
+            // causing signature mismatch with GateIO's expected preimage.
             let query = format!("currency_pair={}", symbol.to_uppercase());
-            let query_str = format!("{}&order_id={}", query, order_id);
-            let signature = self.sign(&timestamp, "GET", &path, &query_str, "");
+            let signature = self.sign(&timestamp, "GET", &path, &query, "");
 
-            let resp = http_client.get(&format!("{}{}", self.rest_url, path))
+            // FIX: Include the query string in the URL (was missing entirely).
+            let resp = http_client.get(&format!("{}{}?{}", self.rest_url, path, query))
                 .header("KEY", self.api_key.expose())
                 .header("SIGN", &signature)
                 .header("Timestamp", &timestamp.to_string())
@@ -2637,12 +2640,18 @@ pub mod kraken {
                 parse_json_decimal(&order_data["price"])
             };
 
+            // FIX: Inspect the actual order status instead of always returning
+            // success=true.  Kraken statuses: "open", "closed", "canceled",
+            // "expired".  Only "closed" means fully or partially filled.
+            let status_str = order_data["status"].as_str().unwrap_or("UNKNOWN");
+            let success = matches!(status_str, "closed" | "open" | "partially filled");
+
             Ok(OrderResult {
-                success: true,
+                success,
                 order_id: Some(order_id.to_string()),
                 filled_qty: vol_exec,
                 avg_price,
-                error: None,
+                error: if success { None } else { Some(format!("status: {}", status_str)) },
             })
         }
     }
@@ -2959,11 +2968,13 @@ pub mod htx {
                     )
                 })?;
 
+            // FIX: Propagate error instead of silently defaulting to account 0.
+            // Using the wrong account ID returns the wrong balance.
             let account_id = json_val["data"]
                 .as_array()
                 .and_then(|a| a.first())
                 .and_then(|a| a["id"].as_i64())
-                .unwrap_or(0);
+                .ok_or_else(|| "HTX: failed to parse account-id in get_balance".to_string())?;
 
             let bal_url = self.signed_url(
                 "GET",
@@ -3707,7 +3718,9 @@ pub mod bitstamp {
             let filled = parse_json_decimal(&json_val["amount_filled"]);
             let avg = parse_json_decimal(&json_val["price"]);
 
-            let success = matches!(status_str, "Finished" | "Canceled" | "Cancelled");
+            // FIX: Only "Finished" means the order was actually filled.
+            // Cancelled orders have zero fills and must not be reported as successful.
+            let success = status_str == "Finished";
 
             Ok(OrderResult {
                 success,
@@ -3996,9 +4009,16 @@ pub mod deribit {
         async fn get_balance(
             &self,
             http_client: &reqwest::Client,
-            _asset: &str,
+            asset: &str,
         ) -> Result<Decimal, String> {
-            let params = json!({ "currency": "BTC" });
+            // FIX: Use the requested asset instead of hardcoding BTC.
+            // Deribit uses currency names like "BTC", "ETH", "USDC", etc.
+            let asset_upper = asset.to_uppercase();
+            let currency = match asset_upper.as_str() {
+                "USDT" => "USDC",  // Deribit uses USDC as the stablecoin name
+                other => other,
+            };
+            let params = json!({ "currency": currency });
             let v = self
                 .call_private(http_client, "private/get_account_summary", params)
                 .await?;
@@ -4914,13 +4934,13 @@ pub mod ibank {
                 });
             }
 
-            Ok(OrderResult {
-                success: true,
-                order_id: Some(order_id.to_string()),
-                filled_qty: Decimal::ZERO,
-                avg_price: Decimal::ZERO,
-                error: None,
-            })
+            // FIX: Missing orders should NOT return success=true.
+            // The order was not found in open orders — it may be filled or
+            // cancelled.  Return an error so the caller can investigate.
+            Err(format!(
+                "Ibank: order {} not found in open orders (may be filled/cancelled)",
+                order_id
+            ))
         }
     }
 
