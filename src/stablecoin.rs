@@ -133,7 +133,8 @@ impl StablecoinMonitor {
 
         for sym in &self.config.monitored_symbols {
             if let Some(sp) = state.prices.get(sym) {
-                if sp.price < self.config.depeg_threshold {
+                let upper_threshold = Decimal::ONE + self.config.depeg_threshold;
+                if sp.price < self.config.depeg_threshold || sp.price > upper_threshold {
                     any_depegged = true;
                     if first_depegged.is_none() {
                         first_depegged = Some(sym.clone());

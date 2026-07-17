@@ -372,30 +372,10 @@ impl DynamicFeeManager {
         }
     }
 
-    /// BitMEX: `GET /api/v1/user/affiliateStatus`
-    ///
-    /// BitMEX does not expose maker/taker fees directly via a simple public
-    /// endpoint.  We attempt the affiliate status endpoint for indirect fee
-    /// info; if parsing fails, return `None` to trigger the config fallback.
-    async fn fetch_bitmex_fees(&self, exchange_id: u16) -> Option<(u64, u64)> {
-        let url = self.rest_url(exchange_id, "/api/v1/user/affiliateStatus");
-
-        match self.unsigned_get_json(&url).await {
-            Some(body) => {
-                // BitMEX default fees: 0.075% maker, 0.075% taker (7.5 bps)
-                // Try to extract from response if available.
-                if let Some(fee) = body.get("feePaid").and_then(|v| v.as_str()) {
-                    // Not directly useful — return known BitMEX defaults.
-                    let _ = fee;
-                }
-                // BitMEX standard rates: 0.075% = 7.5 bps
-                Some((8, 8))
-            }
-            None => {
-                // Even on HTTP failure, return known BitMEX defaults sourced as "api".
-                Some((8, 8))
-            }
-        }
+    /// BitMEX: fee endpoints are unreliable for real-time maker/taker rates.
+    /// C-11 fix: Return None to let the config fallback handle it.
+    async fn fetch_bitmex_fees(&self, _exchange_id: u16) -> Option<(u64, u64)> {
+        None
     }
 
     /// Coinbase: `GET /fees`
@@ -596,24 +576,33 @@ impl DynamicFeeManager {
 /// - "0.0002"  → 2 bps
 /// - "0.10%"   → 10 bps
 /// - "0.40%"   → 40 bps
+///
+/// C-10 fix: Handle negative fee values (e.g. fee rebates) by clamping
+/// to 0 rather than silently wrapping via `as u64`.
 fn bps_from_fraction_str(s: &str) -> u64 {
     let trimmed = s.trim();
 
     // Handle percentage format: "0.10%"
     if let Some(pct_str) = trimmed.strip_suffix('%') {
         if let Ok(pct) = pct_str.parse::<f64>() {
-            return (pct * 100.0).round() as u64; // 0.10% → 10 bps
+            let bps = (pct * 100.0).round() as i64;
+            return bps.max(0) as u64;
         }
     }
 
     // Handle fraction format: "0.001" = 0.1% = 10 bps
     if let Ok(frac) = trimmed.parse::<f64>() {
-        return (frac * 10_000.0).round() as u64;
+        let bps = (frac * 10_000.0).round() as i64;
+        return bps.max(0) as u64;
     }
 
     // Also try Decimal parsing for precision.
     if let Ok(frac) = Decimal::from_str(trimmed) {
         let bps_decimal = frac * Decimal::from(10_000u64);
+        if bps_decimal < Decimal::ZERO {
+            warn!(input = trimmed, "Negative fee value clamped to 0 bps");
+            return 0;
+        }
         if let Some(rounded) = bps_decimal.to_u64() {
             return rounded;
         }

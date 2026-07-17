@@ -28,6 +28,10 @@ pub struct TimestampSynchronizer {
     /// the stored offset by more than this, the update is rejected as a
     /// likely corrupted NTP response. Default: 5000 ms.
     max_drift_ms: i64,
+    /// M-4: Buffer of recent samples for median-based first estimate.
+    sample_buffer: std::sync::Mutex<Vec<i64>>,
+    /// Number of initial samples required before trusting the median.
+    samples_required: usize,
 }
 
 impl TimestampSynchronizer {
@@ -45,6 +49,8 @@ impl TimestampSynchronizer {
             last_sync: std::sync::Mutex::new(Instant::now()),
             sync_interval,
             max_drift_ms: 5000,
+            sample_buffer: std::sync::Mutex::new(Vec::with_capacity(5)),
+            samples_required: 3,
         }
     }
 
@@ -64,11 +70,35 @@ impl TimestampSynchronizer {
         let local_ms = chrono::Utc::now().timestamp_millis();
         let offset = server_time_ms - local_ms;
 
+        // M-4 fix: Use median of first few samples instead of accepting blindly.
+        let needs_median = {
+            let mut buf = self.sample_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            buf.push(offset);
+            if buf.len() < self.samples_required {
+                // Not enough samples yet — compute median of what we have
+                // and store it tentatively.
+                let mut sorted = buf.clone();
+                sorted.sort();
+                let median = sorted[sorted.len() / 2];
+                self.offset_ms.store(median, Ordering::SeqCst);
+                return;
+            }
+            true
+        };
+
+        if !needs_median {
+            return;
+        }
+
+        // Clear the sample buffer once we have enough.
+        if let Ok(mut buf) = self.sample_buffer.lock() {
+            buf.clear();
+        }
+
         // Guard against non-linear drift: reject if the jump from the
-        // currently stored offset exceeds `max_drift_ms`.  The first
-        // update (stored offset == 0) is always accepted.
+        // currently stored offset exceeds `max_drift_ms`.
         let current = self.offset_ms.load(Ordering::SeqCst);
-        if current != 0 && (offset - current).abs() > self.max_drift_ms {
+        if (offset - current).abs() > self.max_drift_ms {
             tracing::warn!(
                 exchange = %self.exchange_name,
                 old_offset_ms = current,

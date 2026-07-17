@@ -143,7 +143,6 @@ fn parse_u64_skip_dot(bytes: &[u8], mut pos: usize) -> Option<(u64, usize)> {
     // First pass: find the end of the number and count decimal places.
     let mut dot_seen = false;
     let mut decimal_places: u32 = 0;
-    let scan_end = pos;
     let mut i = pos;
     while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
         if bytes[i] == b'.' {
@@ -323,18 +322,23 @@ impl LowLatencyWsListener {
                     }
 
                     warn!(exchange_id = ex, "ws stream ended, reconnecting");
+                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+                    self.arena.invalidate_exchange(ex as usize);
                 }
                 Ok(Err(e)) => {
                     consecutive_failures += 1;
                     if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
-                        error!(
+                        tracing::error!(
                             exchange_id = ex,
                             consecutive_failures,
-                            "WS connect failed {} times in a row — giving up, feed worker exiting",
+                            "WS connect failed {} times in a row — giving up, CRITICAL: feed worker exiting permanently, invalidating arena",
                             MAX_CONSECUTIVE_FAILURES
                         );
+                        self.arena.invalidate_exchange(ex as usize);
                         return;
                     }
+                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+                    self.arena.invalidate_exchange(ex as usize);
                     let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS) as f64;
                     let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
@@ -352,14 +356,17 @@ impl LowLatencyWsListener {
                 Err(e) => {
                     consecutive_failures += 1;
                     if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
-                        error!(
+                        tracing::error!(
                             exchange_id = ex,
                             consecutive_failures,
-                            "WS connect failed {} times in a row — giving up, feed worker exiting",
+                            "WS connect failed {} times in a row — giving up, CRITICAL: feed worker exiting permanently, invalidating arena",
                             MAX_CONSECUTIVE_FAILURES
                         );
+                        self.arena.invalidate_exchange(ex as usize);
                         return;
                     }
+                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+                    self.arena.invalidate_exchange(ex as usize);
                     let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS) as f64;
                     let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
@@ -379,14 +386,17 @@ impl LowLatencyWsListener {
             // Stream ended (not a connect failure) — use same backoff logic.
             consecutive_failures += 1;
             if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
-                error!(
+                tracing::error!(
                     exchange_id = ex,
                     consecutive_failures,
-                    "WS stream ended {} times — giving up, feed worker exiting",
+                    "WS stream ended {} times — giving up, CRITICAL: feed worker exiting permanently, invalidating arena",
                     MAX_CONSECUTIVE_FAILURES
                 );
+                self.arena.invalidate_exchange(ex as usize);
                 return;
             }
+            tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+            self.arena.invalidate_exchange(ex as usize);
             let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                 .min(MAX_DELAY_SECS) as f64;
             let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
@@ -448,7 +458,10 @@ pub fn spawn_feed_workers(
 
 /// Known quote currencies ordered longest-first so that `USDT` is tried
 /// before `USDC` / `BUSD`, preventing greedy mis-splits.
-const KNOWN_QUOTES: &[&str] = &["USDT", "USDC", "BUSD", "BTC", "ETH", "BNB"];
+const KNOWN_QUOTES: &[&str] = &[
+    "USDT", "USDC", "BUSD", "BTC", "ETH", "BNB",
+    "USD", "TUSD", "DAI", "EUR", "GBP",
+];
 
 /// Split a concatenated symbol (e.g. `BTCUSDT`) into `(base, quote)`.
 ///

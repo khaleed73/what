@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
+use dashmap::DashMap;
 
 /// A parsed execution report from a private WebSocket feed.
 #[derive(Debug, Clone)]
@@ -83,10 +84,10 @@ pub struct PrivateWsFeedListener {
     event_sender: mpsc::Sender<PrivateFeedEvent>,
     /// Track active connections.
     active_connections: Arc<RwLock<HashMap<String, bool>>>,
-    /// Mutex that serialises token refresh attempts.  On rapid reconnects
-    /// multiple tasks may try to refresh simultaneously; `try_lock`
-    /// ensures only one proceeds while the others skip.
-    refresh_mutex: Arc<tokio::sync::Mutex<()>>,
+    /// Per-exchange mutexes that serialise token refresh attempts.
+    /// Prevents one exchange's refresh from blocking another exchange's
+    /// concurrent refresh (unlike a single shared mutex).
+    refresh_mutexes: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PrivateWsFeedListener {
@@ -108,7 +109,7 @@ impl PrivateWsFeedListener {
             configs,
             event_sender,
             active_connections: Arc::new(RwLock::new(active)),
-            refresh_mutex: Arc::new(tokio::sync::Mutex::new(())),
+            refresh_mutexes: Arc::new(DashMap::new()),
         }
     }
 
@@ -190,7 +191,7 @@ impl PrivateWsFeedListener {
 
     /// Attempt to refresh the authentication token for the given exchange.
     ///
-    /// Uses a non-blocking `try_lock` on the internal `refresh_mutex` so that
+    /// Uses a non-blocking `try_lock` on a per-exchange mutex so that
     /// if a refresh is already in progress (e.g. due to a rapid reconnect),
     /// this call returns `false` immediately instead of queuing up and
     /// potentially double-refreshing.
@@ -205,8 +206,15 @@ impl PrivateWsFeedListener {
             return Err(format!("Exchange '{}' not found in private feed configs", exchange_name));
         }
 
-        // Non-blocking lock: if another task is already refreshing, skip.
-        match self.refresh_mutex.try_lock() {
+        // Get or create a per-exchange mutex for this refresh attempt.
+        let mutex = self
+            .refresh_mutexes
+            .entry(exchange_name.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())));
+
+        // Non-blocking lock: if another task is already refreshing this
+        // exchange, skip.
+        match mutex.try_lock() {
             Ok(_guard) => {
                 // In production this would call the exchange's listen-key
                 // renewal or OAuth refresh endpoint.  For now, just log.

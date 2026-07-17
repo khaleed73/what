@@ -26,11 +26,14 @@ pub struct OrderBookLayer {
 
 impl OrderBookLayer {
     /// Creates a new layer from Decimal values.
-    pub fn from_decimal(price: Decimal, quantity: Decimal) -> Self {
-        Self {
-            price_fp: decimal_to_fp(price),
-            quantity_fp: decimal_to_fp(quantity),
-        }
+    /// Returns `None` if either value overflows the fixed-point u64 range.
+    pub fn from_decimal(price: Decimal, quantity: Decimal) -> Option<Self> {
+        let price_fp = decimal_to_fp(price)?;
+        let quantity_fp = decimal_to_fp(quantity)?;
+        Some(Self {
+            price_fp,
+            quantity_fp,
+        })
     }
 
     /// Get price as Decimal.
@@ -67,19 +70,25 @@ impl FastOrderBook {
     }
 
     /// Set ask levels from Decimal arrays.
+    /// Layers that overflow the fixed-point representation are skipped.
     pub fn set_asks(&mut self, prices: &[Decimal], quantities: &[Decimal]) {
         for i in 0..MATRIX_BOOK_DEPTH {
             if i < prices.len() && i < quantities.len() {
-                self.asks[i] = OrderBookLayer::from_decimal(prices[i], quantities[i]);
+                if let Some(layer) = OrderBookLayer::from_decimal(prices[i], quantities[i]) {
+                    self.asks[i] = layer;
+                }
             }
         }
     }
 
     /// Set bid levels from Decimal arrays.
+    /// Layers that overflow the fixed-point representation are skipped.
     pub fn set_bids(&mut self, prices: &[Decimal], quantities: &[Decimal]) {
         for i in 0..MATRIX_BOOK_DEPTH {
             if i < prices.len() && i < quantities.len() {
-                self.bids[i] = OrderBookLayer::from_decimal(prices[i], quantities[i]);
+                if let Some(layer) = OrderBookLayer::from_decimal(prices[i], quantities[i]) {
+                    self.bids[i] = layer;
+                }
             }
         }
     }
@@ -152,7 +161,7 @@ impl ProductionRiskShield {
         let mut total_cost = Decimal::ZERO;
 
         for layer in &book.asks {
-            if layer.quantity_fp == 0 || remaining <= Decimal::ZERO {
+            if layer.quantity_fp == 0 || layer.price_fp == 0 || remaining <= Decimal::ZERO {
                 break;
             }
 
@@ -240,17 +249,9 @@ impl ProductionRiskShield {
 }
 
 // Helper functions
-fn decimal_to_fp(d: Decimal) -> u64 {
-    match (d * Decimal::from(1_000_000_000u64)).to_u64() {
-        Some(fp) => fp,
-        None => {
-            tracing::warn!(
-                value = %d,
-                "decimal_to_fp: overflow capping to u64::MAX — trade will use max fixed-point value"
-            );
-            u64::MAX
-        }
-    }
+fn decimal_to_fp(d: Decimal) -> Option<u64> {
+    let scaled = d * Decimal::from(1_000_000_000u64);
+    scaled.to_u64()
 }
 
 fn fp_to_decimal(fp: u64) -> Decimal {
@@ -289,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_order_book_layer() {
-        let layer = OrderBookLayer::from_decimal(dec!(150.25), dec!(1.5));
+        let layer = OrderBookLayer::from_decimal(dec!(150.25), dec!(1.5)).unwrap();
         assert!((layer.price() - dec!(150.25)).abs() < dec!(0.001));
         assert!((layer.quantity() - dec!(1.5)).abs() < dec!(0.001));
     }

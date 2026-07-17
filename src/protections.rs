@@ -126,8 +126,8 @@ impl DrawdownTracker {
     /// Returns 0 when peak is zero (div-by-zero guard).
     #[inline]
     fn drawdown_bps(&self) -> u64 {
-        let peak = self.peak_equity.load(Ordering::Relaxed);
-        let current = self.current_equity.load(Ordering::Relaxed);
+        let peak = self.peak_equity.load(Ordering::Acquire);
+        let current = self.current_equity.load(Ordering::Acquire);
         if peak == 0 {
             return 0;
         }
@@ -140,18 +140,18 @@ impl DrawdownTracker {
     /// Update current equity and, if it is a new high, the peak.
     #[inline]
     fn update(&self, equity_fp: u64) {
-        self.current_equity.store(equity_fp, Ordering::Relaxed);
+        self.current_equity.store(equity_fp, Ordering::Release);
         // CAS loop to raise the peak without a lock
         loop {
-            let cur = self.peak_equity.load(Ordering::Relaxed);
+            let cur = self.peak_equity.load(Ordering::Acquire);
             if equity_fp <= cur {
                 break;
             }
             match self.peak_equity.compare_exchange_weak(
                 cur,
                 equity_fp,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
+                Ordering::AcqRel,
+                Ordering::Acquire,
             ) {
                 Ok(_) => break,
                 Err(_) => continue, // retry – another thread raised it first
@@ -347,12 +347,12 @@ impl RiskManager {
         exchange_id: u16,
     ) -> Result<(), TradeRejection> {
         // ── Layer 0: Kill switch ───────────────────────────────
-        if self.kill_switch.load(Ordering::Relaxed) {
+        if self.kill_switch.load(Ordering::SeqCst) {
             return Err(TradeRejection::KillSwitchActive);
         }
 
         // ── Layer 1: System frozen ─────────────────────────────
-        if self.frozen.load(Ordering::Relaxed) {
+        if self.frozen.load(Ordering::SeqCst) {
             return Err(TradeRejection::SystemFrozen);
         }
 
@@ -395,11 +395,10 @@ impl RiskManager {
             }
         }
 
-        // ── Layer 7: Total exposure ────────────────────────────
+        // ── Layer 7: Total exposure (atomic CAS to avoid TOCTOU) ─
         {
-            let current_exp = self.total_exposure.load(Ordering::Relaxed);
             let max_exp_fp = bps_of_capital_fp(self.max_total_exposure_bps, capital_fp);
-            if current_exp.saturating_add(size_fp) > max_exp_fp {
+            if self.try_reserve_exposure(size_fp, max_exp_fp).is_err() {
                 return Err(TradeRejection::ExposureLimitBreached);
             }
         }
@@ -418,7 +417,7 @@ impl RiskManager {
         }
 
         // ── Layer 10: Stablecoin depeg ─────────────────────────
-        if self.depeg_active.load(Ordering::Relaxed) {
+        if self.depeg_active.load(Ordering::SeqCst) {
             return Err(TradeRejection::DepegActive);
         }
 
@@ -441,7 +440,7 @@ impl RiskManager {
         }
 
         // ── Layer 13: Major-asset floor ────────────────────────
-        if self.major_asset_breached.load(Ordering::Relaxed) {
+        if self.major_asset_breached.load(Ordering::SeqCst) {
             return Err(TradeRejection::MajorAssetFloorBreached);
         }
 
@@ -464,26 +463,26 @@ impl RiskManager {
     /// This is irreversible for the lifetime of the process.
     #[inline]
     pub fn kill_switch(&self) {
-        self.kill_switch.store(true, Ordering::Relaxed);
+        self.kill_switch.store(true, Ordering::SeqCst);
     }
 
     /// Returns `true` if the kill switch is active.
     #[inline]
     pub fn is_kill_switch_active(&self) -> bool {
-        self.kill_switch.load(Ordering::Relaxed)
+        self.kill_switch.load(Ordering::SeqCst)
     }
 
     /// Freeze the gatekeeper — layer 1 will reject every trade until
     /// [`unfreeze`] is called.
     #[inline]
     pub fn freeze(&self) {
-        self.frozen.store(true, Ordering::Relaxed);
+        self.frozen.store(true, Ordering::SeqCst);
     }
 
     /// Unfreeze the gatekeeper.
     #[inline]
     pub fn unfreeze(&self) {
-        self.frozen.store(false, Ordering::Relaxed);
+        self.frozen.store(false, Ordering::SeqCst);
     }
 
     /// Update current equity and refresh the staleness timer.
@@ -543,7 +542,7 @@ impl RiskManager {
 
     /// Whether the gatekeeper is currently frozen.
     pub fn is_frozen(&self) -> bool {
-        self.frozen.load(Ordering::Relaxed)
+        self.frozen.load(Ordering::SeqCst)
     }
 
     // -----------------------------------------------------------------------
@@ -552,7 +551,7 @@ impl RiskManager {
 
     /// Flag / unflag a stablecoin depeg event (layer 10).
     pub fn set_depeg_active(&self, active: bool) {
-        self.depeg_active.store(active, Ordering::Relaxed);
+        self.depeg_active.store(active, Ordering::SeqCst);
     }
 
     /// Update memecoin exposure in fixed-point dollars (layer 11).
@@ -567,12 +566,43 @@ impl RiskManager {
 
     /// Flag / unflag a major-asset floor breach (layer 13).
     pub fn set_major_asset_breached(&self, breached: bool) {
-        self.major_asset_breached.store(breached, Ordering::Relaxed);
+        self.major_asset_breached.store(breached, Ordering::SeqCst);
     }
 
     /// Refresh the network-latency freshness timestamp (layer 14).
     pub fn touch_network_check(&self) {
         self.last_network_check.store(current_time_millis(), Ordering::Relaxed);
+    }
+
+    /// Set the initial equity for the drawdown tracker.
+    ///
+    /// **Must** be called before the first trade to ensure the drawdown
+    /// tracker has a non-zero peak.  Calling this after `update_equity` has
+    /// already raised the peak is a no-op (the peak never decreases).
+    pub fn set_initial_equity(&self, equity_fp: u64) {
+        self.drawdown.update(equity_fp);
+    }
+
+    /// Atomically reserve exposure using a CAS loop to prevent TOCTOU races.
+    ///
+    /// On success the exposure is atomically increased by `size_fp`.
+    /// On failure (would exceed `max_exp_fp`) no mutation occurs.
+    fn try_reserve_exposure(&self, size_fp: u64, max_exp_fp: u64) -> Result<(), String> {
+        loop {
+            let current = self.total_exposure.load(Ordering::Acquire);
+            if current.saturating_add(size_fp) > max_exp_fp {
+                return Err("exposure limit breached".into());
+            }
+            match self.total_exposure.compare_exchange_weak(
+                current,
+                current + size_fp,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(_) => continue,
+            }
+        }
     }
 
     /// Overwrite total open exposure in fixed-point dollars (layer 7 bookkeeping).
@@ -595,6 +625,10 @@ fn current_time_millis() -> i64 {
 ///
 /// Uses string round-trip to avoid edge-case overflow in Decimal→u64.
 fn pct_to_bps(pct: Decimal) -> u64 {
+    if pct < Decimal::ZERO {
+        tracing::error!(%pct, "pct_to_bps: negative percentage passed — clamping to 0");
+        return 0;
+    }
     let bps = pct * Decimal::from(BPS_SCALE);
     let neg = bps < Decimal::ZERO;
     let abs = if neg { -bps } else { bps };

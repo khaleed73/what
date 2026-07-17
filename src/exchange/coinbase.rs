@@ -164,6 +164,7 @@ impl Exchange for CoinbaseClient {
                 "product_id": product_id,
                 "side": side,
                 "size": order.quantity.to_string(),
+                "type": "market",
             })
         };
 
@@ -176,11 +177,15 @@ impl Exchange for CoinbaseClient {
         let status = match json["status"].as_str() {
             Some("filled") => "FILLED",
             Some("open") | Some("pending") => "NEW",
-            Some("rejected") | Some("canceled") => "CANCELED",
+            Some("rejected") => "REJECTED",
+            Some("canceled") => "CANCELED",
             _ => "UNKNOWN",
         };
         let filled_qty = parse_json_decimal(&json["filled_size"]);
         let avg_price = parse_json_decimal(&json["average_filled_price"]);
+        let fee = json["fee"].as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .or_else(|| json["commission"].as_str().and_then(|s| s.parse::<Decimal>().ok()));
 
         Ok(OrderResponse {
             order_id,
@@ -189,7 +194,7 @@ impl Exchange for CoinbaseClient {
             filled_qty,
             avg_price,
             exchange: self.name.clone(),
-            fee: None,
+            fee,
             fee_currency: None,
             slippage_bps: None,
             created_at_ms: json["created_at"].as_str().and_then(|s| {
@@ -296,11 +301,15 @@ impl Exchange for CoinbaseClient {
             Some("filled") => "FILLED",
             Some("open") => "NEW",
             Some("pending") => "NEW",
-            Some("rejected") | Some("canceled") => "CANCELED",
+            Some("rejected") => "REJECTED",
+            Some("canceled") => "CANCELED",
             _ => "UNKNOWN",
         };
         let filled_qty = parse_json_decimal(&json["filled_size"]);
         let avg_price = parse_json_decimal(&json["average_filled_price"]);
+        let fee = json["fee"].as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .or_else(|| json["commission"].as_str().and_then(|s| s.parse::<Decimal>().ok()));
 
         Ok(OrderResponse {
             order_id: order_id.to_string(),
@@ -309,7 +318,7 @@ impl Exchange for CoinbaseClient {
             filled_qty,
             avg_price,
             exchange: self.name.clone(),
-            fee: None,
+            fee,
             fee_currency: None,
             slippage_bps: None,
             created_at_ms: None,

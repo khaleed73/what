@@ -74,6 +74,22 @@ impl OrderBook {
     /// rejected as a likely corrupted WebSocket message. Removals (zero-qty)
     /// and snapshots bypass this check.
     pub fn apply_delta(&mut self, delta: &OrderBookDelta) {
+        // Sequence gap detection for incremental (non-snapshot) updates.
+        if !delta.is_snapshot {
+            if delta.last_update_id <= self.last_update_id {
+                // Stale or duplicate update — skip entirely
+                return;
+            }
+            if delta.last_update_id > self.last_update_id + 1 {
+                warn!(
+                    expected = self.last_update_id + 1,
+                    got = delta.last_update_id,
+                    "sequence gap detected in orderbook delta — possible stale data"
+                );
+                // A fresh snapshot should be requested by the caller.
+            }
+        }
+
         if delta.is_snapshot {
             self.bids.clear();
             self.asks.clear();
@@ -91,9 +107,13 @@ impl OrderBook {
             None
         };
 
+        // Track whether any level was actually inserted/updated/removed.
+        let mut any_applied = false;
+
         for (price, qty) in &delta.bid_updates {
             if *qty <= Decimal::ZERO {
                 self.bids.remove(price);
+                any_applied = true;
             } else if !Self::is_price_sane(*price, best_bid_ref) {
                 warn!(
                     price = %price,
@@ -102,12 +122,14 @@ impl OrderBook {
                 );
             } else {
                 self.bids.insert(*price, *qty);
+                any_applied = true;
             }
         }
 
         for (price, qty) in &delta.ask_updates {
             if *qty <= Decimal::ZERO {
                 self.asks.remove(price);
+                any_applied = true;
             } else if !Self::is_price_sane(*price, best_ask_ref) {
                 warn!(
                     price = %price,
@@ -116,13 +138,16 @@ impl OrderBook {
                 );
             } else {
                 self.asks.insert(*price, *qty);
+                any_applied = true;
             }
         }
 
-        if delta.last_update_id > self.last_update_id {
-            self.last_update_id = delta.last_update_id;
+        if any_applied {
+            if delta.last_update_id > self.last_update_id {
+                self.last_update_id = delta.last_update_id;
+            }
+            self.last_update_ns = delta.last_update_ns;
         }
-        self.last_update_ns = delta.last_update_ns;
 
         // Cap depth to prevent unbounded memory growth from adversarial
         // or buggy feeds.  Trim the worst (furthest from spread) levels.
@@ -315,8 +340,18 @@ impl L2OrderBookManager {
         exchange_id: u16,
         symbol: &str,
     ) -> Option<(Decimal, Decimal, Decimal, Decimal)> {
-        let book = self.get_book(exchange_id, symbol)?;
-        get_best_bid_ask(&book)
+        let symbol = symbol.to_uppercase().replace("-", "").replace("_", "").replace("/", "");
+        let inner = self.books.get(&exchange_id)?;
+        let book = inner.get(&symbol)?;
+        // Read directly from the BTreeMap without cloning the entire book.
+        let best_bid = book.bids.last_key_value()?;
+        let best_ask = book.asks.first_key_value()?;
+        Some((
+            *best_bid.0,
+            *best_bid.1,
+            *best_ask.0,
+            *best_ask.1,
+        ))
     }
 
     /// Return the current number of exchanges that have at least one book.
@@ -1272,10 +1307,13 @@ fn parse_gateio_book(raw: &str) -> Option<OrderBookDelta> {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
 
+    // Check for "event":"snapshot" vs "event":"update" field.
+    let is_snapshot = v.get("event").and_then(|e| e.as_str()) == Some("snapshot");
+
     Some(OrderBookDelta {
         bid_updates,
         ask_updates,
-        is_snapshot: false,
+        is_snapshot,
         last_update_id: update_id,
         last_update_ns: ts,
     })
@@ -1335,7 +1373,9 @@ fn parse_bitfinex_book(raw: &str) -> Option<OrderBookDelta> {
     } else if arr.len() >= 2 {
         // Multi-level: [chan_id, [[px, cnt, amt], ...]]
         let levels = arr[1].as_array()?;
-        is_snapshot = levels.len() > 1; // Heuristic
+        // Heuristic: snapshots typically have many levels (>= 10),
+        // while deltas are usually single-level updates.
+        is_snapshot = levels.len() >= 10;
 
         for level in levels {
             let level_arr = level.as_array()?;
@@ -1844,6 +1884,7 @@ fn parse_deribit_book(raw: &str) -> Option<OrderBookDelta> {
     // Deribit levels: [price, qty, ...]
     let bid_updates = parse_price_qty_pairs(bids_arr);
     let ask_updates = parse_price_qty_pairs(asks_arr);
+    let total_levels = bid_updates.len() + ask_updates.len();
 
     if bid_updates.is_empty() && ask_updates.is_empty() {
         return None;
@@ -1854,10 +1895,15 @@ fn parse_deribit_book(raw: &str) -> Option<OrderBookDelta> {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
 
+    // Heuristic snapshot detection: if a "type" field indicates snapshot,
+    // or if there are many levels (snapshots typically have > 10 levels).
+    let is_snapshot = v.get("type").and_then(|t| t.as_str()) == Some("snapshot")
+        || total_levels > 10;
+
     Some(OrderBookDelta {
         bid_updates,
         ask_updates,
-        is_snapshot: false,
+        is_snapshot,
         last_update_id: update_id,
         last_update_ns: ts,
     })
@@ -1891,6 +1937,7 @@ fn parse_generic_book(raw: &str) -> Option<OrderBookDelta> {
 
     let bid_updates = parse_price_qty_pairs(bids_arr);
     let ask_updates = parse_price_qty_pairs(asks_arr);
+    let total_levels = bid_updates.len() + ask_updates.len();
 
     if bid_updates.is_empty() && ask_updates.is_empty() {
         return None;
@@ -1901,10 +1948,14 @@ fn parse_generic_book(raw: &str) -> Option<OrderBookDelta> {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
 
+    // Heuristic snapshot detection: check for "type":"snapshot" or large level count.
+    let is_snapshot = v.get("type").and_then(|t| t.as_str()) == Some("snapshot")
+        || total_levels > 10;
+
     Some(OrderBookDelta {
         bid_updates,
         ask_updates,
-        is_snapshot: false,
+        is_snapshot,
         last_update_id: update_id,
         last_update_ns: ts,
     })

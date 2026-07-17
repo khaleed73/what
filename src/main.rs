@@ -837,7 +837,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The .with_rate_limiter() call attaches a per-exchange 429 circuit breaker
     // that blocks ALL orders to a rate-limited exchange for 60 seconds.
     let rate_limiter = Arc::new(
-        execution::RateLimitCircuitBreaker::new(config.exchanges.len(), 60)
+        execution::RateLimitCircuitBreaker::new(num_exchanges, 60)
     );
     let real_exec: Arc<dyn execution::OrderPipeline> = Arc::new(
         execution::RealExecutionPipeline::new(
@@ -1303,12 +1303,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cb_allocator = Arc::clone(&allocator_arc);
         let cb_rebalance_tx = signal_rebalance_tx.clone();
         let cb_num_exch = num_exch;
-        starvation_detector.set_starvation_callback(Arc::new(move |starved_exchange_id: u16| {
+        starvation_detector.set_starvation_callback(Arc::new(move |starved_exchange_id: usize| {
             // Find the exchange with the highest USDT balance to pull from.
             let mut best_src: u16 = 0;
             let mut best_bal = Decimal::ZERO;
             for eid in 0..cb_num_exch {
-                if eid as u16 == starved_exchange_id {
+                if eid == starved_exchange_id {
                     continue;
                 }
                 let bal = cb_allocator.get_balance_atomic(eid, 0); // token 0 = USDT
@@ -1340,7 +1340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let send_result = cb_rebalance_tx.try_send(
                 rebalancer::RebalanceRequest {
                     from_exchange_id: best_src,
-                    to_exchange_id: starved_exchange_id,
+                    to_exchange_id: starved_exchange_id as u16,
                     token_id: usdt_token_id,
                     amount: transfer_amount,
                     token_symbol: "USDT".to_string(),
@@ -1457,11 +1457,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let sell_symbol = build_pair_symbol(&base_sym, "USDT", sell_exchange);
 
                                 // Read actual best ask (buy) / bid (sell) from the arena for order pricing
+                                let buy_idx = signal_arena.get_index(buy_exchange as usize, tid as usize);
+                                if buy_idx >= signal_arena.ask_prices.len() {
+                                    tracing::warn!(exchange = buy_exchange, token = tid, "arena index out of bounds (buy), skipping");
+                                    continue;
+                                }
                                 let buy_price = Decimal::from(
-                                    signal_arena.ask_prices[signal_arena.get_index(buy_exchange as usize, tid as usize)].load(Ordering::Relaxed),
+                                    signal_arena.ask_prices[buy_idx].load(Ordering::Relaxed),
                                 ) / Decimal::from(100_000_000u64);
+                                let sell_idx = signal_arena.get_index(sell_exchange as usize, tid as usize);
+                                if sell_idx >= signal_arena.bid_prices.len() {
+                                    tracing::warn!(exchange = sell_exchange, token = tid, "arena index out of bounds (sell), skipping");
+                                    continue;
+                                }
                                 let sell_price = Decimal::from(
-                                    signal_arena.bid_prices[signal_arena.get_index(sell_exchange as usize, tid as usize)].load(Ordering::Relaxed),
+                                    signal_arena.bid_prices[sell_idx].load(Ordering::Relaxed),
                                 ) / Decimal::from(100_000_000u64);
 
                                 // Dynamic lot sizing via the balance allocator.
@@ -1535,6 +1545,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     "TRIANGULAR signal detected"
                                 );
 
+                                // TODO(CRITICAL): Triangular arb legs currently do NOT form a closed loop.
+                                // All three legs are independent USDT-quoted pairs (BASE/USDT), which is
+                                // NOT true triangular arbitrage.  Proper triangular arb requires
+                                // intermediate pairs (e.g. A/USDT → B/A → USDT/B) where the quote
+                                // currency of one leg is the base currency of the next.  The `is_buy`
+                                // direction for leg 2 must be derived from the path returned by
+                                // `tri_path_finder`, not hardcoded.  Integrate `tri_path_finder`
+                                // to produce the correct chain of pairs and directions.
+                                tracing::warn!(
+                                    "TRIANGULAR: execution currently uses flat USDT pairs instead of proper path-chained intermediate pairs — needs tri_path_finder integration"
+                                );
+
                                 // Build three OrderIntents for the triangular legs.
                                 // In production these symbols would come from a
                                 // token→symbol mapping table.
@@ -1543,13 +1565,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .compute_lot_size(exch as usize, token_a as usize, lot_max_pct, lot_capital);
                                 let tri_qty = if tri_qty > Decimal::ZERO { tri_qty } else { lot_fallback };
 
+                                // Derive leg-2 is_buy from path direction:
+                                // In a standard A→B→C→A loop, leg 2 (B) is sold (is_buy=false).
+                                // Once tri_path_finder is integrated, this should come from the resolved path.
+                                let leg2_is_buy = false;
+
+                                // Arena bounds checks for all three legs
+                                let idx_a = signal_arena.get_index(exch as usize, token_a as usize);
+                                if idx_a >= signal_arena.ask_prices.len() {
+                                    tracing::warn!(exchange = exch, token = token_a, "arena index out of bounds (tri leg-a), skipping");
+                                    continue;
+                                }
+                                let idx_b = signal_arena.get_index(exch as usize, token_b as usize);
+                                if idx_b >= signal_arena.bid_prices.len() {
+                                    tracing::warn!(exchange = exch, token = token_b, "arena index out of bounds (tri leg-b), skipping");
+                                    continue;
+                                }
+                                let idx_c = signal_arena.get_index(exch as usize, token_c as usize);
+                                if idx_c >= signal_arena.bid_prices.len() {
+                                    tracing::warn!(exchange = exch, token = token_c, "arena index out of bounds (tri leg-c), skipping");
+                                    continue;
+                                }
+
                                 let legs = [
                                     OrderIntent {
                                         exchange_id: exch,
                                         token_id: token_a,
                                         qty: tri_qty.clone(),
                                         price: Decimal::from(
-                                            signal_arena.ask_prices[signal_arena.get_index(exch as usize, token_a as usize)].load(Ordering::Relaxed),
+                                            signal_arena.ask_prices[idx_a].load(Ordering::Relaxed),
                                         ) / Decimal::from(100_000_000u64),
                                         is_buy: true,
                                         symbol: {
@@ -1563,9 +1607,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         token_id: token_b,
                                         qty: tri_qty.clone(),
                                         price: Decimal::from(
-                                            signal_arena.bid_prices[signal_arena.get_index(exch as usize, token_b as usize)].load(Ordering::Relaxed),
+                                            signal_arena.bid_prices[idx_b].load(Ordering::Relaxed),
                                         ) / Decimal::from(100_000_000u64),
-                                        is_buy: true,
+                                        is_buy: leg2_is_buy,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_b)
                                                 .unwrap_or_else(|| format!("TOKEN{}", token_b));
@@ -1577,7 +1621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         token_id: token_c,
                                         qty: tri_qty,
                                         price: Decimal::from(
-                                            signal_arena.bid_prices[signal_arena.get_index(exch as usize, token_c as usize)].load(Ordering::Relaxed),
+                                            signal_arena.bid_prices[idx_c].load(Ordering::Relaxed),
                                         ) / Decimal::from(100_000_000u64),
                                         is_buy: false,
                                         symbol: {
@@ -1773,6 +1817,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let dev_bps = (deviation * rust_decimal::Decimal::from(10_000u64))
                         .to_u64()
                         .unwrap_or(0);
+                    if dev_bps >= 500 { // 5% single-tick move → immediate trip
+                        flash_engine.volatility_circuit.store(true, Ordering::Release);
+                        tracing::error!(dev_bps, "FLASH CRASH: single-tick move exceeded 5%, tripping circuit");
+                    }
                     if dev_bps > max_deviation_bps {
                         max_deviation_bps = dev_bps;
                     }
@@ -2037,5 +2085,11 @@ fn decimal_to_fp(d: Decimal) -> u64 {
     let scaled = d * Decimal::from(FP_SCALE);
     let s = format!("{}", scaled);
     let parts: Vec<&str> = s.split('.').collect();
-    parts[0].parse().unwrap_or(0)
+    let integer_part: u64 = if parts[0].is_empty() {
+        tracing::warn!(value = %d, "decimal_to_fp: empty integer part, defaulting to 0");
+        0
+    } else {
+        parts[0].parse().unwrap_or(0)
+    };
+    integer_part
 }

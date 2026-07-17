@@ -97,6 +97,9 @@ impl CrossExchangeTarget {
     /// Check if an exchange carries this token.
     #[inline(always)]
     pub fn has_exchange(&self, exchange_id: u16) -> bool {
+        if exchange_id >= 64 {
+            return false;
+        }
         (self.exchange_mask & (1u64 << exchange_id)) != 0
     }
 

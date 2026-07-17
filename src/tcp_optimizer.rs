@@ -140,10 +140,7 @@ impl TcpOptimizer {
 
         builder
             .build()
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to build optimized reqwest::Client, falling back to default");
-                reqwest::Client::new()
-            })
+            .expect("FATAL: failed to build optimized reqwest::Client — aborting")
     }
 
     /// Returns the number of registered exchanges.

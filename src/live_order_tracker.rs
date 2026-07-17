@@ -57,34 +57,38 @@ impl LiveOrderTracker {
     /// Record a newly submitted order. Called immediately after the exchange
     /// returns an order_id.
     ///
-    /// Automatically triggers cleanup if the map is past half capacity,
-    /// and prunes the oldest entries if the hard limit is exceeded.
+    /// M-7 fix: Restructured to hold the lock once instead of triple-locking
+    /// (len → cleanup_stale → prune_oldest each acquired/released separately).
     pub fn track(&self, order_id: &str, exchange_id: u16, symbol: &str, is_buy: bool) {
-        // Proactive cleanup when past half the max capacity.
-        if self.len() > self.max_tracked_orders / 2 {
-            self.cleanup_stale();
-        }
-
-        let order = TrackedOrder {
-            order_id: order_id.to_string(),
-            exchange_id,
-            symbol: symbol.to_uppercase(),
-            is_buy,
-            submitted_at: Instant::now(),
-            submitted_at_epoch_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-            filled_qty: rust_decimal::Decimal::ZERO,
-        };
         if let Ok(mut map) = self.orders.lock() {
-            map.insert(order_id.to_string(), order);
-            self.total_tracked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+            // Proactive cleanup when past half the max capacity.
+            if map.len() > self.max_tracked_orders / 2 {
+                map.retain(|_, order| order.submitted_at.elapsed().as_secs() < self.max_age_secs);
+            }
 
-        // Hard-cap: if we still exceed the limit, prune the oldest entries.
-        if self.len() > self.max_tracked_orders {
-            self.prune_oldest();
+            // Hard-cap: if we still exceed the limit, prune the oldest entry.
+            if map.len() >= self.max_tracked_orders {
+                if let Some(oldest) = map.iter()
+                    .min_by_key(|(_, o)| o.submitted_at)
+                    .map(|(k, _)| k.clone())
+                {
+                    map.remove(&oldest);
+                }
+            }
+
+            map.insert(order_id.to_string(), TrackedOrder {
+                order_id: order_id.to_string(),
+                exchange_id,
+                symbol: symbol.to_uppercase(),
+                is_buy,
+                submitted_at: Instant::now(),
+                submitted_at_epoch_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                filled_qty: rust_decimal::Decimal::ZERO,
+            });
+            self.total_tracked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 

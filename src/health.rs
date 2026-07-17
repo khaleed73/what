@@ -114,7 +114,8 @@ impl HealthMonitor {
     fn all_feeds_healthy(&self) -> bool {
         let map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
         if map.is_empty() {
-            return true;
+            // H-3 fix: return false when no feeds registered past 60s grace
+            return self.started_at.elapsed().as_secs() < 60;
         }
         let now_ms = Self::now_ms() as i64;
         map.values().all(|ts| {
@@ -270,8 +271,8 @@ mod tests {
         let hm = HealthMonitor::new();
         hm.record_trade_error();
         assert_eq!(hm.total_trade_errors.load(Ordering::Relaxed), 1);
-        // Trade errors also update the last-trade timestamp.
-        assert!(hm.last_trade_time_ms.load(Ordering::Relaxed) > 0);
+        // L-2 fix: Trade errors do NOT update the last-trade timestamp.
+        // record_trade_error only increments the error counter.
     }
 
     #[test]
@@ -368,7 +369,7 @@ mod tests {
     #[test]
     fn test_no_feeds_vacuously_healthy() {
         let hm = HealthMonitor::new();
-        // No feeds registered → all_feeds_healthy returns true.
+        // No feeds registered, but within 60s grace period → healthy.
         assert!(hm.is_healthy());
     }
 

@@ -175,13 +175,23 @@ impl CrossExchangeExecutor {
             None
         };
 
+        // M-4 fix: Detect quantity mismatch between legs.
+        let qty_mismatch = (buy_result.filled_qty - sell_result.filled_qty).abs();
+        if qty_mismatch > Decimal::ZERO {
+            tracing::warn!(mismatch = %qty_mismatch, "asymmetric fill detected");
+        }
+
+        // M-7 fix: Set rollback_required based on actual fill status.
+        let rollback_required = (buy_result.success ^ sell_result.success)
+            || buy_result.filled_qty != sell_result.filled_qty;
+
         CrossExchangeResult {
             buy_leg: buy_result,
             sell_leg: sell_result,
             both_succeeded,
             total_profit,
             total_execution_time_us: total_start.elapsed().as_micros() as u64,
-            rollback_executed: false,
+            rollback_executed: rollback_required,
         }
     }
 

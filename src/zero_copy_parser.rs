@@ -13,8 +13,8 @@
 /// Result of parsing an order book update.
 #[derive(Debug, Clone)]
 pub struct FastParsedOrderBook {
-    /// Token/pair symbol (zero-copy borrowed from input).
-    pub token_id: String,
+    /// Token/pair symbol.
+    pub symbol: String,
     /// Best bid price.
     pub bid: f64,
     /// Best ask price.
@@ -25,7 +25,7 @@ pub struct FastParsedOrderBook {
 #[derive(Debug, Clone)]
 pub struct FastParsedExecutionReport {
     /// Token/pair symbol.
-    pub token_id: String,
+    pub symbol: String,
     /// New balance (if present).
     pub balance: f64,
     /// Order status.
@@ -49,7 +49,7 @@ pub fn parse_raw_bytes_fast(payload: &[u8]) -> Option<FastParsedOrderBook> {
     let text = std::str::from_utf8(payload).ok()?;
 
     // Extract value after "t" key (symbol).
-    let token_id = extract_string_value(text, "t")?;
+    let symbol = extract_string_value(text, "t")?;
 
     // Extract value after "b" key (best bid).
     let bid = extract_number_value(text, "b")?;
@@ -58,7 +58,7 @@ pub fn parse_raw_bytes_fast(payload: &[u8]) -> Option<FastParsedOrderBook> {
     let ask = extract_number_value(text, "a")?;
 
     Some(FastParsedOrderBook {
-        token_id,
+        symbol,
         bid,
         ask,
     })
@@ -81,7 +81,7 @@ pub fn parse_execution_report_bytes_simulated(payload: &[u8]) -> Option<FastPars
     let text = std::str::from_utf8(payload).ok()?;
 
     // Extract token_id from "t" key.
-    let token_id = extract_string_value(text, "t")?;
+    let symbol = extract_string_value(text, "t")?;
 
     // Extract balance from "B" key (Binance format) or "bal" key.
     let balance = extract_number_value(text, "B")
@@ -93,7 +93,7 @@ pub fn parse_execution_report_bytes_simulated(payload: &[u8]) -> Option<FastPars
         .unwrap_or_else(|| "UNKNOWN".to_string());
 
     Some(FastParsedExecutionReport {
-        token_id,
+        symbol,
         balance,
         status,
     })
@@ -108,9 +108,21 @@ pub fn parse_execution_report_bytes_simulated(payload: &[u8]) -> Option<FastPars
 /// Handles both compact (`"t":"BTCUSDT"`) and spaced (`"t": "BTCUSDT"`)
 /// formats.
 fn extract_string_value(text: &str, key: &str) -> Option<String> {
-    // Build the search pattern: "key":"
+    // Build the search pattern: "key"
     let pattern = format!("\"{}\"", key);
     let start = text.find(&pattern)?;
+
+    // Boundary check: the match must be a whole key, not a substring
+    // of a longer key. The byte after the pattern must be a colon or
+    // whitespace followed by a colon.
+    let after_pattern = start + pattern.len();
+    if after_pattern >= text.len() {
+        return None;
+    }
+    let next_byte = text.as_bytes()[after_pattern];
+    if next_byte != b':' && !next_byte.is_ascii_whitespace() {
+        return None;
+    }
 
     // Move past the pattern to the colon.
     let after_key = &text[start + pattern.len()..];
@@ -132,6 +144,16 @@ fn extract_string_value(text: &str, key: &str) -> Option<String> {
 fn extract_number_value(text: &str, key: &str) -> Option<f64> {
     let pattern = format!("\"{}\"", key);
     let start = text.find(&pattern)?;
+
+    // Boundary check: ensure the match is a whole key.
+    let after_pattern = start + pattern.len();
+    if after_pattern >= text.len() {
+        return None;
+    }
+    let next_byte = text.as_bytes()[after_pattern];
+    if next_byte != b':' && !next_byte.is_ascii_whitespace() {
+        return None;
+    }
 
     let after_key = &text[start + pattern.len()..];
 
@@ -166,7 +188,7 @@ mod tests {
     fn test_parse_order_book_compact() {
         let payload = br#"{"t":"BTCUSDT","b":50000.5,"a":50001.0,"T":1700000000000}"#;
         let result = parse_raw_bytes_fast(payload).unwrap();
-        assert_eq!(result.token_id, "BTCUSDT");
+        assert_eq!(result.symbol, "BTCUSDT");
         assert!((result.bid - 50000.5).abs() < 0.01);
         assert!((result.ask - 50001.0).abs() < 0.01);
     }
@@ -175,7 +197,7 @@ mod tests {
     fn test_parse_order_book_spaced() {
         let payload = br#"{"t": "ETHUSDT", "b": 3000.25, "a": 3000.75}"#;
         let result = parse_raw_bytes_fast(payload).unwrap();
-        assert_eq!(result.token_id, "ETHUSDT");
+        assert_eq!(result.symbol, "ETHUSDT");
         assert!((result.bid - 3000.25).abs() < 0.01);
     }
 
@@ -195,7 +217,7 @@ mod tests {
     fn test_parse_execution_report() {
         let payload = br#"{"e":"executionReport","t":"SOLUSDT","B":150.25,"X":"FILLED"}"#;
         let result = parse_execution_report_bytes_simulated(payload).unwrap();
-        assert_eq!(result.token_id, "SOLUSDT");
+        assert_eq!(result.symbol, "SOLUSDT");
         assert!((result.balance - 150.25).abs() < 0.01);
         assert_eq!(result.status, "FILLED");
     }
@@ -204,7 +226,7 @@ mod tests {
     fn test_parse_execution_report_no_balance() {
         let payload = br#"{"e":"executionReport","t":"BTCUSDT","X":"PARTIALLY_FILLED"}"#;
         let result = parse_execution_report_bytes_simulated(payload).unwrap();
-        assert_eq!(result.token_id, "BTCUSDT");
+        assert_eq!(result.symbol, "BTCUSDT");
         assert!((result.balance - 0.0).abs() < 0.01);
         assert_eq!(result.status, "PARTIALLY_FILLED");
     }

@@ -94,6 +94,11 @@ impl RiskShield {
             return None;
         }
 
+        // Safety Guard 4: Verify sufficient order book depth for leg 1
+        if leg1_qty > leg1.ask_qty {
+            return None;
+        }
+
         // Leg 2: Buy asset C with asset B (pay ask price, incur fee)
         let leg2_qty_before_fee = leg1_qty / leg2.ask_price;
         let leg2_fee = leg2_qty_before_fee * fee_rate;
@@ -104,10 +109,20 @@ impl RiskShield {
             return None;
         }
 
+        // Safety Guard 5: Verify sufficient order book depth for leg 2
+        if leg2_qty > leg2.ask_qty {
+            return None;
+        }
+
         // Leg 3: Sell asset C back to base currency (receive bid price, incur fee)
         let leg3_proceeds_before_fee = leg2_qty * leg3.bid_price;
         let leg3_fee = leg3_proceeds_before_fee * fee_rate;
         let leg3_proceeds = leg3_proceeds_before_fee - leg3_fee;
+
+        // Safety Guard 6: Verify sufficient order book depth for leg 3 (sell side)
+        if leg2_qty > leg3.bid_qty {
+            return None;
+        }
 
         // Calculate net return multiplier
         let net_return = leg3_proceeds / capital;

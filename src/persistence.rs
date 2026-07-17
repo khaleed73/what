@@ -150,7 +150,16 @@ impl AsyncPersistenceWorker {
             // This avoids corrupting the file on a mid-write crash.
             let tmp_path = format!("{}.tmp", path);
             fs::write(&tmp_path, &json).map_err(|e| format!("write tmp failed: {}", e))?;
-            fs::rename(&tmp_path, &path).map_err(|e| format!("rename failed: {}", e))?;
+            // M-10: EXDEV fallback — rename fails across filesystems.
+            if let Err(e) = fs::rename(&tmp_path, &path) {
+                if e.raw_os_error() == Some(18) {
+                    // EXDEV: cross-device link — copy + delete instead.
+                    std::fs::copy(&tmp_path, &path).map_err(|e| format!("EXDEV copy failed: {}", e))?;
+                    std::fs::remove_file(&tmp_path).map_err(|e| format!("EXDEV cleanup failed: {}", e))?;
+                } else {
+                    return Err(format!("rename failed: {}", e));
+                }
+            }
             Ok(())
         })
         .await

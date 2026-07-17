@@ -75,7 +75,8 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                         // Parse trade ID as string to avoid u16 truncation.
                         // Binance trade IDs are 64-bit — truncating to u16 causes
                         // silent data corruption after trade ID 65535.
-                        if trade_id_str.is_empty() { trade_id_str = String::new(); }
+                        // Use trade_id_str (full string) as the primary identifier.
+                        // Never truncate to u16 for asset identification.
                         trade_id_str.clear();
                         let num_start = i;
                         while i < len && payload[i].is_ascii_digit() {
@@ -86,7 +87,9 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                                 trade_id_str = s.to_string();
                             }
                         }
-                        // For backward compat: parse as u16 for values that fit.
+                        // Keep full string as primary ID; u16 is only for
+                        // legacy backward compatibility and must NOT be used
+                        // for identifying assets.
                         if let Ok(id_val) = trade_id_str.parse::<u16>() {
                             token_id = id_val;
                         }
@@ -152,7 +155,8 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
         i += 1;
     }
 
-    if is_execution_report && !trade_id_str.is_empty() && balance_decimal >= Decimal::ZERO {
+    // A balance of exactly 0 is valid (just sold all of an asset).
+    if is_execution_report && !trade_id_str.is_empty() {
         Some(ExecutionReport {
             token_id,
             trade_id_str,
@@ -312,9 +316,11 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_zero_balance() {
+    fn test_accept_zero_balance() {
         let frame = br#"{"e":"executionReport","t":1,"B":"0.00"}"#;
-        assert!(parse_execution_report_bytes(frame).is_none());
+        let result = parse_execution_report_bytes(frame).unwrap();
+        assert!(result.is_execution_report);
+        assert_eq!(result.balance, Decimal::from_str("0.00").unwrap());
     }
 
     #[test]

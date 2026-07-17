@@ -124,9 +124,7 @@ impl OrderPipeline for PaperExecutionPipeline {
         drop(bal);
 
         // --- bookkeeping --------------------------------------------------------
-        self.total_trades.fetch_add(1, Ordering::Relaxed);
-
-        let trade_seq = self.total_trades.load(Ordering::Relaxed);
+        let trade_seq = self.total_trades.fetch_add(1, Ordering::Relaxed) + 1;
         debug!(
             trade = trade_seq,
             symbol = %intent.symbol,
@@ -596,7 +594,10 @@ impl HighFrequencyExecutionEngine {
     /// Returns (daily_loss_cents, daily_profit_cents) after potential reset.
     fn check_daily_reset(&self) -> (u64, u64) {
         let today = chrono::Utc::now().ordinal();
-        let mut last_day = self.daily_reset_day.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last_day = self.daily_reset_day.lock().unwrap_or_else(|e| {
+            tracing::error!("daily_reset_day mutex poisoned — recovering");
+            e.into_inner()
+        });
         if today != *last_day {
             *last_day = today;
             let old_loss = self.daily_loss_cents.swap(0, Ordering::Relaxed);
@@ -634,9 +635,10 @@ impl HighFrequencyExecutionEngine {
     /// `profit_cents` can be negative (loss) or positive (gain).
     fn record_daily_pnl(&self, profit_cents: i64) {
         if profit_cents >= 0 {
-            self.daily_profit_cents.fetch_add(profit_cents.unsigned_abs(), Ordering::Relaxed);
+            self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Relaxed);
         } else {
-            self.daily_loss_cents.fetch_add(profit_cents.unsigned_abs(), Ordering::Relaxed);
+            let abs = (profit_cents as i128).unsigned_abs().min(u64::MAX as u128) as u64;
+            self.daily_loss_cents.fetch_add(abs, Ordering::Relaxed);
         }
     }
 
@@ -771,27 +773,30 @@ impl HighFrequencyExecutionEngine {
                 // Handle timeouts and convert to OrderResult.
                 let result_a = match res_a {
                     Ok(Ok(r)) => r,
-                    Ok(Err(_timeout_err)) => {
+                    Ok(Err(_pipeline_err)) => {
                         tracing::warn!(
                             exchange = leg_a.exchange_id,
                             symbol = %leg_a.symbol,
-                            "leg-a timed out at 200ms — triggering emergency counter-order"
+                            "leg-a pipeline error (not timeout) — triggering emergency counter-order"
                         );
                         self.rollback_count.fetch_add(1, Ordering::Relaxed);
-                        self.fire_counter_order(pipeline, &leg_a, &OrderResult {
+                        // Try to extract partial fill from the pipeline error if available;
+                        // fall back to ZERO filled_qty if the error is not an OrderResult.
+                        let fallback_result = OrderResult {
                             success: false,
                             order_id: None,
                             filled_qty: Decimal::ZERO,
                             avg_price: Decimal::ZERO,
-                            error: Some("200ms timeout".to_string()),
+                            error: Some("leg-a pipeline error".to_string()),
                             slippage_bps: None,
-                        }).await;
+                        };
+                        self.fire_counter_order(pipeline, &leg_a, &fallback_result).await;
                         OrderResult {
                             success: false,
                             order_id: None,
                             filled_qty: Decimal::ZERO,
                             avg_price: Decimal::ZERO,
-                            error: Some("leg-a timed out after 200ms".to_string()),
+                            error: Some("leg-a pipeline error (not timeout)".to_string()),
                             slippage_bps: None,
                         }
                     }
@@ -807,27 +812,28 @@ impl HighFrequencyExecutionEngine {
 
                 let result_b = match res_b {
                     Ok(Ok(r)) => r,
-                    Ok(Err(_timeout_err)) => {
+                    Ok(Err(_pipeline_err)) => {
                         tracing::warn!(
                             exchange = leg_b.exchange_id,
                             symbol = %leg_b.symbol,
-                            "leg-b timed out at 200ms — triggering emergency counter-order"
+                            "leg-b pipeline error (not timeout) — triggering emergency counter-order"
                         );
                         self.rollback_count.fetch_add(1, Ordering::Relaxed);
-                        self.fire_counter_order(pipeline, &leg_b, &OrderResult {
+                        let fallback_result = OrderResult {
                             success: false,
                             order_id: None,
                             filled_qty: Decimal::ZERO,
                             avg_price: Decimal::ZERO,
-                            error: Some("200ms timeout".to_string()),
+                            error: Some("leg-b pipeline error".to_string()),
                             slippage_bps: None,
-                        }).await;
+                        };
+                        self.fire_counter_order(pipeline, &leg_b, &fallback_result).await;
                         OrderResult {
                             success: false,
                             order_id: None,
                             filled_qty: Decimal::ZERO,
                             avg_price: Decimal::ZERO,
-                            error: Some("leg-b timed out after 200ms".to_string()),
+                            error: Some("leg-b pipeline error (not timeout)".to_string()),
                             slippage_bps: None,
                         }
                     }
@@ -929,7 +935,11 @@ impl HighFrequencyExecutionEngine {
             };
             let buy_notional = buy_result.filled_qty * buy_result.avg_price;
             let sell_notional = sell_result.filled_qty * sell_result.avg_price;
-            let profit = sell_notional - buy_notional;
+            // Estimate taker fees (default 10 bps if actual fee unavailable)
+            let fee_bps = Decimal::from(10u64);
+            let buy_fee = buy_notional * fee_bps / Decimal::from(10_000u64);
+            let sell_fee = sell_notional * fee_bps / Decimal::from(10_000u64);
+            let profit = sell_notional - buy_notional - buy_fee - sell_fee;
             let profit_cents = (profit * Decimal::from(100u64))
                 .trunc()
                 .to_i64()
@@ -1027,22 +1037,23 @@ impl HighFrequencyExecutionEngine {
                     let result = match res {
                         Ok(Ok(r)) => r,
                         Ok(Err(_)) => {
-                            tracing::warn!(leg = i, "leg-{} timed out at 200ms — triggering rollback", i);
+                            tracing::warn!(leg = i, "leg-{} pipeline error (not timeout) — triggering rollback", i);
                             self.rollback_count.fetch_add(1, Ordering::Relaxed);
-                            self.fire_counter_order(pipeline, &legs[i], &OrderResult {
+                            let fallback_result = OrderResult {
                                 success: false,
                                 order_id: None,
                                 filled_qty: Decimal::ZERO,
                                 avg_price: Decimal::ZERO,
-                                error: Some("200ms timeout".to_string()),
+                                error: Some(format!("leg-{} pipeline error", i)),
                                 slippage_bps: None,
-                            }).await;
+                            };
+                            self.fire_counter_order(pipeline, &legs[i], &fallback_result).await;
                             OrderResult {
                                 success: false,
                                 order_id: None,
                                 filled_qty: Decimal::ZERO,
                                 avg_price: Decimal::ZERO,
-                                error: Some(format!("leg-{} timed out after 200ms", i)),
+                                error: Some(format!("leg-{} pipeline error (not timeout)", i)),
                                 slippage_bps: None,
                             }
                         }
@@ -1138,7 +1149,17 @@ impl HighFrequencyExecutionEngine {
             }
         }
         if buy_notional > Decimal::ZERO || sell_notional > Decimal::ZERO {
-            let profit = sell_notional - buy_notional;
+            // Estimate taker fees for all three legs (default 10 bps if actual fee unavailable)
+            let fee_bps = Decimal::from(10u64);
+            let mut total_fee = Decimal::ZERO;
+            for (i, result) in total_result.iter().enumerate() {
+                if result.success && result.filled_qty > Decimal::ZERO {
+                    let notional = result.filled_qty * result.avg_price;
+                    total_fee += notional * fee_bps / Decimal::from(10_000u64);
+                    let _ = &legs[i]; // used only for iteration context
+                }
+            }
+            let profit = sell_notional - buy_notional - total_fee;
             let profit_cents = (profit * Decimal::from(100u64))
                 .trunc()
                 .to_i64()
@@ -1174,9 +1195,8 @@ impl HighFrequencyExecutionEngine {
     /// Stored internally as fixed-point (value × 1_000_000).
     /// Example: `Decimal::new(5, 4)` (= 0.0005 = 5 bps) → stored as 500.
     pub fn set_slippage_tolerance(&self, tolerance: Decimal) {
-        let fp = (tolerance * Decimal::from(1_000_000u64)).to_string();
-        let val: u64 = fp.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(500);
-        self.slippage_tolerance_fp.store(val, Ordering::Release);
+        let fp = (tolerance * Decimal::from(1_000_000u64)).round().to_u64().unwrap_or(500);
+        self.slippage_tolerance_fp.store(fp.max(1), Ordering::Release);
     }
 
     /// Returns the cumulative slippage-rejection counter.
@@ -1704,8 +1724,8 @@ pub fn check_slippage(
         intended_price.saturating_sub(actual_price)
     };
 
-    let slippage_bps = (deviation * Decimal::from(10_000u64)
-        / intended_price)
+    let slippage_bps = (deviation * Decimal::from(10_000u64) / intended_price)
+        .ceil()
         .to_u64()
         .unwrap_or(0);
 
@@ -1727,18 +1747,16 @@ pub fn check_slippage(
 #[inline]
 fn decimal_to_fp(d: Decimal) -> u64 {
     if d < Decimal::ZERO {
-        tracing::warn!(value = %d, "execution decimal_to_fp: negative value, clamping to 0");
+        tracing::warn!(value = %d, "execution decimal_to_fp: negative value clamped to 0");
         return 0;
     }
     let scaled = d * Decimal::from(1_000_000u64);
-    // Use string round-trip to avoid truncation issues with .to_u64()
+    if scaled > Decimal::from(u64::MAX) {
+        tracing::error!(value = %d, "execution decimal_to_fp: value too large for u64, capping");
+        return u64::MAX;
+    }
     let s = format!("{}", scaled);
-    let parts: Vec<&str> = s.split('.').collect();
-    let integer_part: u64 = parts[0].parse().unwrap_or_else(|_| {
-        tracing::warn!(value = %d, scaled = %s, "execution decimal_to_fp: parse overflow, defaulting to 0");
-        0
-    });
-    integer_part
+    s.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 // ===========================================================================

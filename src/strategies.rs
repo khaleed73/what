@@ -40,8 +40,14 @@ impl ExchangeFeeSchedule {
     /// since we cannot guarantee maker fills on HFT time-scales.
     #[inline(always)]
     pub fn round_trip_taker_bps(&self, exch_a: usize, exch_b: usize) -> u64 {
-        let a = self.taker_fees.get(exch_a).copied().unwrap_or(10);
-        let b = self.taker_fees.get(exch_b).copied().unwrap_or(10);
+        let a = self.taker_fees.get(exch_a).copied().unwrap_or_else(|| {
+            tracing::warn!(exchange = exch_a, "Unknown exchange in fee schedule, using 10 bps default");
+            10
+        });
+        let b = self.taker_fees.get(exch_b).copied().unwrap_or_else(|| {
+            tracing::warn!(exchange = exch_b, "Unknown exchange in fee schedule, using 10 bps default");
+            10
+        });
         a + b
     }
 
@@ -267,6 +273,22 @@ impl MarketArena {
         let idx = self.get_index(exch_id, token_id);
         self.bid_prices[idx].store(bid, Ordering::Release);
         self.ask_prices[idx].store(ask, Ordering::Release);
+    }
+
+    /// Zeros out all prices for a given exchange, preventing stale data usage
+    /// after a WebSocket disconnect.  Any strategy evaluating ticks from this
+    /// exchange will see zero bid/ask and skip the opportunity.
+    #[inline]
+    pub fn invalidate_exchange(&self, exch_id: usize) {
+        if exch_id >= self.total_exchanges {
+            return;
+        }
+        let base = exch_id * self.total_tokens;
+        for offset in 0..self.total_tokens {
+            let idx = base + offset;
+            self.bid_prices[idx].store(0, Ordering::Release);
+            self.ask_prices[idx].store(0, Ordering::Release);
+        }
     }
 
     // -----------------------------------------------------------------------

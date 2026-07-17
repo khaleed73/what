@@ -30,6 +30,10 @@ struct ExchangeRateState {
     consecutive_violations: AtomicU32,
     /// Max consecutive violations before extended cooldown.
     max_violations_before_extended: u32,
+    /// Start of the current time window (for automatic rotation).
+    window_start: std::sync::Mutex<Instant>,
+    /// Duration of each weight window.
+    window_duration: Duration,
 }
 
 impl ExchangeRateState {
@@ -43,6 +47,8 @@ impl ExchangeRateState {
             cooldown_duration: cooldown,
             consecutive_violations: AtomicU32::new(0),
             max_violations_before_extended: 3,
+            window_start: std::sync::Mutex::new(Instant::now()),
+            window_duration: Duration::from_secs(60), // 60-second window by default
         }
     }
 
@@ -52,6 +58,18 @@ impl ExchangeRateState {
     }
 
     fn record_weight(&self, weight: u64) -> RateLimitStatus {
+        // C-2: Automatic time-window rotation.
+        let _window_elapsed = {
+            let mut guard = self.window_start.lock().unwrap_or_else(|e| e.into_inner());
+            let elapsed = guard.elapsed();
+            if elapsed >= self.window_duration {
+                *guard = Instant::now();
+                self.used_weight.store(weight, Ordering::SeqCst);
+                return RateLimitStatus::Ok;
+            }
+            elapsed
+        };
+
         if self.is_paused.load(Ordering::SeqCst) {
             // Check if cooldown has elapsed — use extended cooldown
             // when consecutive violations exceed the threshold.
@@ -206,9 +224,10 @@ impl RateLimitCircuitBreaker {
         if let Some(state) = self.exchanges.get(&exchange_id.to_lowercase()) {
             state.record_weight(weight)
         } else {
-            // Unknown exchange — allow through but log warning.
-            tracing::warn!(exchange = %exchange_id, "Rate limit check for unregistered exchange");
-            RateLimitStatus::Ok
+            // C-3: Unregistered exchanges must be rejected to prevent
+            // unbounded API usage that could trigger exchange bans.
+            tracing::error!(exchange = %exchange_id, "Rate limit check for unregistered exchange — REFUSING");
+            return RateLimitStatus::Paused { remaining_ms: u64::MAX };
         }
     }
 
@@ -300,7 +319,8 @@ mod tests {
     #[test]
     fn test_unregistered_exchange_allowed() {
         let cb = make_breaker();
-        assert_eq!(cb.record_weight("unknown", 100), RateLimitStatus::Ok);
+        // C-3: Unregistered exchanges are now rejected (Paused).
+        assert!(matches!(cb.record_weight("unknown", 100), RateLimitStatus::Paused { .. }));
     }
 
     #[test]

@@ -232,7 +232,7 @@ pub mod okx {
             order_id: &str,
         ) -> Result<OrderResult, String> {
             let timestamp = Self::timestamp_millis();
-            let sign = self.sign(&timestamp, "GET", "/api/v5/trade/order", &format!("?ordId={}", order_id));
+            let sign = self.sign(&timestamp, "GET", &format!("/api/v5/trade/order?ordId={}", order_id), "");
             let url = format!("{}/api/v5/trade/order?ordId={}", self.rest_url, order_id);
 
             let resp = http_client.get(&url)
@@ -340,11 +340,13 @@ pub mod okx {
                 .as_str()
                 .map(String::from);
 
+            // Return ZERO for filled_qty and avg_price — actual fill data
+            // is not known until a subsequent query_order call.
             Ok(OrderResult {
                 success: order_id.is_some(),
                 order_id,
-                filled_qty: order.quantity,
-                avg_price: order.price.unwrap_or(Decimal::ZERO),
+                filled_qty: Decimal::ZERO,
+                avg_price: Decimal::ZERO,
                 error: None,
             })
         }

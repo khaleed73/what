@@ -113,6 +113,15 @@ impl ApiNonceManager {
         }
     }
 
+    /// M-2: Force-reset the nonce to a specific value.
+    /// Unlike `set_nonce`, this is a public API intended for manual
+    /// operator intervention when automatic sync fails.
+    pub fn force_set_nonce(&self, exchange_id: &str, value: u64) {
+        if let Some(nonce) = self.nonces.get(&exchange_id.to_lowercase()) {
+            nonce.current.store(value, Ordering::SeqCst);
+        }
+    }
+
     /// Synchronize nonce with exchange server value.
     /// Ensures local nonce is at least `server_nonce` to prevent collisions.
     pub fn sync_with_server(&self, exchange_id: &str, server_nonce: u64) {

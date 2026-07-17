@@ -8,7 +8,6 @@
 //! exchange balance hits $0, triggers rebalance request"
 
 use rust_decimal::Decimal;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// A detected starvation event.
@@ -26,20 +25,19 @@ pub struct StarvationEvent {
 
 /// Detects when an exchange runs out of capital for a specific token.
 ///
-/// This is a fast, lock-free check designed for the hot path.
-/// It uses a simple Decimal comparison rather than requiring a specific
-/// allocator type, making it universally composable.
+/// Tracks starvation on a per-exchange basis using a `HashSet` so that
+/// a single exchange recovering does not mask starvation on other exchanges.
 pub struct CapitalStarvationDetector {
     /// Minimum balance threshold below which starvation is declared.
     min_threshold: Decimal,
-    /// Whether starvation has been detected (any exchange).
-    is_starved: AtomicBool,
+    /// Set of exchange IDs currently in a starved state.
+    starved_exchanges: std::sync::Mutex<std::collections::HashSet<usize>>,
     /// Last detected starvation event.
     last_event: std::sync::Mutex<Option<StarvationEvent>>,
-    /// Optional callback invoked when starvation is detected for an exchange.
-    /// Receives the exchange ID as a `u16`. The caller (e.g. main.rs) can
-    /// wire this to trigger the rebalancer.
-    starvation_callback: Option<Arc<dyn Fn(u16) + Send + Sync>>,
+    /// Optional callback invoked when starvation is *newly* detected for an
+    /// exchange (i.e. on transition from non-starved → starved).
+    /// Receives the exchange ID as a `usize` to prevent truncation.
+    starvation_callback: Option<Arc<dyn Fn(usize) + Send + Sync>>,
 }
 
 impl CapitalStarvationDetector {
@@ -49,7 +47,7 @@ impl CapitalStarvationDetector {
     pub fn new(min_threshold: Decimal) -> Self {
         Self {
             min_threshold,
-            is_starved: AtomicBool::new(false),
+            starved_exchanges: std::sync::Mutex::new(std::collections::HashSet::new()),
             last_event: std::sync::Mutex::new(None),
             starvation_callback: None,
         }
@@ -79,7 +77,14 @@ impl CapitalStarvationDetector {
                 min_threshold: self.min_threshold,
             };
 
-            self.is_starved.store(true, Ordering::SeqCst);
+            // H-5: Track per-exchange starvation state.
+            let was_starved = {
+                let mut starved_guard = self.starved_exchanges.lock().unwrap_or_else(|e| e.into_inner());
+                let already = starved_guard.contains(&exchange_id);
+                starved_guard.insert(exchange_id);
+                already
+            };
+
             {
                 let mut guard = self.last_event.lock().unwrap_or_else(|e| e.into_inner());
                 *guard = Some(event.clone());
@@ -90,14 +95,14 @@ impl CapitalStarvationDetector {
                 token_id,
                 balance = %current_balance,
                 threshold = %self.min_threshold,
-                "CAPITAL STARVATION detected — rebalance required"
+                "CAPITAL STARVATION detected \u{2014} rebalance required"
             );
 
-            // Invoke the starvation callback if one is registered.
-            // The lock is NOT held here — this prevents deadlock if the
-            // callback calls `clear_starvation()`.
-            if let Some(ref cb) = self.starvation_callback {
-                cb(exchange_id as u16);
+            // M-8: Only fire callback on state transition (non-starved → starved).
+            if !was_starved {
+                if let Some(ref cb) = self.starvation_callback {
+                    cb(exchange_id);
+                }
             }
 
             return Some(event);
@@ -107,16 +112,33 @@ impl CapitalStarvationDetector {
     }
 
     /// Returns `true` if any exchange is currently starved.
-    #[inline(always)]
+    #[inline]
     pub fn is_starved(&self) -> bool {
-        self.is_starved.load(Ordering::SeqCst)
+        let guard = self.starved_exchanges.lock().unwrap_or_else(|e| e.into_inner());
+        !guard.is_empty()
     }
 
-    /// Clears the starvation flag (e.g. after rebalance completes).
-    pub fn clear_starvation(&self) {
-        self.is_starved.store(false, Ordering::SeqCst);
-        *self.last_event.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        tracing::info!("Capital starvation cleared");
+    /// Clears starvation for a specific exchange, but only if the verified
+    /// balance exceeds the minimum threshold (M-9). Returns `true` if the
+    /// exchange was successfully cleared, `false` if the balance is still
+    /// insufficient.
+    pub fn clear_starvation(&self, exchange_id: usize, verified_balance: Decimal) -> bool {
+        if verified_balance <= self.min_threshold {
+            return false;
+        }
+        let mut guard = self.starved_exchanges.lock().unwrap_or_else(|e| e.into_inner());
+        guard.remove(&exchange_id);
+        if guard.is_empty() {
+            *self.last_event.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            tracing::info!("Capital starvation cleared for exchange {}", exchange_id);
+        } else {
+            tracing::info!(
+                "Capital starvation cleared for exchange {} ({} exchanges still starved)",
+                exchange_id,
+                guard.len()
+            );
+        }
+        true
     }
 
     /// Returns the last starvation event, if any.
@@ -124,10 +146,10 @@ impl CapitalStarvationDetector {
         self.last_event.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Registers a callback that is invoked whenever starvation is detected
-    /// for an exchange. The callback receives the exchange ID as `u16`.
+    /// Registers a callback that is invoked whenever starvation is *newly*
+    /// detected for an exchange. The callback receives the exchange ID as `usize`.
     /// This allows the caller to wire starvation detection to the rebalancer.
-    pub fn set_starvation_callback(&mut self, callback: Arc<dyn Fn(u16) + Send + Sync>) {
+    pub fn set_starvation_callback(&mut self, callback: Arc<dyn Fn(usize) + Send + Sync>) {
         self.starvation_callback = Some(callback);
     }
 }
@@ -158,7 +180,7 @@ mod tests {
         // Trigger starvation first.
         let _ = det.check_balance(0, 0, Decimal::ZERO);
         assert!(det.is_starved());
-        det.clear_starvation();
+        det.clear_starvation(0, dec!(100.0));
         assert!(!det.is_starved());
     }
 

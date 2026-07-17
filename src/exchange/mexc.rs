@@ -143,10 +143,11 @@ impl Exchange for MexcExchange {
         let avg_price = parse_json_decimal(&json["avgPrice"]);
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
         Ok(OrderResponse {
             order_id,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: "NEW".to_string(),
+            status: status_str.to_string(),
             filled_qty,
             avg_price,
             exchange: self.name.clone(),
@@ -481,10 +482,11 @@ impl Exchange for MexcExchange {
             .map_err(|e| anyhow::anyhow!("MEXC: failed to extract order ID: {}", e))?;
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
         Ok(OrderResponse {
             order_id,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: "NEW".to_string(),
+            status: status_str.to_string(),
             filled_qty: Decimal::ZERO,
             avg_price: Decimal::ZERO,
             exchange: self.name.clone(),
@@ -579,10 +581,11 @@ impl Exchange for MexcExchange {
         let avg_price = parse_json_decimal(&json["avgPrice"]);
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
         Ok(OrderResponse {
             order_id,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: "NEW".to_string(),
+            status: status_str.to_string(),
             filled_qty,
             avg_price,
             exchange: self.name.clone(),

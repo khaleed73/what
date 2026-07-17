@@ -43,8 +43,8 @@ pub struct DustManager {
     dust_threshold_usd: Decimal,
     /// Minimum total dust value to trigger a sweep.
     sweep_threshold_usd: Decimal,
-    /// Target token for dust conversion per exchange (e.g. BNB for Binance).
-    target_tokens: HashMap<u16, String>,
+    /// C-13 fix: Target tokens wrapped in RwLock for thread safety.
+    target_tokens: std::sync::RwLock<HashMap<u16, String>>,
     /// Accumulated dust entries.
     dust_inventory: std::sync::Mutex<Vec<DustEntry>>,
 }
@@ -55,7 +55,7 @@ impl DustManager {
         Self {
             dust_threshold_usd: DEFAULT_DUST_THRESHOLD_USD,
             sweep_threshold_usd: DEFAULT_SWEEP_THRESHOLD_USD,
-            target_tokens: HashMap::new(),
+            target_tokens: std::sync::RwLock::new(HashMap::new()),
             dust_inventory: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -65,7 +65,7 @@ impl DustManager {
         Self {
             dust_threshold_usd: dust_threshold,
             sweep_threshold_usd: sweep_threshold,
-            target_tokens: HashMap::new(),
+            target_tokens: std::sync::RwLock::new(HashMap::new()),
             dust_inventory: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -73,12 +73,13 @@ impl DustManager {
     /// Register the target conversion token for an exchange.
     ///
     /// Example: Binance → "BNB", OKX → "OKB", Bybit → "MNT"
-    pub fn set_target_token(&mut self, exchange_id: u16, token: &str) {
-        self.target_tokens.insert(exchange_id, token.to_uppercase());
+    pub fn set_target_token(&self, exchange_id: u16, token: &str) {
+        self.target_tokens.write().unwrap_or_else(|e| e.into_inner()).insert(exchange_id, token.to_uppercase());
     }
 
     /// Ingest a balance update. If the balance is below dust threshold,
     /// it's added to the dust inventory.
+    /// C-5 fix: Also removes entries when balance rises above threshold.
     #[inline]
     pub fn update_balance(
         &self,
@@ -111,6 +112,11 @@ impl DustManager {
                     estimated_usd_value: usd_value,
                 });
             }
+        } else {
+            // C-5: Balance is above dust threshold — remove from inventory
+            // if it was previously tracked as dust.
+            let mut inventory = self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner());
+            inventory.retain(|e| !(e.exchange_id == exchange_id && e.token_symbol == token_symbol.to_uppercase()));
         }
     }
 
@@ -126,7 +132,7 @@ impl DustManager {
         inventory
             .iter()
             .filter_map(|entry| {
-                let target = self.target_tokens.get(&entry.exchange_id)?;
+                let target = self.target_tokens.read().unwrap_or_else(|e| e.into_inner()).get(&entry.exchange_id)?;
                 Some(DustConversionRequest {
                     exchange_id: entry.exchange_id,
                     token_symbol: entry.token_symbol.clone(),
@@ -170,7 +176,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     fn make_manager() -> DustManager {
-        let mut mgr = DustManager::with_thresholds(dec!(1.0), dec!(3.0));
+        let mgr = DustManager::with_thresholds(dec!(1.0), dec!(3.0));
         mgr.set_target_token(1, "BNB");
         mgr
     }

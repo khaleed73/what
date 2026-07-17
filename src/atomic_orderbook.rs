@@ -13,9 +13,16 @@ pub const MAX_BOOK_DEPTH: usize = 50;
 /// Atomic representation of a single price level.
 /// Uses u64 atomics with fixed-point encoding for lock-free reads.
 /// Encoding: value_u64 = (value_f64 * 1_000_000_000) as u64 (9 decimal places)
+///
+/// A sequence-lock pattern prevents torn reads when reading both price and
+/// quantity as a pair: `store()` increments `version` before and after the
+/// writes, while `load()` retries if the version changed during the read.
 pub struct AtomicLevel {
     price_fp: AtomicU64,    // Fixed-point price (9 decimals)
     quantity_fp: AtomicU64, // Fixed-point quantity (9 decimals)
+    /// Monotonically increasing version counter for sequence-lock reads.
+    /// Even = stable, odd = update in progress.
+    version: AtomicU64,
 }
 
 const FP_SCALE_U64: u64 = 1_000_000_000;
@@ -31,6 +38,7 @@ impl AtomicLevel {
         Self {
             price_fp: AtomicU64::new(0),
             quantity_fp: AtomicU64::new(0),
+            version: AtomicU64::new(0),
         }
     }
 
@@ -40,8 +48,8 @@ impl AtomicLevel {
         match scaled.trunc_with_scale(0).to_string().parse::<u64>() {
             Ok(fp) => fp,
             Err(_) => {
-                tracing::warn!(value = %d, "atomic_orderbook decimal_to_fp: parse overflow, defaulting to 0");
-                0
+                tracing::warn!(value = %d, "atomic_orderbook decimal_to_fp: parse overflow, capping to u64::MAX");
+                u64::MAX
             }
         }
     }
@@ -51,14 +59,13 @@ impl AtomicLevel {
         Decimal::from(fp) / Decimal::from(FP_SCALE_U64)
     }
 
-    /// Stores a price/quantity pair atomically.
-    /// Note: Two separate stores are not truly atomic as a pair,
-    /// but individual reads are lock-free. For truly atomic pair updates,
-    /// the caller should use a higher-level synchronization mechanism
-    /// (e.g., sequence lock pattern).
+    /// Stores a price/quantity pair atomically using a sequence-lock
+    /// pattern to prevent torn reads in `load()`.
     pub fn store(&self, price: Decimal, quantity: Decimal) {
+        let v = self.version.fetch_add(1, Ordering::Release);
         self.price_fp.store(Self::decimal_to_fp(price), Ordering::Release);
         self.quantity_fp.store(Self::decimal_to_fp(quantity), Ordering::Release);
+        self.version.store(v + 2, Ordering::Release);
     }
 
     /// Loads the price atomically.
@@ -71,16 +78,33 @@ impl AtomicLevel {
         Self::fp_to_decimal(self.quantity_fp.load(Ordering::Acquire))
     }
 
-    /// Loads both price and quantity. Not atomic as a pair —
-    /// use only for approximate reads where exact consistency isn't critical.
+    /// Loads both price and quantity using the sequence-lock pattern.
+    /// Retries if a concurrent `store()` is in progress, guaranteeing
+    /// a consistent (non-torn) pair.
     pub fn load(&self) -> (Decimal, Decimal) {
-        (self.load_price(), self.load_quantity())
+        loop {
+            let v1 = self.version.load(Ordering::Acquire);
+            if v1 & 1 != 0 {
+                // Store in progress — spin briefly then retry.
+                std::hint::spin_loop();
+                continue;
+            }
+            let p = Self::fp_to_decimal(self.price_fp.load(Ordering::Acquire));
+            let q = Self::fp_to_decimal(self.quantity_fp.load(Ordering::Acquire));
+            let v2 = self.version.load(Ordering::Acquire);
+            if v1 == v2 {
+                return (p, q);
+            }
+            // Version changed — retry
+        }
     }
 
-    /// Zeros out this level.
+    /// Zeros out this level (also bumps the version to invalidate stale reads).
     pub fn clear(&self) {
+        let v = self.version.fetch_add(1, Ordering::Release);
         self.price_fp.store(0, Ordering::Release);
         self.quantity_fp.store(0, Ordering::Release);
+        self.version.store(v + 2, Ordering::Release);
     }
 }
 

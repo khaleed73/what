@@ -37,7 +37,12 @@ impl AccountInventory {
     }
 
     pub fn ratio_y(&self) -> Decimal {
-        Decimal::ONE - self.ratio_x()
+        let total = self.total_stable();
+        if total > Decimal::ZERO {
+            Decimal::ONE - (self.stable_balance_x / total)
+        } else {
+            Decimal::ZERO
+        }
     }
 }
 
@@ -226,12 +231,11 @@ impl RebalanceMatrixEngine {
         let prev_hash = self.last_compute_hash.load(Ordering::Acquire);
         let last_time = self.last_compute_time.load(Ordering::Acquire);
 
-        // Fast-path: same inputs OR minimum interval not yet elapsed → return cache.
-        // `prev_hash != 0` ensures we have actually computed at least once.
-        if prev_hash != 0
-            && (h == prev_hash
-                || (now - last_time) < self.min_rebalance_interval_secs)
-        {
+        // C-18 fix: Check hash gate first, then time gate.
+        if h == prev_hash {
+            return self.last_compute_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        }
+        if (now - last_time) < self.min_rebalance_interval_secs {
             return self.last_compute_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
         }
 
@@ -275,8 +279,8 @@ impl RebalanceMatrixEngine {
         // Target: 50/50 split
         let target_each = total / Decimal::TWO;
 
-        // Calculate raw transfer needed
-        let raw_transfer = (source_balance - target_each) / (Decimal::ONE + self.execution_fee);
+        // C-9 fix: Correct transfer fee formula — use (1 - fee) not (1 + fee).
+        let raw_transfer = (source_balance - target_each) / (Decimal::ONE - self.execution_fee);
         // Round down to be conservative
         let transfer_amount = raw_transfer.floor();
 
@@ -413,8 +417,9 @@ mod tests {
             stable_balance_x: Decimal::ZERO,
             stable_balance_y: Decimal::ZERO,
         };
+        // C-14 fix: ratio_y returns 0 when total is 0, not 1.
         assert_eq!(inv.ratio_x(), Decimal::ZERO);
-        assert_eq!(inv.ratio_y(), Decimal::ONE);
+        assert_eq!(inv.ratio_y(), Decimal::ZERO);
     }
 
     #[test]

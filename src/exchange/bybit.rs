@@ -191,11 +191,13 @@ impl Exchange for BybitClient {
             "orderId": order_id
         });
         let body_str = serde_json::to_string(&body)?;
+        let recv_window = std::env::var("BYBIT_RECV_WINDOW")
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
             self.config.api_key.expose(),
-            "5000",
+            recv_window,
             body_str
         );
         let signature = sign_hmac(self.config.api_secret.expose(), &sign_str)?;
@@ -207,7 +209,7 @@ impl Exchange for BybitClient {
             .header("X-BAPI-SIGN", &signature)
             .header("X-BAPI-SIGN-TYPE", "2")
             .header("X-BAPI-TIMESTAMP", &timestamp.to_string())
-            .header("X-BAPI-RECV-WINDOW", "5000")
+            .header("X-BAPI-RECV-WINDOW", &recv_window.to_string())
             .header("Content-Type", "application/json")
             .body(body_str)
             .send()
@@ -405,11 +407,13 @@ impl Exchange for BybitClient {
                     continue;
                 }
             };
+            let recv_window = std::env::var("BYBIT_RECV_WINDOW")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
             let sign_str = format!(
                 "{}{}{}{}",
                 timestamp,
                 self.config.api_key.expose(),
-                "5000",
+                recv_window,
                 body_str
             );
             let signature = match sign_hmac(self.config.api_secret.expose(), &sign_str) {
@@ -427,7 +431,7 @@ impl Exchange for BybitClient {
                 .header("X-BAPI-SIGN", &signature)
                 .header("X-BAPI-SIGN-TYPE", "2")
                 .header("X-BAPI-TIMESTAMP", &timestamp.to_string())
-                .header("X-BAPI-RECV-WINDOW", "5000")
+                .header("X-BAPI-RECV-WINDOW", &recv_window.to_string())
                 .header("Content-Type", "application/json")
                 .body(body_str)
                 .send()

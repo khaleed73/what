@@ -7,7 +7,11 @@
 use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+// H-3 fix: Monotonic counter to prevent client order ID collisions.
+static ORDER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // Note: uuid::Uuid is used only as a fallback for client_order_id uniqueness.
 // All exchange modules already depend on the uuid crate via their
@@ -159,10 +163,12 @@ impl SafetyExecutionEngine {
             });
 
         let price_hash = (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(0) % 0xFFFFFFFF;
+        // H-3 fix: Add monotonic counter to prevent collisions within same ms.
+        let seq = ORDER_COUNTER.fetch_add(1, Ordering::Relaxed);
         let client_order_id = if timestamp_ms == 0 && price_hash == 0 {
             format!("{}-uuid-{}", exchange_id, uuid::Uuid::new_v4())
         } else {
-            format!("{}-{}-{:08x}", exchange_id, timestamp_ms, price_hash)
+            format!("{}-{}-{:08x}-{}", exchange_id, timestamp_ms, price_hash, seq)
         };
 
         Ok(SafeOrderPayload {
@@ -261,7 +267,8 @@ impl SafetyExecutionEngine {
             price: counter_price,
             quantity: counter_qty,
             time_in_force: "IOC".to_string(),
-            client_order_id: format!("COUNTER-{}-{}-{:x}", original.exchange_id, timestamp_ms, timestamp_ms % 9999),
+            // L-3 fix: Zero-pad the hash component for consistent format.
+            client_order_id: format!("COUNTER-{}-{:04x}-{}", original.exchange_id, timestamp_ms % 9999, ORDER_COUNTER.fetch_add(1, Ordering::Relaxed)),
             timestamp_ms,
             exchange_id: original.exchange_id,
         }

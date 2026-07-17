@@ -283,6 +283,7 @@ impl TradeLog {
         let leg2_sym = legs.leg2_symbol.clone();
         let leg3_sym = legs.leg3_symbol.clone();
 
+        // H-4 fix: Record full P&L on the last leg only to avoid triple-counting.
         let record1 = TradeRecord {
             trade_id: id1.clone(),
             timestamp: now,
@@ -293,7 +294,7 @@ impl TradeLog {
             quantity: legs.leg1_quantity,
             price: legs.leg1_price,
             fee: legs.leg1_fee,
-            pnl_realized: Some(per_leg_pnl),
+            pnl_realized: None,
             strategy: "triangular".to_string(),
             pair_trade_id: Some(id2.clone()),
         };
@@ -308,7 +309,7 @@ impl TradeLog {
             quantity: legs.leg2_quantity,
             price: legs.leg2_price,
             fee: legs.leg2_fee,
-            pnl_realized: Some(per_leg_pnl),
+            pnl_realized: None,
             strategy: "triangular".to_string(),
             pair_trade_id: Some(id3.clone()),
         };
@@ -323,7 +324,7 @@ impl TradeLog {
             quantity: legs.leg3_quantity,
             price: legs.leg3_price,
             fee: legs.leg3_fee,
-            pnl_realized: Some(per_leg_pnl),
+            pnl_realized: Some(loop_pnl),
             strategy: "triangular".to_string(),
             pair_trade_id: Some(id1.clone()),
         };

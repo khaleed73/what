@@ -70,7 +70,7 @@ impl IbankExchange {
 
     /// Get the next monotonic nonce.
     fn next_nonce(&self) -> u64 {
-        self.nonce.fetch_add(1, Ordering::Relaxed)
+        self.nonce.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Sign a request using HMAC-SHA512.
@@ -377,7 +377,10 @@ impl Exchange for IbankExchange {
                 filled_qty: parse_json_decimal(&order["VolumeFilled"]),
                 avg_price: parse_json_decimal(&order["AvgPrice"]),
                 exchange: self.name.clone(),
-                fee: None,
+                fee: {
+                    let f = parse_json_decimal(&order["Fee"]);
+                    if f.abs() > Decimal::ZERO { Some(f) } else { None }
+                },
                 fee_currency: None,
                 slippage_bps: None,
                 created_at_ms: None,
@@ -415,7 +418,10 @@ impl Exchange for IbankExchange {
                         filled_qty: parse_json_decimal(&order["VolumeFilled"]),
                         avg_price: parse_json_decimal(&order["AvgPrice"]),
                         exchange: self.name.clone(),
-                        fee: None,
+                        fee: {
+                            let f = parse_json_decimal(&order["Fee"]);
+                            if f.abs() > Decimal::ZERO { Some(f) } else { None }
+                        },
                         fee_currency: None,
                         slippage_bps: None,
                         created_at_ms: None,
@@ -566,6 +572,16 @@ impl Exchange for IbankExchange {
     // ── Order book ──────────────────────────────────────────────────────
 
     async fn fetch_order_book(&self, symbol: &str, depth: u32) -> Result<OrderBookSnapshot> {
+        // NOTE: Independent Reserve's GetMarketSummary only returns 1-level depth
+        // (best bid/ask). The `depth` parameter is accepted but only 1 level is
+        // available via this endpoint.
+        if depth > 1 {
+            tracing::warn!(
+                exchange = %self.name(),
+                requested_depth = depth,
+                "Ibank: only 1-level orderbook depth is supported; requested depth will be clamped"
+            );
+        }
         let (primary, secondary) = Self::parse_pair(symbol);
         let url = format!(
             "{}/Public/GetMarketSummary?primaryCurrencyCode={}&secondaryCurrencyCode={}",

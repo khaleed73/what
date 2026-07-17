@@ -70,22 +70,25 @@ impl RateLimiter {
     ///
     /// Uses `SystemTime` for monotonic cross-call comparison. The initial
     /// call always proceeds immediately (last == 0 sentinel).
+    /// Uses a compare_exchange loop to avoid TOCTOU races.
     pub async fn throttle(&self) {
-        let now_us = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
-        let last = self.last_call.load(Ordering::Acquire);
-
-        if last > 0 {
-            if let Some(sleep_us) = (last + self.min_interval_us).checked_sub(now_us) {
-                if sleep_us > 0 && sleep_us < 1_000_000 {
-                    tokio::time::sleep(Duration::from_micros(sleep_us)).await;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        loop {
+            let now_us = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros() as u64;
+            let last = self.last_call.load(Ordering::Acquire);
+            if last == 0 || now_us >= last + self.min_interval_us {
+                if self.last_call.compare_exchange(last, now_us, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    break;
                 }
+                // CAS failed, retry
+            } else {
+                let sleep_us = last + self.min_interval_us - now_us;
+                tokio::time::sleep(Duration::from_micros(sleep_us)).await;
             }
         }
-
-        self.last_call.store(now_us, Ordering::Release);
     }
 }
 

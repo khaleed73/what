@@ -27,7 +27,7 @@ pub struct DeribitExchange {
     /// Monotonic JSON-RPC request ID counter.
     rpc_id: AtomicU64,
     /// Cached auth token.
-    access_token: std::sync::Mutex<Option<String>>,
+    access_token: std::sync::Mutex<Option<(String, u64)>>,
 }
 
 impl DeribitExchange {
@@ -71,12 +71,21 @@ impl DeribitExchange {
     /// Per spec:
     ///   Signature = HMAC-SHA256(api_secret, nonce + api_key + timestamp)
     ///   Auth body includes: grant_type, client_id, client_secret, timestamp, signature, nonce
+    ///
+    /// Token is cached with its expiry time (expires_in seconds from response).
+    /// Proactively re-auths when token is within 30 seconds of expiry.
     async fn ensure_auth(&self) -> Result<String> {
-        // Check cached token
+        // Check cached token — re-auth if missing or expiring within 30s
         {
             let guard = self.access_token.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref token) = *guard {
-                return Ok(token.clone());
+            if let Some((ref token, expires_at_us)) = *guard {
+                let now_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros() as u64;
+                if now_us + 30_000_000 < expires_at_us {
+                    return Ok(token.clone());
+                }
             }
         }
 
@@ -141,11 +150,19 @@ impl DeribitExchange {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Deribit auth failed: no access_token in response"))?
             .to_string();
+        let expires_in_ms = json["result"]["expires_in"]
+            .as_u64()
+            .unwrap_or(3600) * 1000;
+        let now_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        let expires_at_us = now_us + expires_in_ms * 1000;
 
-        // Cache it
+        // Cache it with expiry
         {
             let mut guard = self.access_token.lock().unwrap_or_else(|e| e.into_inner());
-            *guard = Some(token.clone());
+            *guard = Some((token.clone(), expires_at_us));
         }
 
         Ok(token)
@@ -343,9 +360,9 @@ impl Exchange for DeribitExchange {
             match self.call_private("private/get_account_summary", params).await {
                 Ok(json) => {
                     let summary = &json["result"];
-                    let equity = parse_json_decimal(&summary["equity"]);
-                    if equity > Decimal::ZERO {
-                        balances.insert(currency.to_string(), equity);
+                    let available = parse_json_decimal(&summary["availableBalance"]);
+                    if available > Decimal::ZERO {
+                        balances.insert(currency.to_string(), available);
                     }
                 }
                 Err(_) => {
@@ -369,9 +386,9 @@ impl Exchange for DeribitExchange {
                         Some(c) => c,
                         None => continue,
                     };
-                    let equity = parse_json_decimal(&entry["equity"]);
-                    if !curr.is_empty() && equity > Decimal::ZERO {
-                        balances.insert(curr.to_string(), equity);
+                    let available = parse_json_decimal(&entry["availableBalance"]);
+                    if !curr.is_empty() && available > Decimal::ZERO {
+                        balances.insert(curr.to_string(), available);
                     }
                 }
             }
@@ -604,7 +621,7 @@ impl Exchange for DeribitExchange {
         let inst = symbol.replace('/', "-");
         let params = serde_json::json!({
             "instrument_name": inst,
-            "depth": depth.min(200),
+            "depth": depth.max(1).min(200),
         });
 
         let json = self

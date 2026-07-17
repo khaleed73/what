@@ -45,6 +45,8 @@ pub struct StreamConfig {
     pub backoff_multiplier: f64,
     /// Ping interval in seconds (None = disabled).
     pub ping_interval_secs: Option<u64>,
+    /// Exchange ID used to seed per-exchange deterministic jitter.
+    pub exchange_id: u16,
 }
 
 impl Default for StreamConfig {
@@ -56,6 +58,7 @@ impl Default for StreamConfig {
             max_reconnect_delay_ms: 30000,
             backoff_multiplier: 2.0,
             ping_interval_secs: Some(30),
+            exchange_id: 0,
         }
     }
 }
@@ -86,7 +89,7 @@ impl ZeroLagStreamManager {
         let delay_ms = base_delay * self.config.backoff_multiplier.powi(attempt as i32);
         let capped = delay_ms.min(max_delay);
         // Add jitter: +/- 10%
-        let jitter = capped * 0.1 * (rand_jitter() - 0.5);
+        let jitter = capped * 0.1 * (rand_jitter(self.config.exchange_id) - 0.5);
         Duration::from_millis((capped + jitter).max(100.0) as u64)
     }
 
@@ -247,14 +250,16 @@ fn extract_price_quantity_array(json: &str, key: &str) -> Option<Vec<(String, St
     }
 }
 
-/// Simple pseudo-random jitter generator using system time.
-fn rand_jitter() -> f64 {
+/// Simple pseudo-random jitter generator using system time seeded
+/// with exchange_id for deterministic-but-different jitter per exchange.
+fn rand_jitter(exchange_id: u16) -> f64 {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    // Simple LCG-based jitter
-    let x = ts.wrapping_mul(1103515245).wrapping_add(12345);
+    // LCG seeded with exchange_id to avoid all exchanges jittering identically.
+    let seed = ts ^ (exchange_id as u64 * 1_000_003);
+    let x = seed.wrapping_mul(1103515245).wrapping_add(12345);
     (x % 1000) as f64 / 1000.0
 }
 

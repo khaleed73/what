@@ -311,6 +311,11 @@ impl BacktestEngine {
             }
 
             // For each symbol, check all exchange pairs for arb opportunity.
+            // H-2 fix: Snapshot balances before evaluating strategies to prevent
+            // intra-timestamp look-ahead bias.  Without this, strategy 2's
+            // balance check would see strategy 1's trade applied at the same
+            // timestamp, which is information it shouldn't have.
+            let balances_snapshot: HashMap<u16, Decimal> = self.exchange_balances.clone();
             for (symbol, symbol_bars) in &by_symbol {
                 if symbol_bars.len() < 2 {
                     continue;
@@ -506,8 +511,11 @@ impl BacktestEngine {
         // Max drawdown.
         let max_drawdown = compute_max_drawdown(&equity_curve);
 
-        // Sharpe ratio (annualized, assuming ~365 days of data).
-        let sharpe_ratio = compute_sharpe_ratio(&equity_curve, 365);
+        // Sharpe ratio (annualized).
+        // M-8 fix: Bars are 1-second intervals, so annual_steps = 86400 * 365.
+        let bar_interval_secs: u64 = 1;
+        let annual_steps = (86_400u64 / bar_interval_secs) * 365;
+        let sharpe_ratio = compute_sharpe_ratio(&equity_curve, annual_steps);
 
         info!(
             total_pnl = %total_pnl,
@@ -554,8 +562,9 @@ impl BacktestEngine {
         let base_ts = 1_700_000_000_000i64; // Nov 2023
         let exchanges = [0u16, 1u16, 2u16]; // Binance, Bybit, OKX
         let symbols = ["BTCUSDT", "ETHUSDT"];
+        // L-5 fix: Use realistic ETH base price ($2200, not $2280).
         let base_prices: HashMap<&str, Decimal> =
-            [("BTCUSDT", dec(43000.0)), ("ETHUSDT", dec(2280.0))]
+            [("BTCUSDT", dec(43000.0)), ("ETHUSDT", dec(2200.0))]
                 .iter()
                 .copied()
                 .collect();
@@ -581,7 +590,8 @@ impl BacktestEngine {
 
             // Random walk: ±0.05% per tick with mean reversion.
             let noise = (next_rand() - 0.5) * 0.001;
-            let base_ref_price = dec(43000.0) + Decimal::from(sym_idx as u64 * 2000);
+            // H-2 / L-5 fix: Use per-symbol base price for mean reversion.
+            let base_ref_price = base_prices.get(symbol).copied().unwrap_or(dec!(43000.0));
             let mean_reversion = (base - base_ref_price)
                 * Decimal::from_str_radix("0.0001", 10).unwrap_or(Decimal::ZERO);
             let adj_noise = Decimal::from_f64_retain(noise).unwrap_or(Decimal::ZERO);
@@ -779,15 +789,15 @@ fn compute_sharpe_ratio(equity_curve: &[Decimal], annual_steps: u64) -> Decimal 
     let n = Decimal::from(returns.len() as u64);
     let mean = sum / n;
 
-    // Standard deviation.
-    let variance: Decimal = returns
+    // M-8 fix: Use sample variance (n-1 denominator) for unbiased estimate.
+        let variance: Decimal = returns
         .iter()
         .map(|r| {
             let diff = *r - mean;
             diff * diff
         })
         .sum::<Decimal>()
-        / n;
+        / (n - Decimal::ONE);
 
     let std_dev = if variance >= Decimal::ZERO {
         decimal_sqrt(variance, 20)

@@ -197,8 +197,8 @@ impl Exchange for BitstampExchange {
             "sell"
         };
         let body = format!(
-            "type=market&amount={}&price={}&side={}",
-            order.quantity, 0, side
+            "type=market&amount={}&side={}",
+            order.quantity, side
         );
 
         let json = self
@@ -279,8 +279,7 @@ impl Exchange for BitstampExchange {
                     parse_balance_f64(val, "bitstamp", key);
                     0.0
                 });
-                if amount > 0.0 {
-                    // Extract asset name from key prefix (e.g. "btc_available" -> "BTC")
+                if amount > 0.0 && key.ends_with("_available") {
                     let asset = key.split('_').next().unwrap_or(key);
                     balances.insert(
                         asset.to_uppercase(),

@@ -22,23 +22,22 @@ const FP_SCALE: u64 = 1_000_000;
 
 /// Convert a `Decimal` to a fixed-point `u64` (truncated).
 /// Value = d * 1_000_000
-fn decimal_to_fp(d: Decimal) -> u64 {
-    // Decimal * 1_000_000, truncated toward zero
-    let scaled = d * Decimal::from(FP_SCALE);
-    // to_string avoids overflow that .trunc_with_scale(0).to_u64() might hit;
-    // we round toward zero manually.
-    let neg = scaled < Decimal::ZERO;
-    let abs = if neg { -scaled } else { scaled };
-    let s = abs.to_string();
-    // Find the decimal point if present
-    let truncated_str = if let Some(dot) = s.find('.') {
-        // Keep only the integer part
-        &s[..dot]
-    } else {
-        &s
-    };
-    let val: u64 = truncated_str.parse().unwrap_or(0);
-    if neg { val.wrapping_neg() } else { val }
+///
+/// **C-8 FIX**: Negative inputs are clamped to 0 instead of wrapping via
+/// `wrapping_neg()` (which would produce a huge u64 near MAX).  Overflow
+/// beyond u64::MAX is also capped.
+pub fn decimal_to_fp(d: Decimal) -> u64 {
+    if d < Decimal::ZERO {
+        tracing::error!(value = %d, "decimal_to_fp: NEGATIVE balance — clamping to 0");
+        return 0;
+    }
+    let scaled = d * Decimal::from(1_000_000u64);
+    if scaled > Decimal::from(u64::MAX) {
+        tracing::error!(value = %d, "decimal_to_fp: overflow — capping to u64::MAX");
+        return u64::MAX;
+    }
+    let s = format!("{}", scaled);
+    s.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 /// Convert a fixed-point `u64` back to a `Decimal`.
@@ -193,6 +192,8 @@ impl LocalCapitalAllocator {
 
     #[inline]
     fn idx(&self, exchange_id: usize, token_id: usize) -> usize {
+        debug_assert!(exchange_id < self.total_exchanges, "exchange_id {} >= total_exchanges {}", exchange_id, self.total_exchanges);
+        debug_assert!(token_id < self.total_tokens, "token_id {} >= total_tokens {}", token_id, self.total_tokens);
         exchange_id * self.total_tokens + token_id
     }
 
@@ -257,6 +258,26 @@ impl LocalCapitalAllocator {
             );
         }
         fp_to_decimal(total_fp)
+    }
+
+    /// Atomically subtract `amount` from the balance using `fetch_sub`.
+    /// This is a single atomic operation, avoiding TOCTOU races between
+    /// a separate read and write (see C-2).
+    pub fn fetch_sub_balance(&self, exchange_id: usize, token_id: usize, amount: Decimal) {
+        let fp = decimal_to_fp(amount);
+        if fp == 0 { return; }
+        let idx = self.idx(exchange_id, token_id);
+        self.balances[idx].fetch_sub(fp, Ordering::SeqCst);
+    }
+
+    /// Atomically add `amount` to the balance using `fetch_add`.
+    /// This is a single atomic operation, avoiding TOCTOU races between
+    /// a separate read and write (see C-2).
+    pub fn fetch_add_balance(&self, exchange_id: usize, token_id: usize, amount: Decimal) {
+        let fp = decimal_to_fp(amount);
+        if fp == 0 { return; }
+        let idx = self.idx(exchange_id, token_id);
+        self.balances[idx].fetch_add(fp, Ordering::SeqCst);
     }
 
     /// Returns the available balance of a specific token on a specific exchange.

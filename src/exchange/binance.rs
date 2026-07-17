@@ -260,10 +260,10 @@ impl Exchange for BinanceClient {
     }
 
     async fn fetch_balance(&self) -> Result<HashMap<String, Decimal>> {
+        self.throttle().await;
         let timestamp = self.get_binance_timestamp().await?;
         let params = format!("timestamp={}", timestamp);
         let signature = sign_hmac(self.config.api_secret.expose(), &params)?;
-        self.throttle().await;
         let url = format!(
             "{}/api/v3/account?{}&signature={}",
             self.config.base_url, params, signature
@@ -368,24 +368,8 @@ impl Exchange for BinanceClient {
         } else {
             Decimal::ZERO
         };
-        let fee: Decimal = json["fills"]
-            .as_array()
-            .map(|fills| {
-                fills
-                    .iter()
-                    .filter_map(|f| {
-                        f["commission"]
-                            .as_str()
-                            .map(|s| s.parse::<Decimal>().unwrap_or(Decimal::ZERO))
-                    })
-                    .sum()
-            })
-            .unwrap_or(Decimal::ZERO);
-        let fee_currency = json["fills"]
-            .as_array()
-            .and_then(|fills| fills.first())
-            .and_then(|f| f["commissionAsset"].as_str())
-            .map(String::from);
+        // Fee data is not available via GET /api/v3/order endpoint;
+        // use fetch_order_status or fills endpoint separately if fee is needed.
         Ok(OrderResponse {
             order_id: extract_order_id(&json["orderId"])?,
             client_order_id: extract_client_order_id(&json["clientOrderId"], "clientOrderId", "Binance"),
@@ -393,8 +377,8 @@ impl Exchange for BinanceClient {
             filled_qty,
             avg_price,
             exchange: self.name.clone(),
-            fee: Some(fee),
-            fee_currency,
+            fee: None,
+            fee_currency: None,
             slippage_bps: None,
             created_at_ms: None,
             updated_at_ms: None,

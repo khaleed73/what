@@ -150,7 +150,10 @@ impl PrivateApiSigner {
 
             "okx" => {
                 let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-                let sign = self.generate_okx_signature(&timestamp, "GET", "/api/v5/account", "");
+                // H-5 fix: DO NOT pre-compute the signature here.  The OKX
+                // signature MUST be recomputed per-request with the actual
+                // method, path, and body.  Returning an empty string forces
+                // the caller to recompute it.
                 let passphrase = self
                     .passphrase
                     .as_ref()
@@ -158,7 +161,8 @@ impl PrivateApiSigner {
                     .unwrap_or_default();
                 vec![
                     ("OK-ACCESS-KEY".into(), self.api_key.expose().to_string()),
-                    ("OK-ACCESS-SIGN".into(), sign),
+                    // MUST be recomputed per-request
+                    ("OK-ACCESS-SIGN".into(), String::new()),
                     ("OK-ACCESS-TIMESTAMP".into(), timestamp),
                     ("OK-ACCESS-PASSPHRASE".into(), passphrase),
                     ("Content-Type".into(), "application/json".into()),

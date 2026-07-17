@@ -8,7 +8,8 @@
 //! The spec defines three methods:
 //! - `new(symbol)` — creates a circuit for a target stablecoin
 //! - `check_safety()` — returns `!is_depegged` (true = safe to trade)
-//! - `set_depeg_state(state)` — atomically sets the depegged flag
+//! - `attempt_recovery()` — attempts to clear the depeg state if price is in range
+//! - `set_depeg_state(true)` — atomically trips the circuit (clearing is not allowed directly)
 
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -92,14 +93,33 @@ impl StablecoinProtectionCircuit {
         !self.is_depegged.load(Ordering::SeqCst)
     }
 
-    /// Atomically sets the depegged state.
+    /// Trips the depeg circuit, freezing trading.
     ///
-    /// # Arguments
-    /// * `depegged` — `true` to trip the circuit (freeze trading),
-    ///   `false` to clear it (resume trading).
+    /// Only `true` is accepted. To clear a depeg state, use `attempt_recovery()`
+    /// which validates the current price against the threshold.
     #[inline]
     pub fn set_depeg_state(&self, depegged: bool) {
-        self.is_depegged.store(depegged, Ordering::SeqCst);
+        if depegged {
+            self.is_depegged.store(true, Ordering::SeqCst);
+        }
+        // Setting `false` is intentionally a no-op — use attempt_recovery() instead.
+    }
+
+    /// Attempts to recover from a depegged state by verifying the current
+    /// price is within the effective threshold. Returns `true` if recovery
+    /// succeeded (circuit cleared), `false` if still depegged.
+    #[inline]
+    pub fn attempt_recovery(&self) -> bool {
+        let price = self.last_price();
+        if price <= Decimal::ZERO { return false; }
+        let deviation = if price > Decimal::ONE { price - Decimal::ONE } else { Decimal::ONE - price };
+        if deviation <= self.effective_threshold() {
+            self.is_depegged.store(false, Ordering::SeqCst);
+            self.recovery_tick_count.store(0, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
     }
 
     /// Ingests a new price and automatically evaluates depeg status.
@@ -108,10 +128,21 @@ impl StablecoinProtectionCircuit {
     /// If the price returns within bounds, the circuit clears.
     #[inline]
     pub fn update_price(&self, price: Decimal) {
-        // Store price as fixed-point u64 (6 decimal places) for atomic reads.
-        let fixed_price = (price * Decimal::from(1_000_000u64))
-            .to_u64()
-            .unwrap_or(1_000_000u64);
+        // L-5: Reject non-positive prices early.
+        if price <= Decimal::ZERO {
+            tracing::warn!(%price, "DEPEG: invalid non-positive price \u{2014} ignoring");
+            return;
+        }
+
+        // M-6: On overflow, trip the circuit instead of defaulting to $1.00.
+        let fixed_price = match (price * Decimal::from(1_000_000u64)).to_u64() {
+            Some(fp) if fp > 0 => fp,
+            _ => {
+                tracing::error!(%price, "DEPEG: invalid price \u{2014} tripping circuit");
+                self.is_depegged.store(true, Ordering::SeqCst);
+                return;
+            }
+        };
         self.last_price.store(fixed_price, Ordering::SeqCst);
 
         let deviation = if price > Decimal::ONE {
@@ -144,20 +175,30 @@ impl StablecoinProtectionCircuit {
             }
             self.is_depegged.store(true, Ordering::SeqCst);
         } else if was_depegged {
-            // Hysteresis: require N consecutive in-range ticks before clearing.
-            let count = self.recovery_tick_count.fetch_add(1, Ordering::SeqCst) + 1;
+            // M-5: Recovery path — use CAS to prevent race.
             let required = self.recovery_ticks_required.load(Ordering::SeqCst).max(1);
-            if count >= required {
-                tracing::info!(
-                    symbol = %self.target_symbol,
-                    price = %price,
-                    recovery_ticks = count,
-                    "Peg restored after {} consecutive in-range ticks — trading resumed for {}",
-                    count,
-                    self.target_symbol
-                );
-                self.is_depegged.store(false, Ordering::SeqCst);
-                self.recovery_tick_count.store(0, Ordering::SeqCst);
+            loop {
+                let was = self.is_depegged.load(Ordering::SeqCst);
+                if !was { break; }
+                let count = self.recovery_tick_count.fetch_add(1, Ordering::SeqCst) + 1;
+                if count >= required {
+                    match self.is_depegged.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst) {
+                        Ok(_) => {
+                            self.recovery_tick_count.store(0, Ordering::SeqCst);
+                            tracing::info!(
+                                symbol = %self.target_symbol,
+                                price = %price,
+                                recovery_ticks = count,
+                                "Peg restored after {} consecutive in-range ticks \u{2014} trading resumed for {}",
+                                count,
+                                self.target_symbol
+                            );
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                break;
             }
         } else {
             // Normal state — reset counter.
@@ -193,8 +234,12 @@ impl StablecoinProtectionCircuit {
     ///   Stored internally as fixed-point (10000 = 1.0x).
     #[inline]
     pub fn update_volatility_multiplier(&self, multiplier: f64) {
+        if !(0.1..=10.0).contains(&multiplier) {
+            tracing::warn!(multiplier, "volatility_multiplier out of range [0.1, 10.0] \u{2014} ignoring");
+            return;
+        }
         let fp = (multiplier * 10_000.0).round() as u64;
-        self.volatility_multiplier.store(fp, Ordering::SeqCst);
+        self.volatility_multiplier.store(fp.max(1), Ordering::SeqCst);
     }
 
     /// Returns the current volatility multiplier as an f64.
@@ -238,7 +283,8 @@ mod tests {
         assert!(!circuit.check_safety());
         assert!(circuit.is_depegged());
 
-        circuit.set_depeg_state(false);
+        // Recovery: price is at default $1.00, so attempt_recovery() succeeds.
+        assert!(circuit.attempt_recovery());
         assert!(circuit.check_safety());
         assert!(!circuit.is_depegged());
     }

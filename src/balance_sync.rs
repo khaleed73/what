@@ -54,7 +54,7 @@ pub async fn boot_sync(
     for (&exchange_id, client) in clients {
         match sync_exchange_balance(client.as_ref(), http, exchange_id, allocator, token_id).await {
             Ok(bal) => {
-                info!(exchange = exchange_id, usdt_balance = %bal, "boot balance sync OK");
+                info!(exchange = exchange_id, balance = %bal, token_id, "boot balance sync OK");
                 total += bal;
             }
             Err(e) => {

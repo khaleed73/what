@@ -49,11 +49,15 @@ impl HtxClient {
             return Ok(cached);
         }
         let timestamp = chrono::Utc::now().timestamp_millis().to_string();
-        let _sign_str = "GET\napi.huobi.pro\n/v1/account/accounts\n".to_string();
+        let host = self.config.base_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/').next()
+            .unwrap_or("api.huobi.com");
         let signature = sign_htx(
             self.config.api_secret.expose(),
             "GET",
-            "api.huobi.pro",
+            host,
             "/v1/account/accounts",
             "",
         )?;
@@ -92,7 +96,7 @@ impl HtxClient {
     }
 
     /// Build a signed URL with HMAC-SHA256 signature for HTX API requests.
-    fn htx_signed_url(&self, path: &str, extra_params: &[(&str, String)]) -> Result<String> {
+    fn htx_signed_url(&self, method: &str, path: &str, extra_params: &[(&str, String)]) -> Result<String> {
         let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
         let mut params = vec![
             ("AccessKeyId", self.config.api_key.expose().to_string()),
@@ -113,8 +117,10 @@ impl HtxClient {
         let base = self.config.base_url.trim_end_matches('/');
         let host = base
             .trim_start_matches("https://")
-            .trim_start_matches("http://");
-        let sign = sign_htx(self.config.api_secret.expose(), "GET", host, path, &query)?;
+            .trim_start_matches("http://")
+            .split('/').next()
+            .unwrap_or("api.huobi.com");
+        let sign = sign_htx(self.config.api_secret.expose(), method, host, path, &query)?;
         Ok(format!("{}{}?{}&Signature={}", base, path, query, sign))
     }
 
@@ -148,7 +154,7 @@ impl HtxClient {
     async fn send_htx_order(&self, body: serde_json::Value) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
         let body_str = serde_json::to_string(&body)?;
-        let url = self.htx_signed_url("/v1/order/orders/place", &[])?;
+        let url = self.htx_signed_url("POST", "/v1/order/orders/place", &[])?;
         let resp = self
             .http
             .post(&url)
@@ -270,7 +276,7 @@ impl Exchange for HtxClient {
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
         let url =
-            self.htx_signed_url(&format!("/v1/order/orders/{}/submitcancel", order_id), &[])?;
+            self.htx_signed_url("POST", &format!("/v1/order/orders/{}/submitcancel", order_id), &[])?;
         let resp = self.http.post(&url).send().await?;
         self.handle_response(resp).await?;
 
@@ -301,7 +307,7 @@ impl Exchange for HtxClient {
 
     async fn fetch_balance(&self) -> Result<HashMap<String, Decimal>> {
         self.rate_limiter.throttle().await;
-        let accts_url = self.htx_signed_url("/v1/account/accounts", &[])?;
+        let accts_url = self.htx_signed_url("GET", "/v1/account/accounts", &[])?;
         let resp = self.http.get(&accts_url).send().await?;
         let json = self.handle_response(resp).await?;
         let account_id = json["data"]
@@ -310,12 +316,15 @@ impl Exchange for HtxClient {
             .and_then(|a| a["id"].as_i64())
             .unwrap_or(0);
         let bal_url =
-            self.htx_signed_url(&format!("/v1/account/accounts/{}/balance", account_id), &[])?;
+            self.htx_signed_url("GET", &format!("/v1/account/accounts/{}/balance", account_id), &[])?;
         let resp = self.http.get(&bal_url).send().await?;
         let json = self.handle_response(resp).await?;
         let mut balances = HashMap::new();
         if let Some(arr) = json["data"]["list"].as_array() {
             for b in arr {
+                if let Some(b_type) = b["type"].as_str() {
+                    if b_type != "trade" { continue; }
+                }
                 let free: f64 = b["balance"]
                     .as_str()
                     .and_then(|s| s.parse().ok())
@@ -362,7 +371,7 @@ impl Exchange for HtxClient {
 
     async fn fetch_order_status(&self, _symbol: &str, order_id: &str) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let url = self.htx_signed_url(&format!("/v1/order/orders/{}", order_id), &[])?;
+        let url = self.htx_signed_url("GET", &format!("/v1/order/orders/{}", order_id), &[])?;
         let resp = self.http.get(&url).send().await?;
         let json: serde_json::Value = resp.json().await?;
         let o = &json["data"];
@@ -424,6 +433,7 @@ impl Exchange for HtxClient {
         for symbol in symbols {
             let htx_symbol = symbol.replace('/', "").to_lowercase();
             let url = match self.htx_signed_url(
+                "POST",
                 "/v1/order/orders/batchCancelOpen",
                 &[("symbol", htx_symbol.clone())],
             ) {

@@ -72,8 +72,14 @@ impl EngineCircuitBreaker {
 
     /// Resets the breaker, allowing trading to resume.
     /// Returns true if the system was actually frozen (and is now unfrozen).
+    /// Clears stale trip metadata (reason, timestamp) on reset.
     pub fn reset(&self) -> bool {
-        self.system_frozen.swap(false, Ordering::SeqCst)
+        let was_frozen = self.system_frozen.swap(false, Ordering::SeqCst);
+        if was_frozen {
+            self.trip_reason.store(REASON_UNKNOWN, Ordering::SeqCst);
+            self.trip_timestamp_ms.store(0, Ordering::SeqCst);
+        }
+        was_frozen
     }
 
     /// Returns true if the system is currently frozen.
@@ -82,11 +88,34 @@ impl EngineCircuitBreaker {
     }
 
     /// Checks if trading is allowed. If frozen, increments rejected count.
+    /// M-11: Auto-recovers from transient issues (network partition, clock
+    /// drift) after a 60-second cooldown period.
     pub fn check_and_reject(&self) -> Result<(), CircuitBreakerError> {
         if self.is_frozen() {
+            let reason = self.trip_reason.load(Ordering::Acquire);
+            let ts = self.trip_timestamp_ms.load(Ordering::Acquire);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+
+            // Auto-recover transient issues after 60s cooldown.
+            const TRANSIENT_COOLDOWN_MS: u64 = 60_000;
+            if matches!(reason, REASON_NETWORK_PARTITION | REASON_CLOCK_DRIFT)
+                && now.saturating_sub(ts) > TRANSIENT_COOLDOWN_MS
+            {
+                self.reset();
+                tracing::info!(
+                    reason_code = reason,
+                    elapsed_ms = now.saturating_sub(ts),
+                    "Auto-recovered from transient circuit break"
+                );
+                return Ok(());
+            }
+
             self.rejected_count.fetch_add(1, Ordering::Relaxed);
             Err(CircuitBreakerError::SystemFrozen {
-                reason_code: self.trip_reason.load(Ordering::Acquire),
+                reason_code: reason,
                 rejected_total: self.rejected_count.load(Ordering::Acquire),
             })
         } else {

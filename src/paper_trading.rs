@@ -14,7 +14,11 @@ use tokio::sync::RwLock;
 
 /// Global LCG state for pseudo-random slippage sampling.
 /// Thread-safe via `AtomicU64`.
-static LCG_STATE: AtomicU64 = AtomicU64::new(42);
+/// H-6 fix: Seed from SystemTime instead of hardcoded 42.
+static LCG_STATE: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the LCG has been initialised.
+static LCG_INITIALISED: AtomicU64 = AtomicU64::new(0);
 
 /// LCG parameters (Numerical Recipes classic).
 const LCG_A: u64 = 1_664_525;
@@ -27,6 +31,13 @@ const PARTIAL_FILL_MIN_BPS: u64 = 5000;
 /// Advance the global LCG and return the raw 32-bit value.
 /// Safe to call from multiple threads.
 fn lcg_next() -> u32 {
+    // Lazy-init seed from system time on first call.
+    if LCG_INITIALISED.load(Ordering::Relaxed) == 0 {
+        let seed = std::time::SystemTime::now()
+            .as_nanos() as u64;
+        LCG_STATE.store(seed, Ordering::Relaxed);
+        LCG_INITIALISED.store(1, Ordering::Relaxed);
+    }
     LCG_STATE
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
             Some((LCG_A.wrapping_mul(s).wrapping_add(LCG_C)) % LCG_M)
@@ -415,10 +426,10 @@ impl PaperTradingPipeline {
 
 /// Convert a `Decimal` (dollar value) to fixed-point **cents** stored as `i64`.
 ///
-/// Uses truncation toward zero.  The string-round-trip avoids lossy `f64`
+/// Uses rounding to nearest cent.  The string-round-trip avoids lossy `f64`
 /// conversion for large decimal values.
 fn decimal_to_cents(value: Decimal) -> i64 {
-    let cents = (value * dec!(100)).trunc();
+    let cents = (value * Decimal::from(100u32)).round();
     cents.to_string()
         .parse::<i64>()
         .unwrap_or(0)

@@ -87,6 +87,10 @@ impl RingBufferLogger {
         // Write to the slot (non-atomic — single producer guarantees safety)
         self.buffer[slot] = Some(event);
 
+        // M-11 fix: Memory fence after data write to ensure the consumer
+        // sees the fully-initialised LogEvent before reading the slot.
+        std::sync::atomic::fence(Ordering::Release);
+
         Ok(())
     }
 

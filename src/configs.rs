@@ -622,6 +622,10 @@ impl EngineConfig {
                 )
                 .into());
             }
+            // M-1: Cross-field validation — percentages must not overlap.
+            if usdt_max_pct + usdc_min_pct > Decimal::ONE {
+                return Err("stablecoin usdt_max_pct + usdc_min_pct must be <= 1.0".into());
+            }
 
             ValidatedStablecoinConfig {
                 depeg_threshold,

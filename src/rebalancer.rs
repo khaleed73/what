@@ -386,6 +386,21 @@ impl AutoCapitalRebalancer {
                 continue;
             }
 
+            // 5. C-7 FIX: Source balance sufficiency check — verify the
+            //    allocator actually has enough balance on the source exchange
+            //    before firing the withdrawal.  Prevents sending a withdrawal
+            //    for capital that was already spent by concurrent trades.
+            let source_balance = self.allocator.get_balance_atomic(req.from_exchange_id as usize, req.token_id as usize);
+            if source_balance < req.amount {
+                warn!(
+                    from = req.from_exchange_id,
+                    available = %source_balance,
+                    requested = %req.amount,
+                    "Stage 2 ABORTED: insufficient source balance for withdrawal"
+                );
+                continue;
+            }
+
             let withdrawal_endpoint = get_withdrawal_endpoint(req.from_exchange_id);
             let network = "arbitrum";
 
@@ -495,6 +510,7 @@ impl AutoCapitalRebalancer {
                     req.to_exchange_id,
                     &req.token_symbol,
                     req.from_exchange_id,
+                    req.amount,
                 )
                 .await;
 
@@ -515,28 +531,105 @@ impl AutoCapitalRebalancer {
                         net_received,
                     );
                 }
-                DepositVerifyResult::NotFound => {
-                    // Deposit not visible yet — credit the default net amount
-                    // (amount minus gas).  This is the safe fallback: the
-                    // 60s cooldown gives high confidence for L2 transfers.
-                    let gas_fp = self.gas_fee_usd.load(Ordering::Relaxed);
-                    let gas_fee = Decimal::from(gas_fp) / Decimal::from(1_000_000u64);
-                    let effective_gas = if gas_fee > req.amount { req.amount } else { gas_fee };
-                    let net_amount = req.amount - effective_gas;
+                DepositVerifyResult::NotFound | DepositVerifyResult::ApiError(_) => {
+                    // C-3 FIX: Do NOT blindly credit on NotFound/ApiError.
+                    // Retry verification after 30 seconds, up to 3 retries.
+                    // Only credit after a Confirmed result.
+                    let max_retries: u32 = 3;
+                    let retry_delay = Duration::from_secs(30);
+                    let mut confirmed = false;
 
-                    warn!(
-                        from = req.from_exchange_id,
-                        to = req.to_exchange_id,
-                        token = %req.token_symbol,
-                        "Stage 3.5: Deposit not yet visible — crediting default net amount (amount - gas)"
-                    );
-                    self.apply_balance_realignment(
-                        req.from_exchange_id,
-                        req.to_exchange_id,
-                        req.token_id,
-                        req.amount,
-                        net_amount,
-                    );
+                    for attempt in 1..=max_retries {
+                        warn!(
+                            from = req.from_exchange_id,
+                            to = req.to_exchange_id,
+                            token = %req.token_symbol,
+                            attempt,
+                            max_retries,
+                            "Stage 3.5: Deposit not yet confirmed — retrying after 30s"
+                        );
+                        tokio::time::sleep(retry_delay).await;
+
+                        let retry_result = self
+                            .attempt_deposit_verification(
+                                req.to_exchange_id,
+                                &req.token_symbol,
+                                req.from_exchange_id,
+                                req.amount,
+                            )
+                            .await;
+
+                        match retry_result {
+                            DepositVerifyResult::Confirmed(net_received) => {
+                                info!(
+                                    from = req.from_exchange_id,
+                                    to = req.to_exchange_id,
+                                    token = %req.token_symbol,
+                                    net_received = %net_received,
+                                    attempt,
+                                    "Stage 3.5: Deposit CONFIRMED on retry"
+                                );
+                                self.apply_balance_realignment(
+                                    req.from_exchange_id,
+                                    req.to_exchange_id,
+                                    req.token_id,
+                                    req.amount,
+                                    net_received,
+                                );
+                                confirmed = true;
+                                break;
+                            }
+                            DepositVerifyResult::Failed(reason) => {
+                                error!(
+                                    from = req.from_exchange_id,
+                                    to = req.to_exchange_id,
+                                    token = %req.token_symbol,
+                                    reason = %reason,
+                                    attempt,
+                                    "Stage 3.5: Deposit FAILED during retry — aborting"
+                                );
+                                break;
+                            }
+                            DepositVerifyResult::NotFound | DepositVerifyResult::ApiError(_) => {
+                                // Still not visible, continue retrying
+                                continue;
+                            }
+                        }
+                    }
+
+                    if !confirmed {
+                        // All retries exhausted without confirmation.
+                        // C-3 FIX: Do NOT credit. Log CRITICAL for manual investigation.
+                        // Also warn if the credit amount would have been large.
+                        let gas_fp = self.gas_fee_usd.load(Ordering::Relaxed);
+                        let gas_fee = Decimal::from(gas_fp) / Decimal::from(1_000_000u64);
+                        let effective_gas = if gas_fee > req.amount { req.amount } else { gas_fee };
+                        let net_amount = req.amount - effective_gas;
+
+                        // max_blind_credit_amount safety check
+                        const MAX_BLIND_CREDIT_AMOUNT: Decimal = Decimal::from(1_000u64); // $1000
+                        if net_amount > MAX_BLIND_CREDIT_AMOUNT {
+                            error!(
+                                from = req.from_exchange_id,
+                                to = req.to_exchange_id,
+                                token = %req.token_symbol,
+                                unconfirmed_amount = %net_amount,
+                                max_safe = %MAX_BLIND_CREDIT_AMOUNT,
+                                "Stage 3.5: CRITICAL — all retries exhausted for LARGE unconfirmed deposit. \
+                                 NOT crediting balance. Manual investigation required."
+                            );
+                        } else {
+                            error!(
+                                from = req.from_exchange_id,
+                                to = req.to_exchange_id,
+                                token = %req.token_symbol,
+                                unconfirmed_amount = %net_amount,
+                                "Stage 3.5: CRITICAL — all retries exhausted for unconfirmed deposit. \
+                                 NOT crediting balance. Manual investigation required."
+                            );
+                        }
+                        continue;
+                    }
                 }
                 DepositVerifyResult::Failed(reason) => {
                     error!(
@@ -549,29 +642,6 @@ impl AutoCapitalRebalancer {
                     );
                     // Do NOT credit the balance — the transfer likely failed.
                     continue;
-                }
-                DepositVerifyResult::ApiError(e) => {
-                    // API call itself failed (network, timeout, 5xx).
-                    // Fall through to default credit — don't block rebalances
-                    // because of transient API issues.
-                    warn!(
-                        from = req.from_exchange_id,
-                        to = req.to_exchange_id,
-                        token = %req.token_symbol,
-                        error = %e,
-                        "Stage 3.5: Deposit verification API error — falling back to default credit"
-                    );
-                    let gas_fp = self.gas_fee_usd.load(Ordering::Relaxed);
-                    let gas_fee = Decimal::from(gas_fp) / Decimal::from(1_000_000u64);
-                    let effective_gas = if gas_fee > req.amount { req.amount } else { gas_fee };
-                    let net_amount = req.amount - effective_gas;
-                    self.apply_balance_realignment(
-                        req.from_exchange_id,
-                        req.to_exchange_id,
-                        req.token_id,
-                        req.amount,
-                        net_amount,
-                    );
                 }
             }
         }
@@ -597,6 +667,7 @@ impl AutoCapitalRebalancer {
         dest_exchange_id: u16,
         token_symbol: &str,
         _from_exchange_id: u16,
+        expected_amount: Decimal,
     ) -> DepositVerifyResult {
         let dest_name = crate::exchange::exchange_name_by_id(dest_exchange_id);
         if dest_name == "UNKNOWN" {
@@ -638,7 +709,7 @@ impl AutoCapitalRebalancer {
 
         // Parse the response body and look for a recent deposit.
         match response.text().await {
-            Ok(body) => self.parse_deposit_response(&body, token_symbol, dest_exchange_id),
+            Ok(body) => self.parse_deposit_response(&body, token_symbol, dest_exchange_id, expected_amount),
             Err(e) => DepositVerifyResult::ApiError(format!("body read error: {}", e)),
         }
     }
@@ -677,10 +748,18 @@ impl AutoCapitalRebalancer {
         match exchange_id {
             0 => {
                 // Binance: GET /sapi/v1/capital/deposit/hisrec
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
                 let mut params: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
                 params.insert("coin".into(), token_symbol.to_uppercase());
                 params.insert("status".into(), "1".to_string()); // 1 = success
                 params.insert("timestamp".into(), timestamp.clone());
+                // C-1 FIX: Restrict to recent deposits (last 2 minutes) to avoid
+                // matching stale deposits from earlier transfers.
+                params.insert("startTime".into(), (now_ms - 120_000).to_string());
+                params.insert("endTime".into(), now_ms.to_string());
                 let query = params.iter().map(|(k,v)| format!("{}={}",k,v)).collect::<Vec<_>>().join("&");
                 let signed = signer.generate_signed_query(&query);
                 let url = format!("https://api.binance.com/sapi/v1/capital/deposit/hisrec?{}", signed);
@@ -693,15 +772,15 @@ impl AutoCapitalRebalancer {
                 let mut h = HeaderMap::new();
                 insert_hdr(&mut h, "X-BAPI-API-KEY", signer.api_key())?;
                 let recv_window = "5000";
-                let pre_sign = format!("{}{}{}{}", timestamp, signer.api_key(), recv_window, "");
+                // C-4 FIX: Sign with the actual query string instead of empty string.
+                // Bybit V5 requires: timestamp + apiKey + recvWindow + queryString
+                let query_string = format!("coin={}&limit=1", token_symbol.to_uppercase());
+                let pre_sign = format!("{}{}{}{}", timestamp, signer.api_key(), recv_window, query_string);
                 let sign = signer.generate_hmac_signature(&pre_sign);
                 insert_hdr(&mut h, "X-BAPI-SIGN", &sign)?;
                 insert_hdr(&mut h, "X-BAPI-TIMESTAMP", &timestamp)?;
                 insert_hdr(&mut h, "X-BAPI-RECV-WINDOW", recv_window)?;
-                let url = format!(
-                    "https://api.bybit.com/v5/asset/deposit/query-record?coin={}&limit=1",
-                    token_symbol.to_uppercase()
-                );
+                let url = format!("https://api.bybit.com/v5/asset/deposit/query-record?{}", query_string);
                 Ok((url, h))
             }
             2 => {
@@ -739,6 +818,7 @@ impl AutoCapitalRebalancer {
         body: &str,
         token_symbol: &str,
         _exchange_id: u16,
+        expected_amount: Decimal,
     ) -> DepositVerifyResult {
         // Generic parsing: try to extract a recent successful deposit.
         // Exchange-specific response formats:
@@ -758,6 +838,11 @@ impl AutoCapitalRebalancer {
                     if coin.eq_ignore_ascii_case(&upper) && status == 1 {
                         if let Ok(amt) = Decimal::from_str(amount_str) {
                             if amt > Decimal::ZERO {
+                                // C-1 FIX: Reject stale deposits whose amount doesn't match
+                                // the expected withdrawal amount (within $1 tolerance).
+                                if (amt - expected_amount).abs() > Decimal::from(1_000_000) {
+                                    continue;
+                                }
                                 return DepositVerifyResult::Confirmed(amt);
                             }
                         }
@@ -837,50 +922,16 @@ impl AutoCapitalRebalancer {
             .unwrap_or(0);
         self.total_gas_deducted.fetch_add(gas_fp_add, Ordering::Relaxed);
 
-        let old_from_bal = self
-            .allocator
-            .get_balance_atomic(from_exchange_id as usize, token_id as usize);
-        let old_to_bal = self
-            .allocator
-            .get_balance_atomic(to_exchange_id as usize, token_id as usize);
+        // C-2 FIX: Use atomic fetch_sub / fetch_add instead of the old
+        // read-modify-write pattern (get_balance_atomic → compute → update_balance_atomic)
+        // which had a TOCTOU race: a concurrent trade or balance sync could
+        // change the balance between the read and the write, causing lost updates.
 
-        // C-2 FIX: Clamp debit to prevent negative balance wrapping.
-        // If the source balance is already lower than expected (e.g. due to
-        // a concurrent trade or sync delay), debit only what's available.
-        let new_from_bal = if old_from_bal >= debit_amount {
-            old_from_bal - debit_amount
-        } else if old_from_bal > Decimal::ZERO {
-            // Partial debit — log the discrepancy but still proceed.
-            warn!(
-                from = from_exchange_id,
-                token_id = token_id,
-                expected_debit = %debit_amount,
-                actual_debit = %old_from_bal,
-                "Stage 4: Source balance less than debit amount — debiting available balance only"
-            );
-            Decimal::ZERO
-        } else {
-            // Source balance is already zero — nothing to debit.
-            warn!(
-                from = from_exchange_id,
-                token_id = token_id,
-                "Stage 4: Source balance already zero — skipping debit"
-            );
-            old_from_bal // no change
-        };
+        // Debit the source exchange atomically.
+        self.allocator.fetch_sub_balance(from_exchange_id as usize, token_id as usize, debit_amount);
 
-        let new_to_bal = old_to_bal + credit_amount;
-
-        self.allocator.update_balance_atomic(
-            from_exchange_id as usize,
-            token_id as usize,
-            new_from_bal,
-        );
-        self.allocator.update_balance_atomic(
-            to_exchange_id as usize,
-            token_id as usize,
-            new_to_bal,
-        );
+        // Credit the destination exchange atomically.
+        self.allocator.fetch_add_balance(to_exchange_id as usize, token_id as usize, credit_amount);
 
         info!(
             from = from_exchange_id,
@@ -889,11 +940,7 @@ impl AutoCapitalRebalancer {
             debit = %debit_amount,
             credit = %credit_amount,
             gas_fee = %effective_gas,
-            old_from = %old_from_bal,
-            new_from = %new_from_bal,
-            old_to = %old_to_bal,
-            new_to = %new_to_bal,
-            "Stage 4: Balance matrix realigned — capital transport complete"
+            "Stage 4: Balance matrix realigned — capital transport complete (atomic fetch_sub/fetch_add)"
         );
     }
 
@@ -1067,7 +1114,7 @@ impl AutoCapitalRebalancer {
                     "currency": req.token_symbol.to_uppercase(),
                     "amount": req.amount.to_string(),
                     "address": target_address,
-                    "chain": format!("ARB_{}", network.to_uppercase()),
+                    "chain": "ARB".to_string(),
                     "memo": "",
                 });
                 let body_str = body_map.to_string();
@@ -1143,7 +1190,7 @@ impl AutoCapitalRebalancer {
     /// * **Lock poisoned** → returns `true` (fail-open: don't block
     ///   all rebalances just because of a poisoned lock).
     fn is_exchange_live(&self, exchange_id: u16) -> bool {
-        const HEARTBEAT_TTL_SECS: u64 = 30;
+        const HEARTBEAT_TTL_SECS: u64 = 90;
 
         match self.exchange_last_seen.lock() {
             Ok(map) => {

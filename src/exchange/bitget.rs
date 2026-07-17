@@ -185,7 +185,7 @@ impl Exchange for BitgetClient {
         let json = self
             .signed_post("/api/spot/v1/trade/orders", body.clone())
             .await?;
-        let client_oid = extract_client_order_id(&body["clientOid"], "clientOid", "Bitget");
+        let client_oid = extract_client_order_id(&json["data"], "clientOid", "Bitget");
         let mut resp = self.parse_order_response(&json, &client_oid)?;
         if resp.filled_qty == Decimal::ZERO {
             match self.fetch_order_status(&order.symbol, &resp.order_id).await {
@@ -216,7 +216,7 @@ impl Exchange for BitgetClient {
         let json = self
             .signed_post("/api/spot/v1/trade/orders", body.clone())
             .await?;
-        let client_oid = extract_client_order_id(&body["clientOid"], "clientOid", "Bitget");
+        let client_oid = extract_client_order_id(&json["data"], "clientOid", "Bitget");
         let mut resp = self.parse_order_response(&json, &client_oid)?;
         if resp.filled_qty == Decimal::ZERO {
             match self.fetch_order_status(&order.symbol, &resp.order_id).await {

@@ -3,9 +3,15 @@
 //! The spec requires: "Volatility / Spread Ceiling — Reject trades if
 //! bid-ask spread > threshold (e.g., 0.08%)"
 //!
-//! This module provides a fast, lock-free guard that rejects trading
-//! opportunities when the market spread exceeds a configured maximum.
-//! Wide spreads indicate low liquidity or market instability.
+//! This module provides a guard that rejects trading opportunities when the
+//! market spread exceeds a configured maximum. Wide spreads indicate low
+//! liquidity or market instability.
+//!
+//! NOTE (L-2): This guard is NOT fully lock-free. The EMA state and
+//! per-exchange overrides use `Mutex` internally. The hot-path
+//! `check_spread()` acquires two mutexes per call (EMA + overrides).
+//! Only `spread_ceiling_bps`, `rejection_count`, and `ema_period` are
+//! truly lock-free via `AtomicU64`.
 
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -134,17 +140,17 @@ impl VolatilityGuard {
             *overrides.get(&exchange_id).unwrap_or(&self.spread_ceiling_bps.load(Ordering::SeqCst))
         };
 
-        // Compare EMA-smoothed spread against the ceiling.
-        if ema_bps > Decimal::from(ceiling_bps) {
+        // H-3: Compare instantaneous spread against the ceiling (not EMA).
+        if current_spread_bps > Decimal::from(ceiling_bps) {
             self.rejection_count.fetch_add(1, Ordering::SeqCst);
-            tracing::debug!(
+            tracing::warn!(
                 exchange_id,
                 spread_bps = %current_spread_bps,
                 ema_bps = %ema_bps,
                 ceiling_bps,
-                "Trade rejected: EMA spread exceeds ceiling"
+                "spread ceiling breached"
             );
-            false
+            return false;
         } else {
             true
         }
@@ -158,6 +164,33 @@ impl VolatilityGuard {
         }
         let mid = (best_bid + best_ask) / Decimal::TWO;
         (best_ask - best_bid) * Decimal::from(10_000u64) / mid
+    }
+
+    /// L-3: Observes a spread and updates the EMA without performing any
+    /// rejection checks. Useful for feeding spread data from exchanges that
+    /// are not currently being traded, keeping the EMA fresh and preventing
+    /// it from going stale.
+    #[inline]
+    pub fn observe_spread(&self, best_bid: Decimal, best_ask: Decimal) {
+        if best_bid <= Decimal::ZERO || best_ask <= Decimal::ZERO {
+            return;
+        }
+        let mid = (best_bid + best_ask) / Decimal::TWO;
+        let current_spread_bps = (best_ask - best_bid) * Decimal::from(10_000u64) / mid;
+
+        let period = self.ema_period.load(Ordering::SeqCst);
+        let alpha = Decimal::from(2u64) / Decimal::from(period + 1);
+        let one_minus_alpha = Decimal::ONE - alpha;
+        let mut ema_guard = self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner());
+        match *ema_guard {
+            None => {
+                *ema_guard = Some(current_spread_bps);
+            }
+            Some(old_ema) => {
+                let new_ema = alpha * current_spread_bps + one_minus_alpha * old_ema;
+                *ema_guard = Some(new_ema);
+            }
+        }
     }
 
     /// Get the global spread ceiling in basis points.

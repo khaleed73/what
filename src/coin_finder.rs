@@ -1119,8 +1119,9 @@ impl CoinFinder {
         // Register in the allocator's inventory
         self.allocator.register_token(id, symbol, category_mask);
 
-        // Register in the arena's active-token list for the signal loop.
-        // Uses the sync method (try_lock) — safe from the cold path.
+        // L-6 fix: Documentation corrected — this uses .lock() (blocking),
+        // not try_lock.  The cold-path blocking is acceptable since this
+        // runs in a single background task.
         self.arena.register_active_token(id);
 
         Some((id, true))
