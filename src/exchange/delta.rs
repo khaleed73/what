@@ -70,7 +70,7 @@ impl DeltaExchange {
     ) -> anyhow::Result<String> {
         let preimage = format!("{}{}{}{}", timestamp, method.to_uppercase(), path, body);
         sign_hmac(self.config.api_secret.expose(), &preimage)
-            .ok_or_else(|| anyhow::anyhow!("HMAC signing failed for Delta request"))
+            .map_err(|e| anyhow::anyhow!("HMAC signing failed for Delta request: {}", e))
     }
 
     /// Send a signed request to Delta v2 API.

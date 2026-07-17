@@ -303,7 +303,8 @@ impl Exchange for BitgetClient {
                         Some(c) => c.to_uppercase(),
                         None => continue,
                     };
-                    balances.insert(coin, balance_f64_to_decimal(free, "bitget", &coin));
+                    let bal = balance_f64_to_decimal(free, "bitget", &coin);
+                    balances.insert(coin, bal);
                 }
             }
         }

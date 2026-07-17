@@ -296,7 +296,10 @@ impl Exchange for BybitClient {
         }
         Ok(balances
             .into_iter()
-            .map(|(k, v)| (k, balance_f64_to_decimal(v, "bybit", &k)))
+            .map(|(k, v)| {
+                let bal = balance_f64_to_decimal(v, "bybit", &k);
+                (k, bal)
+            })
             .collect())
     }
 
@@ -395,8 +398,13 @@ impl Exchange for BybitClient {
                 "symbol": bybit_symbol,
                 "cancelAll": 1
             });
-            let body_str = serde_json::to_string(&body)
-                .map_err(|e| anyhow::anyhow!("failed to serialize cancel-all body: {}", e))?;
+            let body_str = match serde_json::to_string(&body) {
+                Ok(s) => s,
+                Err(e) => {
+                    results.push(Err(anyhow::anyhow!("failed to serialize cancel-all body: {}", e)));
+                    continue;
+                }
+            };
             let sign_str = format!(
                 "{}{}{}{}",
                 timestamp,

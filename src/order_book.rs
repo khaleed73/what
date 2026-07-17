@@ -2149,6 +2149,30 @@ impl L2OrderBookListener {
                         "L2 order book WS stream ended, reconnecting"
                     );
                 }
+                Ok(Err(e)) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+                        error!(
+                            exchange_id = ex,
+                            consecutive_failures,
+                            "L2 WS connect failed {} times — giving up, feed worker exiting",
+                            MAX_CONSECUTIVE_FAILURES
+                        );
+                        return;
+                    }
+                    let delay_secs = (BASE_DELAY_SECS
+                        << consecutive_failures.saturating_sub(1))
+                        .min(MAX_DELAY_SECS);
+                    error!(
+                        exchange_id = ex,
+                        error = %e,
+                        consecutive_failures,
+                        delay_secs,
+                        "L2 order book websocket connect error, reconnecting with exponential backoff"
+                    );
+                    sleep(Duration::from_secs(delay_secs)).await;
+                    continue;
+                }
                 Err(e) => {
                     consecutive_failures += 1;
                     if consecutive_failures > MAX_CONSECUTIVE_FAILURES {

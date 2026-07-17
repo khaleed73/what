@@ -246,9 +246,10 @@ impl Exchange for MexcExchange {
                         0.0
                     });
                 if free > 0.0 {
+                    let bal = balance_f64_to_decimal(free, "mexc", &asset);
                     balances.insert(
                         asset,
-                        balance_f64_to_decimal(free, "mexc", &asset),
+                        bal,
                     );
                 }
             }

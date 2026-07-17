@@ -18,9 +18,15 @@ pub const PAYLOAD_BUFFER_SIZE: usize = 1024;
 ///
 /// This avoids heap allocation for API query string construction.
 /// The buffer is a fixed-size array that is written to in-place.
+///
+/// # Thread Safety
+/// This type is `!Send` and `!Sync` because it uses `UnsafeCell`
+/// for interior mutability. It is designed for single-threaded use
+/// within a single async task. Each task should get its own `PayloadArena`.
 pub struct PayloadBuffer {
     data: UnsafeCell<MaybeUninit<[u8; PAYLOAD_BUFFER_SIZE]>>,
     len: UnsafeCell<usize>,
+    _not_send_sync: std::marker::PhantomData<*const ()>,
 }
 
 // Safety: PayloadBuffer is designed for single-threaded use within
@@ -34,6 +40,7 @@ impl PayloadBuffer {
         Self {
             data: UnsafeCell::new(MaybeUninit::zeroed()),
             len: UnsafeCell::new(0),
+            _not_send_sync: std::marker::PhantomData,
         }
     }
 

@@ -329,7 +329,8 @@ impl Exchange for HtxClient {
                         Some(c) => c.to_uppercase(),
                         None => continue,
                     };
-                    balances.insert(currency, balance_f64_to_decimal(free, "htx", &currency));
+                    let bal = balance_f64_to_decimal(free, "htx", &currency);
+                    balances.insert(currency, bal);
                 }
             }
         }

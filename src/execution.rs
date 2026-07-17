@@ -682,7 +682,7 @@ impl HighFrequencyExecutionEngine {
                     error = %e,
                     "exchange cancellation FAILED — order may still be open"
                 );
-                Err(e)
+                Err(anyhow::anyhow!("{}", e))
             }
         }
     }

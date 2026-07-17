@@ -324,6 +324,31 @@ impl LowLatencyWsListener {
 
                     warn!(exchange_id = ex, "ws stream ended, reconnecting");
                 }
+                Ok(Err(e)) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+                        error!(
+                            exchange_id = ex,
+                            consecutive_failures,
+                            "WS connect failed {} times in a row — giving up, feed worker exiting",
+                            MAX_CONSECUTIVE_FAILURES
+                        );
+                        return;
+                    }
+                    let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
+                        .min(MAX_DELAY_SECS) as f64;
+                    let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
+                    let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
+                    error!(
+                        exchange_id = ex,
+                        error = %e,
+                        consecutive_failures,
+                        delay_secs,
+                        "websocket connect error, reconnecting with jittered exponential backoff"
+                    );
+                    sleep(Duration::from_secs(delay_secs.max(1))).await;
+                    continue;
+                }
                 Err(e) => {
                     consecutive_failures += 1;
                     if consecutive_failures > MAX_CONSECUTIVE_FAILURES {

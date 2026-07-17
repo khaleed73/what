@@ -79,19 +79,25 @@ impl TimestampSynchronizer {
             return; // do NOT update the stored offset
         }
 
-        self.offset_ms.store(offset, Ordering::SeqCst);
-        *self.last_sync.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-
+        // CRITICAL FIX: Check for fatal drift BEFORE storing.
+        // A fatal offset would cause all subsequent orders to be rejected,
+        // so we must refuse to store it even if it passed the jump check.
         let abs_offset = offset.abs();
-
         if abs_offset > self.max_drift_fatal_ms {
             tracing::error!(
                 exchange = %self.exchange_name,
                 offset_ms = offset,
-                "FATAL: Clock drift exceeds fatal threshold ({}ms)",
+                "FATAL: Clock drift exceeds fatal threshold ({}ms) — offset NOT stored",
                 self.max_drift_fatal_ms
             );
-        } else if abs_offset > self.max_drift_warn_ms {
+            return;
+        }
+
+        // Store the offset.
+        self.offset_ms.store(offset, Ordering::SeqCst);
+        *self.last_sync.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+
+        if abs_offset > self.max_drift_warn_ms {
             tracing::warn!(
                 exchange = %self.exchange_name,
                 offset_ms = offset,

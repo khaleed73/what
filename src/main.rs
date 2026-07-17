@@ -719,25 +719,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // In live mode, any exchange init failure is a HARD ERROR.
-    // Silently falling back to paper while the operator thinks they're live
-    // would cause real capital asymmetry (some legs paper, some live).
-    if !forced_paper && !live_init_failures.is_empty() {
-        eprintln!();
-        eprintln!("==============================================================");
-        eprintln!("  FATAL: Exchange client initialization failed in LIVE mode");
-        eprintln!("==============================================================");
-        for (id, name, err) in &live_init_failures {
-            eprintln!("  Exchange {} (ID {}): {}", name, id, err);
-        }
-        eprintln!("--------------------------------------------------------------");
-        eprintln!("  FIX: Check API keys, network, and exchange status.");
-        eprintln!("  To force paper mode: set force_live_mode = false in config.");
-        eprintln!("==============================================================");
-        eprintln!();
-        std::process::exit(1);
-    }
-
     let execution_pool = Arc::new(execution_pool);
     println!("Execution pool: {} exchange client(s) loaded", execution_pool.len());
 
@@ -779,6 +760,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         false
     };
+
+    // In live mode, any exchange init failure is a HARD ERROR.
+    // Silently falling back to paper while the operator thinks they're live
+    // would cause real capital asymmetry (some legs paper, some live).
+    if !forced_paper && !live_init_failures.is_empty() {
+        eprintln!();
+        eprintln!("==============================================================");
+        eprintln!("  FATAL: Exchange client initialization failed in LIVE mode");
+        eprintln!("==============================================================");
+        for (id, name, err) in &live_init_failures {
+            eprintln!("  Exchange {} (ID {}): {}", name, id, err);
+        }
+        eprintln!("--------------------------------------------------------------");
+        eprintln!("  FIX: Check API keys, network, and exchange status.");
+        eprintln!("  To force paper mode: set force_live_mode = false in config.");
+        eprintln!("==============================================================");
+        eprintln!();
+        std::process::exit(1);
+    }
 
     // ------------------------------------------------------------------
     // 9b-pre. LIVE MODE: Boot-time balance sync from exchanges
@@ -1309,7 +1309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 source_balance = %best_bal,
                 "starvation_callback: dispatching rebalance request"
             );
-            let _ = cb_rebalance_tx.try_send(
+            let send_result = cb_rebalance_tx.try_send(
                 rebalancer::RebalanceRequest {
                     from_exchange_id: best_src,
                     to_exchange_id: starved_exchange_id,
@@ -1318,7 +1318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     token_symbol: "USDT".to_string(),
                 },
             );
-            if cb_rebalance_tx.is_full() {
+            if send_result.is_err() {
                 tracing::warn!(
                     from = best_src,
                     to = starved_exchange_id,
@@ -1594,7 +1594,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .collect();
                     // Only push if the list changed (watch channel ignores dupes).
                     if signal_symbol_watch.send(syms).is_err() {
-                        warn!("signal_symbol_watch receiver dropped — symbol list updates will stop");
+                        tracing::warn!("signal_symbol_watch receiver dropped — symbol list updates will stop");
                     }
                 }
             }

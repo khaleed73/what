@@ -468,7 +468,7 @@ async fn scan_coinbase(http: &Client, rest_url: &str, exchange_id: u16) -> Excha
                 if let Some(list) = body.as_array() {
                     for item in list {
                         let status = item["status"].as_str().unwrap_or("");
-                        let tradable = item["trading_disabled"].as_bool().unwrap_or(true);
+                        let tradable = item["trading_disabled"].as_bool().unwrap_or(false);
                         let base = item["base_currency"].as_str().unwrap_or("");
                         let quote = item["quote_currency"].as_str().unwrap_or("");
                         let raw = item["id"].as_str().unwrap_or("");

@@ -254,7 +254,10 @@ impl Exchange for KrakenClient {
         }
         Ok(balances
             .into_iter()
-            .map(|(k, v)| (k, balance_f64_to_decimal(v, "kraken", &k)))
+            .map(|(k, v)| {
+                let bal = balance_f64_to_decimal(v, "kraken", &k);
+                (k, bal)
+            })
             .collect())
     }
 

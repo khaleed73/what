@@ -689,7 +689,7 @@ impl SubAccountManager {
         // If we reached here, the key can at least read.
         Ok(ApiKeyPermission {
             can_read: true,
-            can_trade: true, // Conservative assumption
+            can_trade: false, // Default to false: unknown exchange
             can_withdraw: false, // Cannot detect from read-only endpoint
             can_deposit: false,
             ip_restricted: false,

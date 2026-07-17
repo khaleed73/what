@@ -1166,6 +1166,7 @@ dependencies = [
  "futures-util",
  "hex",
  "native-tls",
+ "rand",
  "reqwest",
  "ring",
  "rust_decimal",

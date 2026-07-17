@@ -564,16 +564,15 @@ pub mod gateio {
             order_id: &str,
         ) -> Result<OrderResult, String> {
             let timestamp = Self::timestamp_secs();
-            let query_str = format!("currency_pair={}&order_id={}", symbol.to_uppercase(), order_id);
-            let sign = base64::engine::general_purpose::STANDARD.encode(
-                ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, self.api_secret.expose().as_bytes()), query_str.as_bytes()).as_ref()
-            );
-            let url = format!("{}/api/v4/spot/orders/{}", self.rest_url, order_id);
+            let path = format!("/api/v4/spot/orders/{}", order_id);
+            let query = format!("currency_pair={}", symbol.to_uppercase());
+            let query_str = format!("{}&order_id={}", query, order_id);
+            let signature = self.sign(&timestamp, "GET", &path, &query_str, "");
 
-            let resp = http_client.get(&url)
+            let resp = http_client.get(&format!("{}{}", self.rest_url, path))
                 .header("KEY", self.api_key.expose())
-                .header("SIGN", sign)
-                .header("Timestamp", timestamp.to_string())
+                .header("SIGN", &signature)
+                .header("Timestamp", &timestamp.to_string())
                 .send().await
                 .map_err(|e| format!("GateIO query_order request failed: {}", e))?;
             let status = resp.status();

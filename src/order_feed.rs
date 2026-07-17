@@ -15,8 +15,11 @@ use std::str::FromStr;
 /// Parsed result from an execution report frame.
 #[derive(Debug, Clone)]
 pub struct ExecutionReport {
-    /// The trade ID or token ID from the report.
+    /// The trade ID from the report (Binance 64-bit trade ID truncated to u16 for
+    /// internal tracking; use `trade_id_raw` for the full ID when needed).
     pub token_id: u16,
+    /// The full trade ID as a string (preserves the original 64-bit value).
+    pub trade_id_str: String,
     /// The asset balance after this execution.
     pub balance: Decimal,
     /// Whether this was an executionReport event.
@@ -49,6 +52,7 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
     let mut token_id: u16 = 0;
     let mut balance_decimal = Decimal::ZERO;
     let mut is_execution_report = false;
+    let mut trade_id_str = String::new();
     let mut i = 0;
     let len = payload.len();
 
@@ -68,12 +72,23 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                         }
                     }
                     b't' => {
-                        // Parse integer token ID
+                        // Parse trade ID as string to avoid u16 truncation.
+                        // Binance trade IDs are 64-bit — truncating to u16 causes
+                        // silent data corruption after trade ID 65535.
+                        if trade_id_str.is_empty() { trade_id_str = String::new(); }
+                        trade_id_str.clear();
+                        let num_start = i;
                         while i < len && payload[i].is_ascii_digit() {
-                            token_id = token_id
-                                .saturating_mul(10)
-                                .saturating_add((payload[i] - b'0') as u16);
                             i += 1;
+                        }
+                        if i > num_start {
+                            if let Ok(s) = std::str::from_utf8(&payload[num_start..i]) {
+                                trade_id_str = s.to_string();
+                            }
+                        }
+                        // For backward compat: parse as u16 for values that fit.
+                        if let Ok(id_val) = trade_id_str.parse::<u16>() {
+                            token_id = id_val;
                         }
                     }
                     b'B' => {
@@ -137,9 +152,10 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
         i += 1;
     }
 
-    if is_execution_report && token_id != 0 && balance_decimal > Decimal::ZERO {
+    if is_execution_report && !trade_id_str.is_empty() && balance_decimal > Decimal::ZERO {
         Some(ExecutionReport {
             token_id,
+            trade_id_str,
             balance: balance_decimal,
             is_execution_report: true,
         })
@@ -152,6 +168,8 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
 #[derive(Debug, Clone)]
 pub struct FullExecutionReport {
     pub token_id: u16,
+    /// Full trade ID string (preserves the original 64-bit value).
+    pub trade_id_str: String,
     pub balance: Decimal,
     pub symbol: String,
     pub side: String,
@@ -162,6 +180,7 @@ pub struct FullExecutionReport {
 /// Full parser that extracts all fields from an execution report.
 pub fn parse_full_execution_report(payload: &[u8]) -> Option<FullExecutionReport> {
     let mut token_id: u16 = 0;
+    let mut trade_id_str = String::new();
     let mut balance_decimal = Decimal::ZERO;
     let mut is_execution_report = false;
     let mut symbol = String::new();
@@ -185,11 +204,18 @@ pub fn parse_full_execution_report(payload: &[u8]) -> Option<FullExecutionReport
                         }
                     }
                     b't' => {
+                        trade_id_str.clear();
+                        let num_start = i;
                         while i < len && payload[i].is_ascii_digit() {
-                            token_id = token_id
-                                .saturating_mul(10)
-                                .saturating_add((payload[i] - b'0') as u16);
                             i += 1;
+                        }
+                        if i > num_start {
+                            if let Ok(s) = std::str::from_utf8(&payload[num_start..i]) {
+                                trade_id_str = s.to_string();
+                            }
+                        }
+                        if let Ok(id_val) = trade_id_str.parse::<u16>() {
+                            token_id = id_val;
                         }
                     }
                     b'B' => {
@@ -242,6 +268,7 @@ pub fn parse_full_execution_report(payload: &[u8]) -> Option<FullExecutionReport
     if is_execution_report && !symbol.is_empty() {
         Some(FullExecutionReport {
             token_id,
+            trade_id_str,
             balance: balance_decimal,
             symbol,
             side,

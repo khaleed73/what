@@ -307,7 +307,7 @@ impl Exchange for OkxClient {
                             Some(c) => c,
                             None => continue,
                         };
-                            let d = balance_f64_to_decimal(avail, "okx", ccy);
+                            let d = balance_f64_to_decimal(avail, "okx", &ccy);
                             if d > Decimal::ZERO {
                                 balances.insert(ccy.to_string(), d);
                             }

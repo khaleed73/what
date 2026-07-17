@@ -293,7 +293,8 @@ impl Exchange for BitfinexClient {
                         Some(c) => c.to_uppercase(),
                         None => continue,
                     };
-                    balances.insert(currency, balance_f64_to_decimal(free, "bitfinex", &currency));
+                    let bal = balance_f64_to_decimal(free, "bitfinex", &currency);
+                    balances.insert(currency, bal);
                 }
             }
         }

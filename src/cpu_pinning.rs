@@ -55,22 +55,25 @@ pub fn pin_current_thread(core_id: usize) -> bool {
 /// A `JoinHandle` for the spawned thread.
 pub fn spawn_pinned_trading_core<F, T>(core_id: usize, name: &str, f: F) -> thread::JoinHandle<T>
 where
-    F: FnOnce() -> T + Send + 'static,
+    F: FnOnce() -> T + Send + Clone + 'static,
     T: Send + 'static,
 {
     let name_owned = name.to_string();
     thread::Builder::new()
         .name(name_owned.clone())
-        .spawn(move || {
-            let pinned = pin_current_thread(core_id);
-            if !pinned {
-                tracing::warn!(
-                    thread = %name_owned,
-                    core_id,
-                    "Running on unpinned core — latency may be degraded"
-                );
+        .spawn({
+            let f = f.clone();
+            move || {
+                let pinned = pin_current_thread(core_id);
+                if !pinned {
+                    tracing::warn!(
+                        thread = %name_owned,
+                        core_id,
+                        "Running on unpinned core — latency may be degraded"
+                    );
+                }
+                f()
             }
-            f()
         })
         .unwrap_or_else(|e| {
             tracing::error!(error = %e, "Failed to spawn pinned trading thread, running unpinned");
