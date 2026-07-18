@@ -75,6 +75,9 @@ where
                 f()
             }
         })
+        // NOTE: Thread spawn failure is logged at ERROR level and falls back
+        // to an unpinned std::thread::spawn. For strict HFT deployments where
+        // unpinned latency is unacceptable, replace the fallback with `panic!`.
         .unwrap_or_else(|e| {
             tracing::error!(error = %e, "Failed to spawn pinned trading thread, running unpinned");
             std::thread::spawn(f)

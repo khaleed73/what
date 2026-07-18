@@ -555,6 +555,7 @@ impl TradeLog {
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
+            .write(true)
             .append(true)
             .open(&self.file_path)?;
 

@@ -120,7 +120,7 @@ impl ExchangeRateState {
         let threshold = self.pause_threshold.load(Ordering::SeqCst) as u64;
         let max = self.max_weight.load(Ordering::SeqCst);
 
-        if current >= (max * threshold / 10_000) {
+        if current * 10_000 >= max * threshold {
             // Trip the pause.
             self.is_paused.store(true, Ordering::SeqCst);
             *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());

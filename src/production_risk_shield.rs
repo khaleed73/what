@@ -199,6 +199,11 @@ impl ProductionRiskShield {
         };
 
         (truncated_qty, vwap)
+        // NOTE: The VWAP approximation above scales the total_cost linearly by
+        // the truncation ratio. This is accurate when the book has consistent
+        // pricing, but can deviate significantly when the lot step truncation
+        // removes a large fraction. For production, consider re-walking the
+        // book for the truncated quantity to get an exact VWAP.
     }
 
     /// Validate execution safety — checks min notional + profit margin floor.
@@ -213,6 +218,11 @@ impl ProductionRiskShield {
     /// `true` if execution is safe, `false` if rejected.
     #[inline(always)]
     pub fn validate_execution_safety(&self, notional: Decimal, expected_profit_pct: Decimal) -> bool {
+        if expected_profit_pct <= Decimal::ZERO {
+            tracing::debug!("Rejected: zero expected profit percentage");
+            return false;
+        }
+
         // Check minimum notional.
         if notional < self.rules.minimum_notional {
             tracing::debug!(

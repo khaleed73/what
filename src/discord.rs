@@ -105,6 +105,10 @@ impl DiscordWorker {
     /// Failed sends are retried up to 3 times with exponential backoff
     /// (100 ms × 2^attempt).  All failures are logged; no alert is ever
     /// silently dropped.
+    ///
+    // TODO: Add per-second rate limiting on Discord webhook sends.
+    // During volatile markets, the bot can emit hundreds of notifications
+    // per minute, risking Discord API rate limits and message drops.
     pub async fn run(mut self) {
         info!("Discord notification worker started");
 

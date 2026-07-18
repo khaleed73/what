@@ -711,6 +711,12 @@ impl EngineConfig {
                     key, addr
                 ).into());
             }
+            if addr.len() > 44 {
+                return Err(format!(
+                    "deposit_addresses.{} = \"{}\" is too long (>44 chars)",
+                    key, addr
+                ).into());
+            }
         }
 
         Ok(Self {

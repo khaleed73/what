@@ -79,6 +79,7 @@ impl ApiNonceManager {
     }
 
     /// Registers an exchange with an initial nonce value.
+    #[cold]
     pub fn register_exchange(&mut self, exchange_id: &str, initial_nonce: u64) {
         let nonce = ExchangeNonce::new(exchange_id, initial_nonce);
         self.nonces.insert(exchange_id.to_lowercase(), nonce);

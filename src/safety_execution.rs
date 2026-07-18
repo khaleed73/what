@@ -140,7 +140,7 @@ impl SafetyExecutionEngine {
                     }
                 }
             }
-            other => return Err(format!("Invalid order side '{}'", other)),
+            _ => unreachable!("side_upper is validated above to be BUY or SELL"),
         }
 
         // Guard 5: Symbol must be non-empty
@@ -159,13 +159,13 @@ impl SafetyExecutionEngine {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or_else(|_| {
-                tracing::warn!("safety_execution: system clock before UNIX epoch, using 0");
+                tracing::error!("safety_execution: system clock before UNIX epoch — counter-order will use timestamp 0");
                 0
             });
 
-        let price_hash = (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(0) % 0xFFFFFFFF;
+        let price_hash = (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(1) % 0xFFFFFFFF;
         // H-3 fix: Add monotonic counter to prevent collisions within same ms.
-        let seq = ORDER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let seq = ORDER_COUNTER.fetch_add(1, Ordering::Release);
         let client_order_id = if timestamp_ms == 0 && price_hash == 0 {
             format!("{}-uuid-{}", exchange_id, uuid::Uuid::new_v4())
         } else {
@@ -259,7 +259,10 @@ impl SafetyExecutionEngine {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .unwrap_or_else(|| {
+                tracing::error!("safety_execution: system clock before UNIX epoch — counter-order will use timestamp 0");
+                0
+            });
 
         SafeOrderPayload {
             symbol: original.symbol.clone(),

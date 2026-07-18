@@ -107,14 +107,14 @@ pub struct RebalanceRequest {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Return the private withdrawal REST endpoint for the given exchange.
-fn get_withdrawal_endpoint(exchange_id: u16) -> &'static str {
+fn get_withdrawal_endpoint(exchange_id: u16) -> Option<&'static str> {
     match exchange_id {
-        0 => "https://api.binance.com/sapi/v1/capital/withdraw/apply",
-        1 => "https://api.bybit.com/v5/asset/withdraw",
-        2 => "https://www.okx.com/api/v5/asset/withdrawal",
-        3 => "https://api.gateio.ws/api/v4/withdrawals",
-        4 => "https://api.kucoin.com/api/v1/withdrawals/apply",
-        _ => "UNKNOWN_ENDPOINT",
+        0 => Some("https://api.binance.com/sapi/v1/capital/withdraw/apply"),
+        1 => Some("https://api.bybit.com/v5/asset/withdraw"),
+        2 => Some("https://www.okx.com/api/v5/asset/withdrawal"),
+        3 => Some("https://api.gateio.ws/api/v4/withdrawals"),
+        4 => Some("https://api.kucoin.com/api/v1/withdrawals/apply"),
+        _ => None,
     }
 }
 
@@ -401,7 +401,16 @@ impl AutoCapitalRebalancer {
                 continue;
             }
 
-            let withdrawal_endpoint = get_withdrawal_endpoint(req.from_exchange_id);
+            let withdrawal_endpoint = match get_withdrawal_endpoint(req.from_exchange_id) {
+                Some(ep) => ep,
+                None => {
+                    error!(
+                        from = req.from_exchange_id,
+                        "Stage 2 ABORTED: unsupported exchange ID — no withdrawal endpoint"
+                    );
+                    continue;
+                }
+            };
             let network = "arbitrum";
 
             // Build exchange-specific withdrawal payload.

@@ -80,6 +80,10 @@ impl SizeSlicer {
             return vec![];
         }
 
+        if self.max_slice_usd == Decimal::ZERO {
+            return Vec::new();
+        }
+
         let total_notional = quantity * price;
 
         // Small order — no slicing needed.

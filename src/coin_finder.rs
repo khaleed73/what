@@ -53,6 +53,9 @@ use crate::strategies::MarketArena;
 // ---------------------------------------------------------------------------
 
 /// Scan interval — one full cycle per second.
+// NOTE: The coin finder queries all exchanges every 1 second.
+// This is well within Binance/OKX public API limits but could
+// be aggressive for smaller exchanges. Consider per-exchange intervals.
 const SCAN_INTERVAL_SECS: u64 = 1;
 
 /// Maximum number of tokens the finder will register (safety cap).

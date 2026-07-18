@@ -136,13 +136,28 @@ impl OrderPipeline for PaperExecutionPipeline {
             "paper fill"
         );
 
+        // Calculate actual slippage in basis points.
+        let actual_slippage_bps = if intent.price > Decimal::ZERO {
+            let deviation = if intent.is_buy {
+                adjusted_price.saturating_sub(intent.price)
+            } else {
+                intent.price.saturating_sub(adjusted_price)
+            };
+            Some((deviation / intent.price * Decimal::from(10_000u64))
+                .ceil()
+                .to_u64()
+                .unwrap_or(0))
+        } else {
+            None
+        };
+
         Ok(OrderResult {
             success: true,
             order_id: Some(format!("PAPER-{}", trade_seq)),
             filled_qty: intent.qty,
             avg_price: adjusted_price,
             error: None,
-            slippage_bps: None,
+            slippage_bps: actual_slippage_bps,
         })
     }
 }
@@ -453,9 +468,9 @@ impl RealExecutionPipeline {
 impl OrderPipeline for RealExecutionPipeline {
     async fn execute_order(&self, intent: &OrderIntent) -> Result<OrderResult, String> {
         // Wrap the actual HTTP call with retry: max 2 attempts, 50ms base backoff.
-        let this = self;
         let intent = intent.clone();
         retry_with_backoff(3, 50, || {
+            let this = self;
             let intent = intent.clone();
             async move { this.execute_order_inner(&intent).await }
         })
@@ -594,7 +609,10 @@ impl HighFrequencyExecutionEngine {
     fn check_daily_reset(&self) -> (u64, u64) {
         let today = chrono::Utc::now().ordinal();
         let mut last_day = self.daily_reset_day.lock().unwrap_or_else(|e| {
-            tracing::error!("daily_reset_day mutex poisoned — recovering");
+            tracing::error!(
+                error = %e,
+                "daily_reset_day mutex poisoned — recovering; daily P&L counters may be inaccurate"
+            );
             e.into_inner()
         });
         if today != *last_day {
@@ -636,7 +654,13 @@ impl HighFrequencyExecutionEngine {
         if profit_cents >= 0 {
             self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Relaxed);
         } else {
-            let abs = (profit_cents as i128).unsigned_abs().min(u64::MAX as u128) as u64;
+            let abs = (profit_cents as i128).unsigned_abs();
+            let abs = if abs > u64::MAX as u128 {
+                tracing::error!(raw_cents = abs, "record_daily_pnl: loss exceeds u64::MAX — capping");
+                u64::MAX
+            } else {
+                abs as u64
+            };
             self.daily_loss_cents.fetch_add(abs, Ordering::Relaxed);
         }
     }
@@ -934,7 +958,8 @@ impl HighFrequencyExecutionEngine {
             };
             let buy_notional = buy_result.filled_qty * buy_result.avg_price;
             let sell_notional = sell_result.filled_qty * sell_result.avg_price;
-            // Estimate taker fees (default 10 bps if actual fee unavailable)
+            // TODO: Use exchange-specific fee from fee schedule instead of hardcoded 10 bps.
+            // The arena's fee_schedule holds per-exchange taker fees in bps.
             let fee_bps = Decimal::from(10u64);
             let buy_fee = buy_notional * fee_bps / Decimal::from(10_000u64);
             let sell_fee = sell_notional * fee_bps / Decimal::from(10_000u64);
@@ -1046,7 +1071,7 @@ impl HighFrequencyExecutionEngine {
                                 error: Some(format!("leg-{} pipeline error", i)),
                                 slippage_bps: None,
                             };
-                            self.fire_counter_order(pipeline, &legs[i], &fallback_result).await;
+                            self.fire_counter_order(pipeline, &legs_original[i], &fallback_result).await;
                             OrderResult {
                                 success: false,
                                 order_id: None,
@@ -1148,14 +1173,13 @@ impl HighFrequencyExecutionEngine {
             }
         }
         if buy_notional > Decimal::ZERO || sell_notional > Decimal::ZERO {
-            // Estimate taker fees for all three legs (default 10 bps if actual fee unavailable)
+            // TODO: Use exchange-specific fees from fee schedule instead of hardcoded 10 bps.
             let fee_bps = Decimal::from(10u64);
             let mut total_fee = Decimal::ZERO;
             for (i, result) in total_result.iter().enumerate() {
                 if result.success && result.filled_qty > Decimal::ZERO {
                     let notional = result.filled_qty * result.avg_price;
                     total_fee += notional * fee_bps / Decimal::from(10_000u64);
-                    let _ = &legs[i]; // used only for iteration context
                 }
             }
             let profit = sell_notional - buy_notional - total_fee;
@@ -1984,13 +2008,7 @@ pub fn spawn_order_cancellation_sweeper(
             }
 
             // Collect all tracked orders and check their ages.
-            let all_orders: Vec<_> = {
-                let orders_map = match tracker.orders.lock() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                orders_map.values().cloned().collect()
-            };
+            let all_orders = tracker.get_all();
 
             let mut cancelled = 0u64;
             for order in &all_orders {

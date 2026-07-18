@@ -15,6 +15,9 @@ use crate::exchange::types::*;
 use anyhow::Result;
 
 /// Kraken exchange client with monotonic nonce generator and rate limiting.
+//
+// TODO: Sync nonce with Kraken's server nonce at startup
+// to prevent rejected orders from nonce too-low.
 pub struct KrakenClient {
     name: String,
     config: ExchangeConfig,

@@ -9,6 +9,10 @@
 //!
 //! These parsers avoid serde/JSON deserialization entirely for sub-microsecond
 //! parsing of known-format WebSocket frames.
+//!
+//! NOTE: The parser is designed for well-formed exchange WebSocket messages.
+//! Truncated or malformed messages will simply return None (safe default).
+//! The caller (WS listener) handles reconnection on parse failures.
 
 /// Result of parsing an order book update.
 #[derive(Debug, Clone)]

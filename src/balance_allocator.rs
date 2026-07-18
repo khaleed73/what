@@ -167,6 +167,12 @@ impl LocalCapitalAllocator {
             .and_then(|inv| inv.symbol_to_id.get(&symbol.to_uppercase()).copied())
     }
 
+    /// Returns the symbol string for the given token ID.
+    ///
+    /// Returns `None` if the token ID has not been registered or if the
+    /// inventory lock is poisoned.  Callers must always handle the `None`
+    /// case to avoid panics when an unknown or unregistered token ID is
+    /// encountered (e.g. from a late-arriving coin-discovery event).
     pub fn get_symbol(&self, id: u16) -> Option<String> {
         self.inventory
             .lock()

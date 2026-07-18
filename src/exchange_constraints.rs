@@ -155,6 +155,13 @@ impl AbsoluteMathEngine {
         if spend_allocated <= Decimal::ZERO {
             return Err("Spend amount must be positive".to_string());
         }
+        if depth.asks.is_empty() {
+            return Err("Empty ask depth — cannot calculate VWAP".to_string());
+        }
+        let total_depth: Decimal = depth.asks.iter().map(|l| l.quantity).sum();
+        if total_depth <= Decimal::ZERO {
+            return Err("Total ask depth is zero — cannot calculate VWAP".to_string());
+        }
 
         let mut total_acquired = Decimal::ZERO;
 
@@ -201,6 +208,13 @@ impl AbsoluteMathEngine {
     ) -> Result<Decimal, String> {
         if asset_quantity <= Decimal::ZERO {
             return Err("Asset quantity must be positive".to_string());
+        }
+        if depth.bids.is_empty() {
+            return Err("Empty bid depth — cannot calculate VWAP".to_string());
+        }
+        let total_depth: Decimal = depth.bids.iter().map(|l| l.quantity).sum();
+        if total_depth <= Decimal::ZERO {
+            return Err("Total bid depth is zero — cannot calculate VWAP".to_string());
         }
 
         let mut total_received = Decimal::ZERO;

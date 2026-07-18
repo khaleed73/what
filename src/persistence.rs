@@ -150,6 +150,12 @@ impl AsyncPersistenceWorker {
             // This avoids corrupting the file on a mid-write crash.
             let tmp_path = format!("{}.tmp", path);
             fs::write(&tmp_path, &json).map_err(|e| format!("write tmp failed: {}", e))?;
+            // Ensure data is durable on disk before the atomic rename,
+            // otherwise the OS could lose buffered writes on crash.
+            let file = std::fs::File::open(&tmp_path)
+                .map_err(|e| format!("open for sync failed: {}", e))?;
+            file.sync_all()
+                .map_err(|e| format!("sync_all failed: {}", e))?;
             // M-10: EXDEV fallback — rename fails across filesystems.
             if let Err(e) = fs::rename(&tmp_path, &path) {
                 if e.raw_os_error() == Some(18) {

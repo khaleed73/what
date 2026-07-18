@@ -146,6 +146,15 @@ impl TimestampSynchronizer {
     /// Compute an offset-adjusted timestamp in milliseconds.
     ///
     /// This is what should be sent in API requests.
+    ///
+    /// NOTE: Backward clock jumps (e.g. NTP corrections that step the local
+    /// clock backwards between syncs) are NOT detected here.  The offset
+    /// stored atomically only changes when `update_offset` is called, so a
+    /// backward jump in the LOCAL clock between two `adjusted_timestamp_ms`
+    /// calls would produce a monotonically *decreasing* timestamp.  This could
+    /// cause the system to treat stale order-book data as fresh.  A future
+    /// improvement should compare against `std::time::Instant` (which is
+    /// guaranteed monotonic) and reject timestamps that go backwards.
     #[inline(always)]
     pub fn adjusted_timestamp_ms(&self) -> i64 {
         let local_ms = chrono::Utc::now().timestamp_millis();

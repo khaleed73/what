@@ -191,9 +191,14 @@ impl StablecoinProtectionCircuit {
                             self.target_symbol
                         );
                     }
-                    Err(_) => {} // CAS failed: another thread cleared depeg; no-op
+                    Err(_) => {
+                        // CAS race — another thread recovered.
+                        self.recovery_tick_count.store(0, Ordering::SeqCst);
+                    }
                 }
             }
+            // If count < required, keep accumulating. The next in-range tick
+            // will call update_price again and increment further.
         } else {
             // Normal state — reset counter.
             self.recovery_tick_count.store(0, Ordering::SeqCst);

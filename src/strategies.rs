@@ -448,6 +448,10 @@ impl MarketArena {
                             let idx_i = self.get_index(exch_i, updated_token);
                             let idx_j = self.get_index(exch_j, updated_token);
 
+                            if idx_i >= self.bid_prices.len() || idx_j >= self.bid_prices.len() {
+                                continue;
+                            }
+
                             let bid_i = self.bid_prices[idx_i].load(Ordering::Acquire);
                             let ask_i = self.ask_prices[idx_i].load(Ordering::Acquire);
                             let bid_j = self.bid_prices[idx_j].load(Ordering::Acquire);
@@ -536,6 +540,11 @@ impl MarketArena {
                     let idx_a = self.get_index(updated_exch, tri.token_a as usize);
                     let idx_b = self.get_index(updated_exch, tri.token_b as usize);
                     let idx_c = self.get_index(updated_exch, tri.token_c as usize);
+
+                    let prices_len = self.bid_prices.len();
+                    if idx_a >= prices_len || idx_b >= prices_len || idx_c >= prices_len {
+                        continue;
+                    }
 
                     let bid_a = self.bid_prices[idx_a].load(Ordering::Acquire);
                     let ask_a = self.ask_prices[idx_a].load(Ordering::Acquire);

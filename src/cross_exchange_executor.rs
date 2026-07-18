@@ -17,7 +17,13 @@ pub struct CrossExchangeOrder {
     pub side: String,      // "BUY" or "SELL"
     pub price: Decimal,
     pub quantity: Decimal,
+    /// Order type. **WARNING:** Only "LIMIT" is permitted — "MARKET" orders are
+    /// prohibited by the safety execution module and will be rejected by
+    /// `validate_order()`.
     pub order_type: String, // "LIMIT" or "MARKET"
+    /// Time-in-force. **WARNING:** Only "IOC" or "FOK" are permitted — "GTC"
+    /// contradicts the safety module's IOC/FOK-only policy and will be rejected
+    /// by `validate_order()`.
     pub time_in_force: String, // "IOC", "FOK", or "GTC"
 }
 
@@ -65,6 +71,10 @@ impl CrossExchangeExecutor {
     ///
     /// # Returns
     /// A `CrossExchangeResult` with fill details and profit calculation.
+    ///
+    /// # Type Parameters
+    /// * `F` - Dispatch function. Must be `Send`.
+    /// * `Fut` - Future returned by dispatch. Must be `Send`.
     pub async fn execute_simultaneous_trades<F, Fut>(
         buy_order: &CrossExchangeOrder,
         sell_order: &CrossExchangeOrder,
@@ -105,7 +115,7 @@ impl CrossExchangeExecutor {
                 } else {
                     let start = Instant::now();
                     let result = match tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(5),
                         dispatch_fn(buy_order.clone()),
                     ).await {
                         Ok(r) => r,
@@ -116,7 +126,7 @@ impl CrossExchangeExecutor {
                             order_id: None,
                             filled_quantity: Decimal::ZERO,
                             filled_price: Decimal::ZERO,
-                            error_message: Some("buy leg timed out (10s)".to_string()),
+                            error_message: Some("buy leg timed out (5s)".to_string()),
                             execution_time_us: start.elapsed().as_micros() as u64,
                         },
                     };
@@ -140,7 +150,7 @@ impl CrossExchangeExecutor {
                 } else {
                     let start = Instant::now();
                     let result = match tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(5),
                         dispatch_fn(sell_order.clone()),
                     ).await {
                         Ok(r) => r,
@@ -151,7 +161,7 @@ impl CrossExchangeExecutor {
                             order_id: None,
                             filled_quantity: Decimal::ZERO,
                             filled_price: Decimal::ZERO,
-                            error_message: Some("sell leg timed out (10s)".to_string()),
+                            error_message: Some("sell leg timed out (5s)".to_string()),
                             execution_time_us: start.elapsed().as_micros() as u64,
                         },
                     };
@@ -205,6 +215,12 @@ impl CrossExchangeExecutor {
         }
         if order.side != "BUY" && order.side != "SELL" {
             return Err(format!("Invalid side: {}", order.side));
+        }
+        if order.order_type == "MARKET" {
+            return Err("Market orders are prohibited — use LIMIT only".to_string());
+        }
+        if order.time_in_force == "GTC" {
+            return Err("GTC time-in-force is prohibited — use IOC or FOK only".to_string());
         }
         if order.symbol.is_empty() {
             return Err("Symbol cannot be empty".to_string());

@@ -31,7 +31,13 @@ async fn sync_exchange_balance(
     // in normal operation since USDT is always registered at id 0).
     let symbol = allocator
         .get_symbol(token_id as u16)
-        .unwrap_or_else(|| "USDT".to_string());
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                token_id,
+                "balance_sync: unknown token_id, falling back to USDT — configure token registry correctly"
+            );
+            "USDT".to_string()
+        });
     let balance = client.get_balance(http, &symbol).await?;
     allocator.update_balance_atomic(exchange_id as usize, token_id, balance);
     Ok(balance)

@@ -84,6 +84,7 @@ impl SharedMarketFrame {
             std::ptr::write_bytes(dst, 0, MAX_SYMBOL_LEN);
             std::ptr::copy_nonoverlapping(sym_bytes.as_ptr(), dst, len);
         }
+        std::sync::atomic::compiler_fence(Ordering::Release);
 
         // Write prices and timestamp (all atomic — no torn reads).
         self.best_bid.store(best_bid, Ordering::Release);
@@ -136,7 +137,10 @@ impl SharedMarketFrame {
     pub fn symbol_str(&self) -> &str {
         let end = self.symbol.iter().position(|&b| b == 0).unwrap_or(MAX_SYMBOL_LEN);
         // Safety: symbol bytes are ASCII (exchange symbols).
-        std::str::from_utf8(&self.symbol[..end]).unwrap_or("")
+        std::str::from_utf8(&self.symbol[..end]).unwrap_or_else(|e| {
+            tracing::warn!(invalid_bytes = ?e, "SharedMemoryFrame: non-UTF8 symbol bytes");
+            ""
+        })
     }
 
     /// Reads best bid (fixed-point u64, 9 decimals).

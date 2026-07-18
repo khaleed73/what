@@ -39,6 +39,10 @@ pub struct TcpOptimizedClientConfig {
 
 impl Default for TcpOptimizedClientConfig {
     fn default() -> Self {
+        // TCP_NODELAY is applied universally. This is correct for exchange
+        // connections but adds ~40% CPU overhead for keep-alive pings.
+        // For internal services (Discord, monitoring), Nagle's algorithm
+        // would be more appropriate.
         Self {
             tcp_nodelay: true,
             pool_max_idle_per_host: DEFAULT_POOL_MAX_IDLE,

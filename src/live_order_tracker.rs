@@ -184,7 +184,10 @@ impl LiveOrderTracker {
     /// Return current count of tracked orders.
     pub fn len(&self) -> usize {
         self.orders.lock().unwrap_or_else(|e| {
-            tracing::error!("live_order_tracker: poisoned lock in len(), recovering");
+            tracing::error!(
+                error = %e,
+                "live_order_tracker: poisoned lock in len() — recovering lock to preserve orders"
+            );
             e.into_inner()
         }).len()
     }

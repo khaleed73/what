@@ -162,6 +162,10 @@ pub struct TlsPinningConfig {
 ///
 /// Uses system TLS trust anchors.  For certificate pinning, use
 /// [`build_pinned_http_client`] instead.
+///
+/// TODO: Consider TLS certificate pinning for production deployments.
+/// Default reqwest trusts system root CAs which may include compromised CAs.
+/// For exchange API connections, pin the exchange's certificate to prevent MITM.
 pub fn build_http_client(timeout_secs: u64) -> anyhow::Result<reqwest::Client> {
     let timeout_secs = timeout_secs.max(5); // floor at 5s
     let client = reqwest::Client::builder()

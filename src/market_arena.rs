@@ -147,7 +147,9 @@ impl MarketArena {
     /// Compute flat index: `exchange_id * num_tokens + token_id`.
     #[inline(always)]
     pub fn get_index(&self, exchange_id: usize, token_id: usize) -> usize {
-        exchange_id * self.num_tokens + token_id
+        let idx = exchange_id * self.num_tokens + token_id;
+        debug_assert!(idx < self.matrix.len(), "arena index out of bounds: exchange={}, token={}", exchange_id, token_id);
+        idx
     }
 
     /// Update the order book state for a specific exchange×token.

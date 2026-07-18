@@ -2,7 +2,6 @@
 //!
 //! Master bootstrapper. Pins computation to a dedicated CPU core, loads
 
-#![allow(unused_imports, dead_code)]
 //! configuration, wires every subsystem together, and either starts live
 //! WebSocket feeds or runs the built-in integration smoke-test.
 
@@ -766,9 +765,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("╠══════════════════════════════════════════════════════════════╣");
         println!("║  Confirm PAPER MODE? (y/n):                                 ║");
         println!("╚══════════════════════════════════════════════════════════════╝");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap_or_default();
-        let confirmed = input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes");
+        let confirmed = if std::env::var("HFT_AUTO_CONFIRM_PAPER").is_ok() {
+            true
+        } else {
+            let mut input = String::new();
+            match std::io::stdin().read_line(&mut input) {
+                Ok(_) => input.trim().eq_ignore_ascii_case("y") || input.trim().eq_ignore_ascii_case("yes"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "stdin read failed — defaulting to paper mode confirmation");
+                    true // fail-open: if stdin is unavailable, assume headless deployment
+                }
+            }
+        };
         if !confirmed {
             println!("Aborted by user. Update your API keys in config.toml and re-run.");
             return Ok(());
@@ -816,8 +824,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Total live USDT across exchanges: ${}", boot_total);
             boot_total
         } else {
-            println!("  WARNING: All exchange balance queries failed — falling back to DEFAULT_PAPER_CAPITAL");
-            DEFAULT_PAPER_CAPITAL
+            eprintln!();
+            eprintln!("==============================================================");
+            eprintln!("  FATAL: All exchange balance queries FAILED in LIVE mode");
+            eprintln!("==============================================================");
+            eprintln!("  The bot cannot safely trade without knowing real balances.");
+            eprintln!("  FIX: Check network, API keys, and exchange status.");
+            eprintln!("==============================================================");
+            eprintln!();
+            std::process::exit(1);
         }
     } else {
         DEFAULT_PAPER_CAPITAL
@@ -1292,12 +1307,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The callback finds the exchange with the highest USDT balance and
     // sends a RebalanceRequest to transfer $500 from that exchange to
     // the starved one.  This replaces the old hard-coded check.
-    let starvation_threshold = config.risk.max_single_position_pct * live_capital;
-    let starvation_threshold = if starvation_threshold < Decimal::from(50) {
-        Decimal::from(50) // floor at $50
-    } else {
-        starvation_threshold
-    };
+    let starvation_threshold = (config.risk.max_single_position_pct * live_capital)
+        .max(Decimal::from(50));
     let mut starvation_detector = capital_starvation::CapitalStarvationDetector::new(starvation_threshold);
     {
         let cb_allocator = Arc::clone(&allocator_arc);

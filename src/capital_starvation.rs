@@ -41,9 +41,13 @@ pub struct CapitalStarvationDetector {
 }
 
 impl CapitalStarvationDetector {
-    /// Creates a new detector with the given minimum balance threshold.
+    /// Creates a new starvation detector.
     ///
-    /// When any exchange balance falls below this value, starvation is declared.
+    /// The `threshold` parameter represents the minimum USDT balance on any
+    /// exchange before a starvation condition is triggered. This should be
+    /// set to at least the minimum order size of the configured exchanges
+    /// to avoid false positives when an exchange legitimately has low
+    /// capital for its assigned pairs.
     pub fn new(min_threshold: Decimal) -> Self {
         Self {
             min_threshold,

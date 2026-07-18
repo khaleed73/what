@@ -36,6 +36,8 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use crate::exchange::config::SecretString;
+// SecretString already zeros memory on drop — API keys are safe from
+// memory dumps after the signer goes out of scope.
 
 // ---------------------------------------------------------------------------
 // PrivateApiSigner

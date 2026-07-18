@@ -72,6 +72,8 @@ impl OkxClient {
 
     /// Common OKX order-signing and sending logic.
     async fn send_okx_order(&self, body: serde_json::Value) -> Result<serde_json::Value> {
+        // TODO: Add monotonic counter to prevent nonce collisions within the
+        // same millisecond on rapid successive requests.
         let timestamp = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();

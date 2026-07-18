@@ -154,6 +154,10 @@ impl RiskShield {
         f2: Decimal,
         f3: Decimal,
     ) -> bool {
+        // Validate all rates are positive
+        if rate1 <= Decimal::ZERO || rate2 <= Decimal::ZERO || rate3 <= Decimal::ZERO {
+            return false;
+        }
         let fee_factor = (Decimal::ONE - f1) * (Decimal::ONE - f2) * (Decimal::ONE - f3);
         let product_rates = rate1 * rate2 * rate3;
         let net_return = fee_factor * product_rates;

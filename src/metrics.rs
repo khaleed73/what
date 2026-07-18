@@ -27,6 +27,8 @@ pub struct MetricsConfig {
 
 impl Default for MetricsConfig {
     fn default() -> Self {
+        // TODO: Make metrics bind address configurable via CLI/env.
+        // In production, bind to 127.0.0.1:9090 and use a reverse proxy.
         Self {
             bind_addr: "127.0.0.1:9090".to_string(),
         }
