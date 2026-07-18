@@ -213,9 +213,9 @@ impl PaperTradingPipeline {
     /// * **Partial fill** – when accepted, the filled quantity is randomly
     ///   chosen in `[50 %, partial_fill_max_pct)` of the requested quantity.
     /// * **BUY**  – deducts `total` (actual_qty × effective_price) from USDT
-    ///              and credits `actual_qty` to `token_id`.
+    ///   and credits `actual_qty` to `token_id`.
     /// * **SELL** – deducts `actual_qty` from `token_id` and credits `total`
-    ///              to USDT.
+    ///   to USDT.
     ///
     /// If the source balance is insufficient (or the fill was rejected) a
     /// zeroed-out record is returned (no balances are mutated, no counters

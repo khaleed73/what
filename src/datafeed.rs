@@ -180,10 +180,7 @@ fn parse_u64_skip_dot(bytes: &[u8], pos: usize) -> Option<(u64, usize)> {
     let normalized = if decimal_places <= TARGET_DECIMALS {
         // Pad with zeros: multiply by 10^(TARGET_DECIMALS - decimal_places)
         let pad = TARGET_DECIMALS - decimal_places;
-        match raw_val.checked_mul(10u64.checked_pow(pad)?) {
-            Some(v) => v,
-            None => return None, // overflow
-        }
+        raw_val.checked_mul(10u64.checked_pow(pad)?)?
     } else {
         // Truncate: divide by 10^(decimal_places - TARGET_DECIMALS)
         let trim = decimal_places - TARGET_DECIMALS;
@@ -471,8 +468,7 @@ const KNOWN_QUOTES: &[&str] = &[
 #[inline]
 fn split_base_quote(symbol: &str) -> (&str, &str) {
     for &quote in KNOWN_QUOTES {
-        if symbol.ends_with(quote) {
-            let base = &symbol[..symbol.len() - quote.len()];
+        if let Some(base) = symbol.strip_suffix(quote) {
             if !base.is_empty() {
                 return (base, quote);
             }

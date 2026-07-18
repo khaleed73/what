@@ -177,28 +177,22 @@ impl StablecoinProtectionCircuit {
         } else if was_depegged {
             // M-5: Recovery path — use CAS to prevent race.
             let required = self.recovery_ticks_required.load(Ordering::SeqCst).max(1);
-            loop {
-                let was = self.is_depegged.load(Ordering::SeqCst);
-                if !was { break; }
-                let count = self.recovery_tick_count.fetch_add(1, Ordering::SeqCst) + 1;
-                if count >= required {
-                    match self.is_depegged.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst) {
-                        Ok(_) => {
-                            self.recovery_tick_count.store(0, Ordering::SeqCst);
-                            tracing::info!(
-                                symbol = %self.target_symbol,
-                                price = %price,
-                                recovery_ticks = count,
-                                "Peg restored after {} consecutive in-range ticks \u{2014} trading resumed for {}",
-                                count,
-                                self.target_symbol
-                            );
-                            break;
-                        }
-                        Err(_) => break,
+            let count = self.recovery_tick_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if count >= required {
+                match self.is_depegged.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst) {
+                    Ok(_) => {
+                        self.recovery_tick_count.store(0, Ordering::SeqCst);
+                        tracing::info!(
+                            symbol = %self.target_symbol,
+                            price = %price,
+                            recovery_ticks = count,
+                            "Peg restored after {} consecutive in-range ticks \u{2014} trading resumed for {}",
+                            count,
+                            self.target_symbol
+                        );
                     }
+                    Err(_) => {} // CAS failed: another thread cleared depeg; no-op
                 }
-                break;
             }
         } else {
             // Normal state — reset counter.

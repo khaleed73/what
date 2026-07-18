@@ -620,7 +620,7 @@ impl Exchange for DeribitExchange {
         let inst = symbol.replace('/', "-");
         let params = serde_json::json!({
             "instrument_name": inst,
-            "depth": depth.max(1).min(200),
+            "depth": depth.clamp(1, 200),
         });
 
         let json = self

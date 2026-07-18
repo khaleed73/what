@@ -177,7 +177,7 @@ impl TriPathFinder {
         }
 
         // Sort by profit descending.
-        profitable_paths.sort_by(|a, b| b.net_profit_factor.cmp(&a.net_profit_factor));
+        profitable_paths.sort_by_key(|b| std::cmp::Reverse(b.net_profit_factor));
         profitable_paths.dedup_by(|a, b| a.pairs == b.pairs);
         profitable_paths
     }

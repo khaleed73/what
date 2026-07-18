@@ -1154,7 +1154,7 @@ impl WithdrawalExecutor {
         let form_body = format!("nonce={}&asset={}", nonce, currency);
 
         use ring::digest;
-        let nonce_body = format!("{}{}", nonce, format!("asset={}", currency));
+        let nonce_body = format!("{}asset={}", nonce, currency);
         let hash = digest::digest(&digest::SHA256, nonce_body.as_bytes());
         let hash_hex = hex::encode(hash.as_ref());
 

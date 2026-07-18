@@ -112,6 +112,7 @@ impl TradeLog {
     // -----------------------------------------------------------------------
 
     /// Record a single trade leg, append to the JSONL file.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_trade(
         &self,
         exchange_id: u16,
@@ -167,6 +168,7 @@ impl TradeLog {
     ///
     /// The P&L is: `sell_qty * sell_price - buy_qty * buy_price - buy_fee - sell_fee`.
     /// This assumes the buy and sell quantities are equal (same coin).
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_arb_pair(
         &self,
         buy_exchange_id: u16,
@@ -524,11 +526,13 @@ impl TradeLog {
             ));
         }
 
+        let trade_count = records.len();
         let content = csv_lines.join("\n") + "\n";
+        drop(records);
 
         match tokio::fs::write(path, &content).await {
             Ok(_) => {
-                info!(path, trades = records.len(), "Exported trades to CSV");
+                info!(path, trades = trade_count, "Exported trades to CSV");
             }
             Err(e) => {
                 error!(path, error = %e, "Failed to write CSV export");

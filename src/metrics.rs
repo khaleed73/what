@@ -66,7 +66,7 @@ impl MetricsSampling {
     #[inline]
     fn should_sample(&self) -> bool {
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
-        count % self.rate == 0
+        count.is_multiple_of(self.rate)
     }
 }
 

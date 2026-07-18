@@ -344,7 +344,7 @@ impl Exchange for BitfinexClient {
                 if let Some(orders) = arr {
                     if orders.iter().any(|ord| {
                         ord.as_array()
-                            .and_then(|a| a.get(0))
+                            .and_then(|a| a.first())
                             .and_then(|v| v.as_i64())
                             == Some(parsed_id)
                     }) {

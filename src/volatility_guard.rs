@@ -150,7 +150,7 @@ impl VolatilityGuard {
                 ceiling_bps,
                 "spread ceiling breached"
             );
-            return false;
+            false
         } else {
             true
         }

@@ -60,8 +60,8 @@ impl SharedMarketFrame {
     ///   1. Write odd sequence (signals "write in progress")
     ///   2. Write data fields (prices, timestamp, symbol)
     ///   3. Write even sequence (signals "write complete")
-    /// Readers read sequence, read data, re-read sequence; if the sequence
-    /// changed or is odd, they retry.
+    ///      Readers read sequence, read data, re-read sequence; if the sequence
+    ///      changed or is odd, they retry.
     #[inline]
     pub fn write(&self, seq: u64, symbol: &str, best_bid: u64, best_ask: u64, timestamp_ms: u64) {
         // Step 1: Signal write-in-progress with odd sequence.

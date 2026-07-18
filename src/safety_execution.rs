@@ -84,6 +84,7 @@ impl SafetyExecutionEngine {
     /// - Quantity must be positive and non-zero
     /// - Buy price must not exceed best_ask by more than 0.5% (slippage guard)
     /// - Sell price must not be below best_bid by more than 0.5% (slippage guard)
+    #[allow(clippy::too_many_arguments)]
     pub fn build_safe_order(
         symbol: &str,
         side: &str,

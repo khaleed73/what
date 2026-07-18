@@ -148,6 +148,7 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                             }
                         }
                     }
+                    #[allow(clippy::collapsible_match)]
                     _ => {}
                 }
             }

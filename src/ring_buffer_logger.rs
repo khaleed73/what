@@ -56,6 +56,12 @@ pub struct RingBufferLogger {
     log_file_path: Option<String>,
 }
 
+impl Default for RingBufferLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RingBufferLogger {
     /// Creates a new empty ring buffer logger.
     pub fn new() -> Self {

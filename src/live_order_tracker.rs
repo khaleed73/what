@@ -189,6 +189,11 @@ impl LiveOrderTracker {
         }).len()
     }
 
+    /// Return true if no orders are tracked.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Return total orders ever tracked.
     pub fn total_tracked(&self) -> u64 {
         self.total_tracked.load(std::sync::atomic::Ordering::Relaxed)

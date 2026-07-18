@@ -456,7 +456,6 @@ impl OrderPipeline for RealExecutionPipeline {
         let this = self;
         let intent = intent.clone();
         retry_with_backoff(3, 50, || {
-            let this = this;
             let intent = intent.clone();
             async move { this.execute_order_inner(&intent).await }
         })

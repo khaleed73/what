@@ -227,7 +227,7 @@ impl RateLimitCircuitBreaker {
             // C-3: Unregistered exchanges must be rejected to prevent
             // unbounded API usage that could trigger exchange bans.
             tracing::error!(exchange = %exchange_id, "Rate limit check for unregistered exchange — REFUSING");
-            return RateLimitStatus::Paused { remaining_ms: u64::MAX };
+            RateLimitStatus::Paused { remaining_ms: u64::MAX }
         }
     }
 
