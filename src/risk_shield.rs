@@ -61,6 +61,11 @@ impl RiskShield {
         leg3: &MarketTicker,
         fee_rate: Decimal,
     ) -> Option<Decimal> {
+        // M-3: Validate fee_rate is in [0, 1). Negative or >= 100% fees are nonsensical.
+        if fee_rate < Decimal::ZERO || fee_rate >= Decimal::ONE {
+            return None;
+        }
+
         // Safety Guard 1: Minimum capital requirement
         let min_order_size = dec!(10.0);
         if capital < min_order_size {
@@ -156,6 +161,13 @@ impl RiskShield {
     ) -> bool {
         // Validate all rates are positive
         if rate1 <= Decimal::ZERO || rate2 <= Decimal::ZERO || rate3 <= Decimal::ZERO {
+            return false;
+        }
+        // M-3: Validate all fee rates are in [0, 1).
+        if f1 < Decimal::ZERO || f1 >= Decimal::ONE
+            || f2 < Decimal::ZERO || f2 >= Decimal::ONE
+            || f3 < Decimal::ZERO || f3 >= Decimal::ONE
+        {
             return false;
         }
         let fee_factor = (Decimal::ONE - f1) * (Decimal::ONE - f2) * (Decimal::ONE - f3);

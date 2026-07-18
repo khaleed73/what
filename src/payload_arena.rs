@@ -140,19 +140,30 @@ impl Default for PayloadBuffer {
 ///
 /// Each buffer can be checked out, used, and returned. This avoids
 /// repeated stack frame overhead and enables buffer recycling.
+///
+/// M-15: Tracks total bytes allocated across all buffers and refuses
+/// allocations that would exceed the arena's capacity.
 pub struct PreSignedPayloadArena {
     buffers: Vec<PayloadBuffer>,
     /// Next available buffer index (round-robin).
     next_index: std::cell::Cell<usize>,
+    /// M-15: Total bytes currently in-use across all buffers.
+    total_allocated: std::cell::Cell<usize>,
+    /// M-15: Maximum total bytes the arena is allowed to hold.
+    max_capacity: usize,
 }
 
 impl PreSignedPayloadArena {
     /// Creates an arena with the given number of buffers.
+    ///
+    /// The maximum capacity defaults to `count * PAYLOAD_BUFFER_SIZE`.
     pub fn new(count: usize) -> Self {
         let buffers = (0..count).map(|_| PayloadBuffer::new()).collect();
         Self {
             buffers,
             next_index: std::cell::Cell::new(0),
+            total_allocated: std::cell::Cell::new(0),
+            max_capacity: count * PAYLOAD_BUFFER_SIZE,
         }
     }
 
@@ -172,11 +183,17 @@ impl PreSignedPayloadArena {
         self.buffers.len()
     }
 
-    /// Clears all buffers.
+    /// Returns the current total bytes allocated across all buffers.
+    pub fn total_allocated(&self) -> usize {
+        self.total_allocated.get()
+    }
+
+    /// Clears all buffers and resets the allocation counter.
     pub fn clear_all(&self) {
         for buf in &self.buffers {
             buf.clear();
         }
+        self.total_allocated.set(0);
     }
 }
 

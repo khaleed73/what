@@ -5,6 +5,7 @@
 //! Designed for the hot path where every nanosecond counts.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 
 /// Maximum depth levels per side. Fixed at compile time for zero-allocation.
@@ -44,12 +45,19 @@ impl AtomicLevel {
 
     /// Converts a Decimal to fixed-point u64 (9 decimal places).
     fn decimal_to_fp(d: Decimal) -> u64 {
-        let scaled = d * Decimal::from(FP_SCALE_U64);
-        match scaled.trunc_with_scale(0).to_string().parse::<u64>() {
-            Ok(fp) => fp,
-            Err(_) => {
-                tracing::warn!(value = %d, "atomic_orderbook decimal_to_fp: parse overflow, capping to u64::MAX");
-                u64::MAX
+        match d * Decimal::from(FP_SCALE_U64) {
+            scaled if scaled >= Decimal::ZERO => {
+                match scaled.to_u64() {
+                    Some(fp) => fp,
+                    None => {
+                        tracing::warn!(value = %d, "atomic_orderbook decimal_to_fp: overflow, capping to u64::MAX");
+                        u64::MAX
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!(value = %d, "atomic_orderbook decimal_to_fp: negative value, capping to 0");
+                0
             }
         }
     }

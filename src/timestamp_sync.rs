@@ -32,6 +32,9 @@ pub struct TimestampSynchronizer {
     sample_buffer: std::sync::Mutex<Vec<i64>>,
     /// Number of initial samples required before trusting the median.
     samples_required: usize,
+    /// H-4: Last returned timestamp for monotonicity enforcement.
+    /// Prevents backward NTP corrections from producing decreasing timestamps.
+    last_returned_ms: AtomicI64,
 }
 
 impl TimestampSynchronizer {
@@ -51,6 +54,7 @@ impl TimestampSynchronizer {
             max_drift_ms: 5000,
             sample_buffer: std::sync::Mutex::new(Vec::with_capacity(5)),
             samples_required: 3,
+            last_returned_ms: AtomicI64::new(i64::MIN),
         }
     }
 
@@ -147,18 +151,22 @@ impl TimestampSynchronizer {
     ///
     /// This is what should be sent in API requests.
     ///
-    /// NOTE: Backward clock jumps (e.g. NTP corrections that step the local
-    /// clock backwards between syncs) are NOT detected here.  The offset
-    /// stored atomically only changes when `update_offset` is called, so a
-    /// backward jump in the LOCAL clock between two `adjusted_timestamp_ms`
-    /// calls would produce a monotonically *decreasing* timestamp.  This could
-    /// cause the system to treat stale order-book data as fresh.  A future
-    /// improvement should compare against `std::time::Instant` (which is
-    /// guaranteed monotonic) and reject timestamps that go backwards.
-    #[inline(always)]
+    /// H-4: Enforces monotonicity — never returns a value less than the
+    /// previous one.  Backward NTP corrections that step the local clock
+    /// backwards would otherwise produce monotonically *decreasing*
+    /// timestamps, causing the system to treat stale order-book data as fresh.
+    #[inline]
     pub fn adjusted_timestamp_ms(&self) -> i64 {
         let local_ms = chrono::Utc::now().timestamp_millis();
-        local_ms + self.offset_ms.load(Ordering::SeqCst)
+        let adjusted = local_ms + self.offset_ms.load(Ordering::SeqCst);
+        // Enforce monotonicity: never return a value less than the previous one.
+        loop {
+            let prev = self.last_returned_ms.load(Ordering::SeqCst);
+            let result = adjusted.max(prev);
+            if result == prev || self.last_returned_ms.compare_exchange_weak(prev, result, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                return result;
+            }
+        }
     }
 
     /// Returns the current offset in milliseconds.

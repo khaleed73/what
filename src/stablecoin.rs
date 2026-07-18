@@ -19,6 +19,9 @@ pub struct StablecoinConfig {
     pub usdc_min_pct: Decimal,
     /// Symbols to monitor for depeg events
     pub monitored_symbols: Vec<String>,
+    /// L-5: Check interval in milliseconds for the depeg monitor loop.
+    /// Default: 5000 ms (5 seconds).
+    pub check_interval_ms: u64,
 }
 
 impl Default for StablecoinConfig {
@@ -32,6 +35,7 @@ impl Default for StablecoinConfig {
                 "USDC".to_string(),
                 "DAI".to_string(),
             ],
+            check_interval_ms: 5000, // L-5: default 5-second check interval
         }
     }
 }

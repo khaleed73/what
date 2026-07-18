@@ -48,7 +48,9 @@ pub struct CrossExchangeResult {
     pub both_succeeded: bool,
     pub total_profit: Option<Decimal>,  // Net profit after fees
     pub total_execution_time_us: u64,
-    pub rollback_executed: bool,
+    /// NOTE: Rollback is NOT executed here — the caller is responsible for
+    /// handling partial fills. This flag indicates that a rollback IS needed.
+    pub rollback_required: bool,
 }
 
 /// Cross-Exchange Executor — dispatches simultaneous trades on two exchanges.
@@ -201,7 +203,7 @@ impl CrossExchangeExecutor {
             both_succeeded,
             total_profit,
             total_execution_time_us: total_start.elapsed().as_micros() as u64,
-            rollback_executed: rollback_required,
+            rollback_required: rollback_required,
         }
     }
 
@@ -212,6 +214,10 @@ impl CrossExchangeExecutor {
         }
         if order.quantity <= Decimal::ZERO {
             return Err("Quantity must be positive".to_string());
+        }
+        // M-4: Maximum quantity guard — prevent enormous orders from bugs upstream.
+        if order.quantity > Decimal::from(1000u64) {
+            return Err(format!("Quantity {} exceeds maximum 1000", order.quantity));
         }
         if order.side != "BUY" && order.side != "SELL" {
             return Err(format!("Invalid side: {}", order.side));

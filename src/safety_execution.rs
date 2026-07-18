@@ -272,7 +272,7 @@ impl SafetyExecutionEngine {
             quantity: counter_qty,
             time_in_force: "IOC".to_string(),
             // L-3 fix: Zero-pad the hash component for consistent format.
-            client_order_id: format!("COUNTER-{}-{:04x}-{}", original.exchange_id, timestamp_ms % 9999, ORDER_COUNTER.fetch_add(1, Ordering::Relaxed)),
+            client_order_id: format!("COUNTER-{}-{}-{}", original.exchange_id, timestamp_ms, ORDER_COUNTER.fetch_add(1, Ordering::Release)),
             timestamp_ms,
             exchange_id: original.exchange_id,
         }

@@ -43,6 +43,9 @@ pub struct DustManager {
     dust_threshold_usd: Decimal,
     /// Minimum total dust value to trigger a sweep.
     sweep_threshold_usd: Decimal,
+    /// M-18: Minimum withdrawal amount in USD. Dust entries below this
+    /// value are not included in conversion requests.
+    min_withdrawal_usd: Decimal,
     /// C-13 fix: Target tokens wrapped in RwLock for thread safety.
     target_tokens: std::sync::RwLock<HashMap<u16, String>>,
     /// Accumulated dust entries.
@@ -50,11 +53,15 @@ pub struct DustManager {
 }
 
 impl DustManager {
+    /// Default minimum withdrawal amount in USD (most exchanges: $10-20).
+    const DEFAULT_MIN_WITHDRAWAL_USD: Decimal = dec!(10.0);
+
     /// Creates a new DustManager with default thresholds.
     pub fn new() -> Self {
         Self {
             dust_threshold_usd: DEFAULT_DUST_THRESHOLD_USD,
             sweep_threshold_usd: DEFAULT_SWEEP_THRESHOLD_USD,
+            min_withdrawal_usd: Self::DEFAULT_MIN_WITHDRAWAL_USD,
             target_tokens: std::sync::RwLock::new(HashMap::new()),
             dust_inventory: std::sync::Mutex::new(Vec::new()),
         }
@@ -65,6 +72,7 @@ impl DustManager {
         Self {
             dust_threshold_usd: dust_threshold,
             sweep_threshold_usd: sweep_threshold,
+            min_withdrawal_usd: Self::DEFAULT_MIN_WITHDRAWAL_USD,
             target_tokens: std::sync::RwLock::new(HashMap::new()),
             dust_inventory: std::sync::Mutex::new(Vec::new()),
         }
@@ -132,6 +140,10 @@ impl DustManager {
         inventory
             .iter()
             .filter_map(|entry| {
+                // M-18: Skip entries below the minimum withdrawal amount.
+                if entry.estimated_usd_value < self.min_withdrawal_usd {
+                    return None;
+                }
                 let read_guard = self.target_tokens.read().unwrap_or_else(|e| e.into_inner());
                 let target = read_guard.get(&entry.exchange_id)?;
                 Some(DustConversionRequest {

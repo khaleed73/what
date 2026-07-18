@@ -284,6 +284,17 @@ pub trait PrivateExchangeClient: Send + Sync {
     /// Numeric identifier for this exchange instance (used by the arb engine).
     fn id(&self) -> u16;
 
+    // M-1: The `http_client` passed to every method below MUST be configured
+    // with explicit connect and request timeouts (e.g. connect 5s, request 10s).
+    // A hung exchange without timeouts would block the execution thread
+    // indefinitely.  The exchange/ module clients use `build_http_client()`
+    // which sets timeouts automatically.  Legacy hot-path callers in main.rs
+    // must construct their client with:
+    //   reqwest::Client::builder()
+    //       .connect_timeout(Duration::from_secs(5))
+    //       .timeout(Duration::from_secs(10))
+    //       .build()
+
     /// Submit an order and return the exchange's response.
     async fn submit_order(
         &self,

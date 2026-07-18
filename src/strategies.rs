@@ -28,11 +28,16 @@ impl ExchangeFeeSchedule {
     }
 
     /// Set both maker and taker fee for a specific exchange.
-    pub fn set_fee(&mut self, exchange_id: usize, maker_bps: u64, taker_bps: u64) {
-        if exchange_id < self.maker_fees.len() {
-            self.maker_fees[exchange_id] = maker_bps;
-            self.taker_fees[exchange_id] = taker_bps;
+    ///
+    /// # Errors
+    /// Returns an error if `exchange_id` is out of range.
+    pub fn set_fee(&mut self, exchange_id: usize, maker_bps: u64, taker_bps: u64) -> Result<(), String> {
+        if exchange_id >= self.maker_fees.len() {
+            return Err(format!("exchange_id {} out of range (max {})", exchange_id, self.maker_fees.len() - 1));
         }
+        self.maker_fees[exchange_id] = maker_bps;
+        self.taker_fees[exchange_id] = taker_bps;
+        Ok(())
     }
 
     /// Return the **round-trip taker fee** (buy taker + sell taker) for a pair
@@ -875,8 +880,8 @@ mod tests {
         // Custom fees: ex0=5 bps, ex1=15 bps.
         {
             let mut fees = arena.fee_schedule.write().unwrap();
-            fees.set_fee(0, 5, 5);
-            fees.set_fee(1, 10, 15);
+            fees.set_fee(0, 5, 5).expect("exchange_id 0 in range");
+            fees.set_fee(1, 10, 15).expect("exchange_id 1 in range");
         }
 
         // Raw spread = 30 bps.  Net = 30 - (5 + 15) = 10 bps.
@@ -916,8 +921,8 @@ mod tests {
     #[test]
     fn test_exchange_fee_schedule_round_trip() {
         let mut fees = ExchangeFeeSchedule::new(3, 10);
-        fees.set_fee(0, 5, 10);   // Binance: 5 bps maker, 10 bps taker
-        fees.set_fee(1, 2, 6);    // Bybit:   2 bps maker,  6 bps taker
+        fees.set_fee(0, 5, 10).expect("exchange_id 0 in range");   // Binance: 5 bps maker, 10 bps taker
+        fees.set_fee(1, 2, 6).expect("exchange_id 1 in range");    // Bybit:   2 bps maker,  6 bps taker
 
         // Round-trip taker: 10 + 6 = 16 bps
         assert_eq!(fees.round_trip_taker_bps(0, 1), 16);
@@ -930,7 +935,7 @@ mod tests {
     #[test]
     fn test_exchange_fee_schedule_tri_leg() {
         let mut fees = ExchangeFeeSchedule::new(1, 8);
-        fees.set_fee(0, 4, 8);
+        fees.set_fee(0, 4, 8).expect("exchange_id 0 in range");
         assert_eq!(fees.tri_leg_taker_bps(0), 24); // 3 * 8
     }
 
@@ -1073,11 +1078,11 @@ mod tests {
     #[test]
     fn test_exchange_fee_schedule_consistency() {
         let mut fees = ExchangeFeeSchedule::new(5, 10);
-        fees.set_fee(0, 5, 10);  // Binance
-        fees.set_fee(1, 3, 10);  // Bybit
-        fees.set_fee(2, 3, 8);   // OKX
-        fees.set_fee(3, 5, 10);  // GateIO
-        fees.set_fee(4, 3, 10);  // KuCoin
+        fees.set_fee(0, 5, 10).expect("exchange_id 0 in range");  // Binance
+        fees.set_fee(1, 3, 10).expect("exchange_id 1 in range");  // Bybit
+        fees.set_fee(2, 3, 8).expect("exchange_id 2 in range");   // OKX
+        fees.set_fee(3, 5, 10).expect("exchange_id 3 in range");  // GateIO
+        fees.set_fee(4, 3, 10).expect("exchange_id 4 in range");  // KuCoin
 
         // Verify every exchange has a taker fee set.
         for i in 0..5 {

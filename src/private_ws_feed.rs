@@ -73,6 +73,13 @@ pub struct PrivateFeedConfig {
     pub wss_url: String,
     /// Listen key for authenticated streams (Binance-style).
     pub listen_key: Option<String>,
+    /// L-10: Ping interval in seconds. The client should send a WebSocket
+    /// ping frame at this interval. Default: 30 seconds.
+    pub ping_interval_secs: u64,
+    /// L-10: Pong timeout in seconds. If no pong is received within this
+    /// duration after sending a ping, the connection should be closed and
+    /// reconnected. Default: 60 seconds.
+    pub pong_timeout_secs: u64,
 }
 
 /// Manages private WebSocket feeds across exchanges.
@@ -251,12 +258,16 @@ mod tests {
                 exchange_name: "binance".to_string(),
                 wss_url: "wss://stream.binance.com:9443/ws".to_string(),
                 listen_key: None,
+                ping_interval_secs: 30,
+                pong_timeout_secs: 60,
             },
             PrivateFeedConfig {
                 exchange_id: 2,
                 exchange_name: "bybit".to_string(),
                 wss_url: "wss://stream.bybit.com/v5/private".to_string(),
                 listen_key: None,
+                ping_interval_secs: 30,
+                pong_timeout_secs: 60,
             },
         ];
         let listener = PrivateWsFeedListener::new(configs, tx);

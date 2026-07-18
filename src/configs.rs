@@ -507,15 +507,24 @@ impl EngineConfig {
             let max_drawdown_pct = parse_decimal(&r.max_drawdown_pct,
                 "risk_limits.max_drawdown_pct")?;
             validate_strictly_positive_pct(max_drawdown_pct, "risk_limits.max_drawdown_pct")?;
+            // M-7: A 100% drawdown (losing everything) must be explicitly rejected.
+            if max_drawdown_pct >= Decimal::ONE {
+                return Err(format!(
+                    "risk_limits.max_drawdown_pct = {} must be < 1.0 (100%%) — losing everything is not a valid risk parameter",
+                    max_drawdown_pct
+                ).into());
+            }
 
             let max_total_exposure_pct = parse_decimal(&r.max_total_exposure_pct,
                 "risk_limits.max_total_exposure_pct")?;
-            validate_pct_range(max_total_exposure_pct,
+            // M-7: Exposure limit must be strictly > 0 (0% exposure would block all trading).
+            validate_strictly_positive_pct(max_total_exposure_pct,
                 "risk_limits.max_total_exposure_pct")?;
 
             let max_single_position_pct = parse_decimal(&r.max_single_position_pct,
                 "risk_limits.max_single_position_pct")?;
-            validate_pct_range(max_single_position_pct,
+            // M-7: Position limit must be strictly > 0.
+            validate_strictly_positive_pct(max_single_position_pct,
                 "risk_limits.max_single_position_pct")?;
 
             if r.exchange_failure_threshold == 0 {
@@ -591,6 +600,17 @@ impl EngineConfig {
 
         if exchanges.is_empty() {
             return Err("At least one exchange must be configured under [exchanges.*]".into());
+        }
+
+        // H-7: Validate that the number of exchanges does not exceed the u64
+        // bitmask limit (64 exchanges).  The bitmask system used in
+        // strategies.rs and market_arena.rs can represent at most 64 exchanges
+        // (bits 0..63).  Exceeding this would cause silent bitmask overflow.
+        if exchanges.len() > 64 {
+            return Err(
+                "FATAL: More than 64 exchanges configured. The u64 bitmask system supports at most 64 exchanges.".to_string()
+                    .into(),
+            );
         }
 
         // ── Stablecoin ───────────────────────────────────────────────────

@@ -16,6 +16,7 @@ use crate::protections::RiskManager;
 use crate::signer::{PrivateApiSigner, PrivateExchangeClient, OrderRequest, OrderSide, OrderType};
 use crate::stablecoin::StablecoinMonitor;
 use crate::live_order_tracker::LiveOrderTracker;
+use crate::strategies::ExchangeFeeSchedule;
 
 // ---------------------------------------------------------------------------
 // Order Intent – describes what we want to do on an exchange
@@ -266,7 +267,7 @@ impl RateLimitCircuitBreaker {
         if idx >= self.cooldown_until_ms.len() {
             return Ok(()); // unknown exchange — allow
         }
-        let until = self.cooldown_until_ms[idx].load(Ordering::Relaxed);
+        let until = self.cooldown_until_ms[idx].load(Ordering::Acquire);
         if until == 0 {
             return Ok(());
         }
@@ -282,7 +283,7 @@ impl RateLimitCircuitBreaker {
             ))
         } else {
             // Cooldown expired — clear it.
-            self.cooldown_until_ms[idx].store(0, Ordering::Relaxed);
+            self.cooldown_until_ms[idx].store(0, Ordering::Release);
             Ok(())
         }
     }
@@ -299,7 +300,7 @@ impl RateLimitCircuitBreaker {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let until = now + (self.cooldown_duration_secs * 1000);
-        self.cooldown_until_ms[idx].store(until, Ordering::Relaxed);
+        self.cooldown_until_ms[idx].store(until, Ordering::Release);
         error!(
             exchange_id = exchange_id,
             cooldown_secs = self.cooldown_duration_secs,
@@ -317,7 +318,7 @@ impl RateLimitCircuitBreaker {
         self.cooldown_until_ms
             .iter()
             .filter(|v| {
-                let until = v.load(Ordering::Relaxed);
+                let until = v.load(Ordering::Acquire);
                 until > 0 && now < until
             })
             .count()
@@ -528,6 +529,10 @@ pub struct HighFrequencyExecutionEngine {
     /// Maximum daily loss in cents.  Configurable via `risk_limits.daily_loss_limit_usd`
     /// in `config.toml`.  Default: $100.00 = 10 000 cents.
     pub daily_loss_limit_cents: AtomicU64,
+    /// Optional per-exchange fee schedule for accurate P&L calculation.
+    /// When set, `blast_arbitrage_legs` and `blast_triangular_legs` use
+    /// exchange-specific round-trip taker fees instead of a hardcoded default.
+    fee_schedule_bps: Option<Arc<ExchangeFeeSchedule>>,
 }
 
 impl HighFrequencyExecutionEngine {
@@ -543,7 +548,7 @@ impl HighFrequencyExecutionEngine {
             depeg_circuit,
             paper_pipeline,
             real_pipeline,
-            is_paper_mode: AtomicBool::new(is_paper_mode),
+            is_paper_mode: AtomicBool::new(is_paper_mode), // H-1: Release pairing with Acquire loads
             rollback_count: AtomicU64::new(0),
             max_slippage_bps: AtomicU64::new(5), // default 0.05 % = 5 bps
             slippage_reject_count: AtomicU64::new(0),
@@ -558,6 +563,7 @@ impl HighFrequencyExecutionEngine {
             daily_profit_cents: AtomicU64::new(0),
             daily_reset_day: std::sync::Mutex::new(0),
             daily_loss_limit_cents: AtomicU64::new(10_000), // $100.00 default
+            fee_schedule_bps: None,
         }
     }
 
@@ -574,11 +580,19 @@ impl HighFrequencyExecutionEngine {
         self
     }
 
+    /// Set the per-exchange fee schedule for accurate P&L tracking.
+    /// When set, `blast_arbitrage_legs` uses exchange-specific round-trip
+    /// taker fees.  When unset, falls back to a hardcoded 10 bps with a warning.
+    pub fn set_fee_schedule(&mut self, schedule: Arc<ExchangeFeeSchedule>) {
+        self.fee_schedule_bps = Some(schedule);
+        info!("execution engine: fee schedule attached");
+    }
+
     /// Track a live order in the order tracker.  Called after each leg
     /// execution returns an order_id from the exchange.  In paper mode
     /// this is a no-op (paper fills are instant, no cancellation needed).
     fn track_live_order(&self, result: &OrderResult, intent: &OrderIntent) {
-        if self.is_paper_mode.load(Ordering::Relaxed) {
+        if self.is_paper_mode.load(Ordering::Acquire) {
             return;
         }
         if let Some(ref order_id) = result.order_id {
@@ -617,8 +631,8 @@ impl HighFrequencyExecutionEngine {
         });
         if today != *last_day {
             *last_day = today;
-            let old_loss = self.daily_loss_cents.swap(0, Ordering::Relaxed);
-            let old_profit = self.daily_profit_cents.swap(0, Ordering::Relaxed);
+            let old_loss = self.daily_loss_cents.swap(0, Ordering::AcqRel);
+            let old_profit = self.daily_profit_cents.swap(0, Ordering::AcqRel);
             info!(
                 prev_loss_cents = old_loss,
                 prev_profit_cents = old_profit,
@@ -626,18 +640,18 @@ impl HighFrequencyExecutionEngine {
                 "daily P&L counters reset at midnight UTC"
             );
         }
-        (self.daily_loss_cents.load(Ordering::Relaxed), self.daily_profit_cents.load(Ordering::Relaxed))
+        (self.daily_loss_cents.load(Ordering::Acquire), self.daily_profit_cents.load(Ordering::Acquire))
     }
 
     /// Set the daily loss limit (in cents).  Called once at boot from config.
     pub fn set_daily_loss_limit_cents(&self, cents: u64) {
-        self.daily_loss_limit_cents.store(cents, Ordering::Relaxed);
+        self.daily_loss_limit_cents.store(cents, Ordering::Release);
     }
 
     /// Check daily loss limit.  Returns Err if the daily loss exceeds
     /// the configured maximum (in cents).
     fn check_daily_loss_limit(&self) -> Result<(), String> {
-        let max_loss_cents = self.daily_loss_limit_cents.load(Ordering::Relaxed);
+        let max_loss_cents = self.daily_loss_limit_cents.load(Ordering::Acquire);
         let (daily_loss, _) = self.check_daily_reset();
         if daily_loss >= max_loss_cents {
             return Err(format!(
@@ -652,7 +666,7 @@ impl HighFrequencyExecutionEngine {
     /// `profit_cents` can be negative (loss) or positive (gain).
     fn record_daily_pnl(&self, profit_cents: i64) {
         if profit_cents >= 0 {
-            self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Relaxed);
+            self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Release);
         } else {
             let abs = (profit_cents as i128).unsigned_abs();
             let abs = if abs > u64::MAX as u128 {
@@ -661,13 +675,13 @@ impl HighFrequencyExecutionEngine {
             } else {
                 abs as u64
             };
-            self.daily_loss_cents.fetch_add(abs, Ordering::Relaxed);
+            self.daily_loss_cents.fetch_add(abs, Ordering::Release);
         }
     }
 
     /// Check if the volatility circuit breaker is active.
     pub fn is_volatility_circuit_active(&self) -> bool {
-        self.volatility_circuit.load(Ordering::Relaxed)
+        self.volatility_circuit.load(Ordering::Acquire)
     }
 
     /// Attempt to cancel a live order on the exchange.
@@ -740,7 +754,7 @@ impl HighFrequencyExecutionEngine {
         };
 
         // 0b. Volatility circuit breaker.
-        if self.volatility_circuit.load(Ordering::Relaxed) {
+        if self.volatility_circuit.load(Ordering::Acquire) {
             return Err(format!(
                 "aborted: volatility circuit breaker active [{}:{} vs {}:{}], signal dropped",
                 leg_a.exchange_id, leg_a.symbol, leg_b.exchange_id, leg_b.symbol
@@ -765,7 +779,7 @@ impl HighFrequencyExecutionEngine {
         }
 
         // 3. Pipeline selection.
-        let pipeline: &Arc<dyn OrderPipeline> = if self.is_paper_mode.load(Ordering::Relaxed) {
+        let pipeline: &Arc<dyn OrderPipeline> = if self.is_paper_mode.load(Ordering::Acquire) {
             &self.paper_pipeline
         } else {
             &self.real_pipeline
@@ -802,7 +816,7 @@ impl HighFrequencyExecutionEngine {
                             symbol = %leg_a.symbol,
                             "leg-a pipeline error (not timeout) — triggering emergency counter-order"
                         );
-                        self.rollback_count.fetch_add(1, Ordering::Relaxed);
+                        self.rollback_count.fetch_add(1, Ordering::Release);
                         // Try to extract partial fill from the pipeline error if available;
                         // fall back to ZERO filled_qty if the error is not an OrderResult.
                         let fallback_result = OrderResult {
@@ -841,7 +855,7 @@ impl HighFrequencyExecutionEngine {
                             symbol = %leg_b.symbol,
                             "leg-b pipeline error (not timeout) — triggering emergency counter-order"
                         );
-                        self.rollback_count.fetch_add(1, Ordering::Relaxed);
+                        self.rollback_count.fetch_add(1, Ordering::Release);
                         let fallback_result = OrderResult {
                             success: false,
                             order_id: None,
@@ -888,7 +902,7 @@ impl HighFrequencyExecutionEngine {
                         filled_qty = %filled_leg.filled_qty,
                         "asymmetric fill detected — rolling back filled leg"
                     );
-                    self.rollback_count.fetch_add(1, Ordering::Relaxed);
+                    self.rollback_count.fetch_add(1, Ordering::Release);
                     self.fire_counter_order(
                         pipeline,
                         if a_filled { &leg_b } else { &leg_a },
@@ -928,9 +942,43 @@ impl HighFrequencyExecutionEngine {
                 "blast_arbitrage_legs total timeout (500ms) [{}:{} vs {}:{}], orders may be in-flight",
                 leg_a.exchange_id, leg_a.symbol, leg_b.exchange_id, leg_b.symbol
             );
-            // Note: per-leg 200ms timeouts will handle their own counter-orders if they
-            // haven't already fired. In-flight orders that passed per-leg timeout but
-            // exceeded the total 500ms budget cannot be cancelled from here.
+            // H-10: Best-effort cancellation of all tracked live orders from this blast.
+            // Spawn as fire-and-forget since we're in a sync closure.
+            let tracker = self.order_tracker.clone();
+            let cancel_http = self.cancel_http_client.clone();
+            let cancel_pool = self.cancel_pool.clone();
+            tokio::spawn(async move {
+                let pending = tracker.get_all();
+                if pending.is_empty() {
+                    return;
+                }
+                tracing::error!(
+                    count = pending.len(),
+                    "H-10: total timeout — attempting best-effort cancellation of {} in-flight orders",
+                    pending.len()
+                );
+                for entry in &pending {
+                    if let (Some(http), Some(pool)) = (&cancel_http, &cancel_pool) {
+                        if let Some(client) = pool.get(&entry.exchange_id) {
+                            if let Err(e) = client.cancel_order(http, &entry.symbol, &entry.order_id).await {
+                                tracing::error!(
+                                    exchange = entry.exchange_id,
+                                    order_id = %entry.order_id,
+                                    error = %e,
+                                    "H-10: cancellation of in-flight order FAILED after total timeout"
+                                );
+                            } else {
+                                tracing::info!(
+                                    exchange = entry.exchange_id,
+                                    order_id = %entry.order_id,
+                                    "H-10: in-flight order cancelled after total timeout"
+                                );
+                            }
+                        }
+                    }
+                    tracker.remove(&entry.order_id);
+                }
+            });
             "blast_arbitrage_legs total timeout exceeded 500ms".to_string()
         })?;
         let total_result = total_result?;
@@ -958,9 +1006,15 @@ impl HighFrequencyExecutionEngine {
             };
             let buy_notional = buy_result.filled_qty * buy_result.avg_price;
             let sell_notional = sell_result.filled_qty * sell_result.avg_price;
-            // TODO: Use exchange-specific fee from fee schedule instead of hardcoded 10 bps.
-            // The arena's fee_schedule holds per-exchange taker fees in bps.
-            let fee_bps = Decimal::from(10u64);
+            let fee_bps = Decimal::from(
+                self.fee_schedule_bps
+                    .as_ref()
+                    .map(|s| s.round_trip_taker_bps(leg_a_original.exchange_id as usize, leg_b_original.exchange_id as usize))
+                    .unwrap_or_else(|| {
+                        warn!("fee_schedule_bps not set — falling back to hardcoded 10 bps round-trip fee");
+                        10
+                    }),
+            );
             let buy_fee = buy_notional * fee_bps / Decimal::from(10_000u64);
             let sell_fee = sell_notional * fee_bps / Decimal::from(10_000u64);
             let profit = sell_notional - buy_notional - buy_fee - sell_fee;
@@ -997,7 +1051,7 @@ impl HighFrequencyExecutionEngine {
         };
 
         // 0b. Volatility circuit breaker.
-        if self.volatility_circuit.load(Ordering::Relaxed) {
+        if self.volatility_circuit.load(Ordering::Acquire) {
             return Err(format!(
                 "aborted: volatility circuit breaker active [{}:{} | {}:{} | {}:{}], signal dropped",
                 legs[0].exchange_id, legs[0].symbol, legs[1].exchange_id, legs[1].symbol, legs[2].exchange_id, legs[2].symbol
@@ -1027,7 +1081,7 @@ impl HighFrequencyExecutionEngine {
         }
 
         // 3. Pipeline selection.
-        let pipeline: &Arc<dyn OrderPipeline> = if self.is_paper_mode.load(Ordering::Relaxed) {
+        let pipeline: &Arc<dyn OrderPipeline> = if self.is_paper_mode.load(Ordering::Acquire) {
             &self.paper_pipeline
         } else {
             &self.real_pipeline
@@ -1062,7 +1116,7 @@ impl HighFrequencyExecutionEngine {
                         Ok(Ok(r)) => r,
                         Ok(Err(_)) => {
                             tracing::warn!(leg = i, "leg-{} pipeline error (not timeout) — triggering rollback", i);
-                            self.rollback_count.fetch_add(1, Ordering::Relaxed);
+                            self.rollback_count.fetch_add(1, Ordering::Release);
                             let fallback_result = OrderResult {
                                 success: false,
                                 order_id: None,
@@ -1107,7 +1161,7 @@ impl HighFrequencyExecutionEngine {
                         total = total_legs,
                         "partial triangular fill — rolling back all filled legs"
                     );
-                    self.rollback_count.fetch_add(1, Ordering::Relaxed);
+                    self.rollback_count.fetch_add(1, Ordering::Release);
                     for (i, result) in results.iter().enumerate() {
                         if result.success && result.filled_qty > Decimal::ZERO {
                             self.fire_counter_order(pipeline, &legs[i], result).await;
@@ -1142,8 +1196,42 @@ impl HighFrequencyExecutionEngine {
             tracing::warn!(
                 "blast_triangular_legs total timeout (500ms) — orders may be in-flight, attempting cancellation"
             );
-            // Note: per-leg 200ms timeouts will handle their own counter-orders if they
-            // haven't already fired.
+            // H-10: Best-effort cancellation of all tracked live orders from this blast.
+            let tracker = self.order_tracker.clone();
+            let cancel_http = self.cancel_http_client.clone();
+            let cancel_pool = self.cancel_pool.clone();
+            tokio::spawn(async move {
+                let pending = tracker.get_all();
+                if pending.is_empty() {
+                    return;
+                }
+                tracing::error!(
+                    count = pending.len(),
+                    "H-10: triangular total timeout — attempting best-effort cancellation of {} in-flight orders",
+                    pending.len()
+                );
+                for entry in &pending {
+                    if let (Some(http), Some(pool)) = (&cancel_http, &cancel_pool) {
+                        if let Some(client) = pool.get(&entry.exchange_id) {
+                            if let Err(e) = client.cancel_order(http, &entry.symbol, &entry.order_id).await {
+                                tracing::error!(
+                                    exchange = entry.exchange_id,
+                                    order_id = %entry.order_id,
+                                    error = %e,
+                                    "H-10: triangular cancellation of in-flight order FAILED after total timeout"
+                                );
+                            } else {
+                                tracing::info!(
+                                    exchange = entry.exchange_id,
+                                    order_id = %entry.order_id,
+                                    "H-10: triangular in-flight order cancelled after total timeout"
+                                );
+                            }
+                        }
+                    }
+                    tracker.remove(&entry.order_id);
+                }
+            });
             "blast_triangular_legs total timeout exceeded 500ms".to_string()
         })?;
         let total_result = total_result?;
@@ -1173,8 +1261,23 @@ impl HighFrequencyExecutionEngine {
             }
         }
         if buy_notional > Decimal::ZERO || sell_notional > Decimal::ZERO {
-            // TODO: Use exchange-specific fees from fee schedule instead of hardcoded 10 bps.
-            let fee_bps = Decimal::from(10u64);
+            // Per-leg taker fee: use fee_schedule if available, else 10 bps fallback.
+            let fee_bps_per_leg: u64 = self.fee_schedule_bps
+                .as_ref()
+                .map(|s| {
+                    // For triangular arb all legs are typically on the same exchange,
+                    // but use per-leg exchange_id if they differ.
+                    let exch = legs[0].exchange_id as usize;
+                    s.taker_fees.get(exch).copied().unwrap_or_else(|| {
+                        warn!("fee_schedule_bps missing for exchange {} — falling back to 10 bps", exch);
+                        10
+                    })
+                })
+                .unwrap_or_else(|| {
+                    warn!("fee_schedule_bps not set — falling back to hardcoded 10 bps per-leg fee");
+                    10
+                });
+            let fee_bps = Decimal::from(fee_bps_per_leg);
             let mut total_fee = Decimal::ZERO;
             for (i, result) in total_result.iter().enumerate() {
                 if result.success && result.filled_qty > Decimal::ZERO {
@@ -1195,18 +1298,18 @@ impl HighFrequencyExecutionEngine {
 
     /// Toggle between paper and real execution mode.
     pub fn set_paper_mode(&self, enabled: bool) {
-        self.is_paper_mode.store(enabled, Ordering::Relaxed);
+        self.is_paper_mode.store(enabled, Ordering::Release);
         info!(paper_mode = enabled, "execution mode switched");
     }
 
     /// Returns `true` when the engine is in paper (sandbox) mode.
     pub fn is_paper_mode(&self) -> bool {
-        self.is_paper_mode.load(Ordering::Relaxed)
+        self.is_paper_mode.load(Ordering::Acquire)
     }
 
     /// Returns the cumulative rollback counter (total emergency counter-orders fired).
     pub fn get_rollback_count(&self) -> u64 {
-        self.rollback_count.load(Ordering::Relaxed)
+        self.rollback_count.load(Ordering::Acquire)
     }
 
     /// Set the maximum slippage tolerance in basis points.
@@ -1224,7 +1327,7 @@ impl HighFrequencyExecutionEngine {
 
     /// Returns the cumulative slippage-rejection counter.
     pub fn get_slippage_reject_count(&self) -> u64 {
-        self.slippage_reject_count.load(Ordering::Relaxed)
+        self.slippage_reject_count.load(Ordering::Acquire)
     }
 
     /// Widen the limit price on an `OrderIntent` by the configured slippage
@@ -1279,7 +1382,7 @@ impl HighFrequencyExecutionEngine {
                 Ok(())
             }
             Err(e) => {
-                self.slippage_reject_count.fetch_add(1, Ordering::Relaxed);
+                self.slippage_reject_count.fetch_add(1, Ordering::Release);
                 Err(e)
             }
         }
@@ -1348,8 +1451,16 @@ impl HighFrequencyExecutionEngine {
             is_buy: !original.is_buy,
             symbol: original.symbol.clone(),
         };
-        match pipeline.execute_order(&counter).await {
-            Ok(result) => {
+        // H-3: Counter-orders are emergency unwinds — use a SHORTER timeout
+        // (100ms) than normal orders (200ms) since the system is already in
+        // a bad state and we must not block indefinitely.
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            pipeline.execute_order(&counter),
+        )
+        .await
+        {
+            Ok(Ok(result)) => {
                 tracing::info!(
                     exchange = original.exchange_id,
                     counter_order_id = ?result.order_id,
@@ -1357,11 +1468,19 @@ impl HighFrequencyExecutionEngine {
                     "emergency counter-order executed"
                 );
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::error!(
                     exchange = original.exchange_id,
                     error = %e,
                     "emergency counter-order FAILED — manual intervention required"
+                );
+            }
+            Err(_) => {
+                tracing::error!(
+                    exchange = original.exchange_id,
+                    symbol = %original.symbol,
+                    qty = %fill_qty,
+                    "emergency counter-order TIMED OUT (100ms) — order may not have been placed, manual intervention required"
                 );
             }
         }
@@ -1997,7 +2116,7 @@ pub fn spawn_order_cancellation_sweeper(
             cycle += 1;
 
             // In paper mode, nothing to cancel.
-            if engine.is_paper_mode.load(Ordering::Relaxed) {
+            if engine.is_paper_mode.load(Ordering::Acquire) {
                 continue;
             }
 

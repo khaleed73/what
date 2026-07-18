@@ -277,7 +277,13 @@ impl TradeLog {
         let loop_pnl = final_received - initial_cost - total_fees;
 
         // Split P&L evenly across the three legs for per-leg reporting.
-        let _per_leg_pnl = loop_pnl / Decimal::from(3);
+        // M-12: Guard against division by zero (constant 3, but following the
+        // zero-division safety pattern for all profit calculations).
+        let per_leg_pnl = if legs.leg1_quantity > Decimal::ZERO {
+            loop_pnl / Decimal::from(3)
+        } else {
+            Decimal::ZERO
+        };
 
         // Clone symbols so we can still reference them in the info! macro
         // after the original values are moved into the TradeRecords.
@@ -462,6 +468,7 @@ impl TradeLog {
         println!("║  NET P&L:       {:>10} USD  ({})                            ║",
             report.total_pnl.round_dp(4), pnl_color);
 
+        // M-12: Zero-division guard — win_rate denominator checked before division.
         let win_rate = if report.win_count + report.loss_count > 0 {
             Decimal::from(report.win_count)
                 / Decimal::from(report.win_count + report.loss_count)

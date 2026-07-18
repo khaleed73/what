@@ -60,6 +60,10 @@ fn fixed_slippage_bps() -> u64 {
     3
 }
 
+/// Maximum single-order notional in USD. Matches what a real exchange
+/// would enforce to prevent accidental catastrophic orders.
+const MAX_ORDER_NOTIONAL_USD: Decimal = dec!(100_000);
+
 // ---------------------------------------------------------------------------
 // PaperTradeRecord
 // ---------------------------------------------------------------------------
@@ -281,6 +285,21 @@ impl PaperTradingPipeline {
         };
 
         let total = actual_qty * effective_price;
+
+        // M-6: Enforce maximum order notional (same as live exchange limits).
+        if total > MAX_ORDER_NOTIONAL_USD {
+            return PaperTradeRecord {
+                timestamp: ts,
+                exchange_id,
+                token_id,
+                symbol: symbol.to_string(),
+                side: side.to_string(),
+                qty: Decimal::ZERO,
+                price: Decimal::ZERO,
+                total: Decimal::ZERO,
+                simulated_slippage_bps: 0,
+            };
+        }
 
         // --- 5. Balance check & mutation ---
         let mut balances = self.balances.write().await;

@@ -65,9 +65,18 @@ impl MetricsSampling {
     }
 
     /// Returns `true` if this call should perform a full recompute.
+    ///
+    /// L-3: Uses `fetch_add` with overflow detection. If the counter
+    /// wraps, a warning is logged and the counter resets to 0.
     #[inline]
     fn should_sample(&self) -> bool {
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
+        // L-3: Counter overflow detection — wraps to 0 with a warning.
+        if count == u64::MAX {
+            tracing::warn!("L-3: metrics sampling counter overflowed, resetting");
+            self.counter.store(0, Ordering::Relaxed);
+            return true; // Sample on reset to maintain coverage
+        }
         count.is_multiple_of(self.rate)
     }
 }

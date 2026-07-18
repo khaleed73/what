@@ -110,6 +110,10 @@ impl StablecoinProtectionCircuit {
     /// succeeded (circuit cleared), `false` if still depegged.
     #[inline]
     pub fn attempt_recovery(&self) -> bool {
+        tracing::warn!(
+            symbol = %self.target_symbol,
+            "attempt_recovery() bypasses hysteresis — prefer using update_price() for automatic recovery"
+        );
         let price = self.last_price();
         if price <= Decimal::ZERO { return false; }
         let deviation = if price > Decimal::ONE { price - Decimal::ONE } else { Decimal::ONE - price };

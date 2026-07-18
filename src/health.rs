@@ -22,6 +22,13 @@ pub struct HealthStats {
 const FEED_STALENESS_MS: i64 = 10_000;
 
 /// Tracks operational health metrics for monitoring and alerting.
+///
+/// L-2 NOTE: Current health checks verify data feed liveness (WS message
+/// staleness) and signal freshness, but do **not** probe actual exchange
+/// REST API connectivity. For full exchange health verification, a
+/// periodic HTTP GET to each exchange's `/api/v3/ping` (or equivalent)
+/// endpoint is recommended, with results fed into `record_feed_update()`
+/// or a dedicated `record_exchange_api_ok(exchange_id)` method.
 pub struct HealthMonitor {
     started_at: Instant,
     total_signals_generated: AtomicU64,

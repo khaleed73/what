@@ -186,24 +186,29 @@ impl ProductionRiskShield {
         // Apply lot step truncation (floor to exchange step size).
         let truncated_qty = self.truncate_lot_step(total_qty);
 
-        // Recompute the cost for the truncated quantity to get an accurate VWAP.
-        // Walking the book again for the truncated qty is expensive, so we
-        // approximate: scale total_cost proportionally to the truncation ratio.
-        let vwap = if truncated_qty > Decimal::ZERO && total_qty > Decimal::ZERO {
-            // Scale cost by the ratio of truncated to total.
-            let truncation_ratio = truncated_qty / total_qty;
-            let scaled_cost = total_cost * truncation_ratio;
-            scaled_cost / truncated_qty
-        } else {
-            Decimal::ZERO
-        };
+        // H-5: Re-walk the book for exact VWAP of the truncated quantity.
+        // The previous linear approximation could deviate significantly when
+        // lot step truncation removes a large fraction.
+        let mut remaining_qty = truncated_qty;
+        let mut exact_cost = Decimal::ZERO;
+        for layer in &book.asks {
+            if layer.quantity_fp == 0 || layer.price_fp == 0 || remaining_qty <= Decimal::ZERO {
+                break;
+            }
+            let price = layer.price();
+            let qty = layer.quantity();
+            if qty >= remaining_qty {
+                exact_cost += remaining_qty * price;
+                remaining_qty = Decimal::ZERO;
+                break;
+            } else {
+                exact_cost += qty * price;
+                remaining_qty -= qty;
+            }
+        }
+        let vwap = if truncated_qty > Decimal::ZERO { exact_cost / truncated_qty } else { Decimal::ZERO };
 
         (truncated_qty, vwap)
-        // NOTE: The VWAP approximation above scales the total_cost linearly by
-        // the truncation ratio. This is accurate when the book has consistent
-        // pricing, but can deviate significantly when the lot step truncation
-        // removes a large fraction. For production, consider re-walking the
-        // book for the truncated quantity to get an exact VWAP.
     }
 
     /// Validate execution safety — checks min notional + profit margin floor.

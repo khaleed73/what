@@ -293,11 +293,16 @@ impl RebalanceMatrixEngine {
             return None;
         }
 
-        // Verify the transfer won't over-correct
-        let fee = transfer_amount * self.execution_fee;
-        let net_transfer = transfer_amount - fee;
-        let new_source = source_balance - transfer_amount;
-        let new_dest = dest_balance + net_transfer;
+        // Verify the transfer won't over-correct.
+        // M-19: Use saturating arithmetic to prevent overflow on extreme values.
+        let fee = (transfer_amount * self.execution_fee).min(transfer_amount);
+        let net_transfer = transfer_amount.saturating_sub(fee);
+        let new_source = if transfer_amount >= source_balance {
+            Decimal::ZERO
+        } else {
+            source_balance.saturating_sub(transfer_amount)
+        };
+        let new_dest = dest_balance.saturating_add(net_transfer);
 
         if new_source < Decimal::ZERO {
             return None;

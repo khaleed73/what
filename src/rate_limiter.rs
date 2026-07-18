@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// Per-exchange rate limit state.
@@ -172,8 +172,12 @@ pub enum RateLimitStatus {
 ///
 /// The spec requires tracking `X-MBX-USED-WEIGHT` style headers and
 /// pausing at 80% utilization.
+///
+/// Thread safety: the internal `exchanges` HashMap is wrapped in an
+/// `RwLock` so that `register_exchange` (write) and read-only methods
+/// like `record_weight`, `is_paused`, etc. can be used concurrently.
 pub struct RateLimitCircuitBreaker {
-    exchanges: HashMap<String, Arc<ExchangeRateState>>,
+    exchanges: RwLock<HashMap<String, Arc<ExchangeRateState>>>,
     default_max_weight: u64,
     default_pause_threshold: f64,
     default_cooldown: Duration,
@@ -187,7 +191,7 @@ impl RateLimitCircuitBreaker {
     /// - `default_cooldown`: Cooldown duration after tripping (e.g. 60s)
     pub fn new(default_max_weight: u64, default_pause_threshold: f64, default_cooldown: Duration) -> Self {
         Self {
-            exchanges: HashMap::new(),
+            exchanges: RwLock::new(HashMap::new()),
             default_max_weight,
             default_pause_threshold,
             default_cooldown,
@@ -195,7 +199,7 @@ impl RateLimitCircuitBreaker {
     }
 
     /// Registers an exchange with default settings.
-    pub fn register_exchange(&mut self, exchange_id: &str) {
+    pub fn register_exchange(&self, exchange_id: &str) {
         self.register_exchange_with_config(
             exchange_id,
             self.default_max_weight,
@@ -206,14 +210,17 @@ impl RateLimitCircuitBreaker {
 
     /// Registers an exchange with custom settings.
     pub fn register_exchange_with_config(
-        &mut self,
+        &self,
         exchange_id: &str,
         max_weight: u64,
         pause_threshold: f64,
         cooldown: Duration,
     ) {
         let state = Arc::new(ExchangeRateState::new(max_weight, pause_threshold, cooldown));
-        self.exchanges.insert(exchange_id.to_lowercase(), state);
+        self.exchanges
+            .write()
+            .expect("rate_limiter RwLock poisoned")
+            .insert(exchange_id.to_lowercase(), state);
     }
 
     /// Record API weight consumption for an exchange.
@@ -221,7 +228,8 @@ impl RateLimitCircuitBreaker {
     /// Returns the current rate-limit status.
     #[inline]
     pub fn record_weight(&self, exchange_id: &str, weight: u64) -> RateLimitStatus {
-        if let Some(state) = self.exchanges.get(&exchange_id.to_lowercase()) {
+        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        if let Some(state) = guard.get(&exchange_id.to_lowercase()) {
             state.record_weight(weight)
         } else {
             // C-3: Unregistered exchanges must be rejected to prevent
@@ -234,7 +242,8 @@ impl RateLimitCircuitBreaker {
     /// Quick check if an exchange is currently paused (no weight update).
     #[inline(always)]
     pub fn is_paused(&self, exchange_id: &str) -> bool {
-        if let Some(state) = self.exchanges.get(&exchange_id.to_lowercase()) {
+        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        if let Some(state) = guard.get(&exchange_id.to_lowercase()) {
             state.is_paused_fast()
         } else {
             false
@@ -243,33 +252,40 @@ impl RateLimitCircuitBreaker {
 
     /// Reset the weight window for an exchange (called on window rotation).
     pub fn reset_window(&self, exchange_id: &str) {
-        if let Some(state) = self.exchanges.get(&exchange_id.to_lowercase()) {
+        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        if let Some(state) = guard.get(&exchange_id.to_lowercase()) {
             state.reset_window();
         }
     }
 
     /// Reset all exchange weight windows.
     pub fn reset_all_windows(&self) {
-        for state in self.exchanges.values() {
+        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        for state in guard.values() {
             state.reset_window();
         }
     }
 
     /// Get current weight usage for an exchange (used_weight, max_weight).
     pub fn get_usage(&self, exchange_id: &str) -> Option<(u64, u64)> {
-        self.exchanges
+        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        guard
             .get(&exchange_id.to_lowercase())
             .map(|s| (s.used_weight.load(Ordering::SeqCst), s.max_weight.load(Ordering::SeqCst)))
     }
 
     /// Returns the number of registered exchanges.
     pub fn exchange_count(&self) -> usize {
-        self.exchanges.len()
+        self.exchanges
+            .read()
+            .expect("rate_limiter RwLock poisoned")
+            .len()
     }
 
     /// Returns `true` if any exchange is currently paused.
     pub fn any_paused(&self) -> bool {
-        self.exchanges.values().any(|s| s.is_paused_fast())
+        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        guard.values().any(|s| s.is_paused_fast())
     }
 }
 
@@ -282,7 +298,7 @@ mod tests {
     use super::*;
 
     fn make_breaker() -> RateLimitCircuitBreaker {
-        let mut cb = RateLimitCircuitBreaker::new(1000, 0.80, Duration::from_secs(30));
+        let cb = RateLimitCircuitBreaker::new(1000, 0.80, Duration::from_secs(30));
         cb.register_exchange("binance");
         cb.register_exchange_with_config("bybit", 2000, 0.75, Duration::from_secs(60));
         cb
@@ -370,9 +386,12 @@ mod tests {
         // Also need to clear the pause flag, since reset_window only resets
         // weight/violations, not the pause state.
         cb.reset_window("binance");
-        if let Some(ex) = cb.exchanges.get("binance") {
-            ex.is_paused.store(false, Ordering::SeqCst);
-            *ex.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        {
+            let guard = cb.exchanges.read().expect("rate_limiter RwLock poisoned");
+            if let Some(ex) = guard.get("binance") {
+                ex.is_paused.store(false, Ordering::SeqCst);
+                *ex.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
         }
         let s2 = cb.record_weight("binance", 900);
         if let RateLimitStatus::Tripped { violations, .. } = s2 {

@@ -1093,6 +1093,11 @@ impl CoinFinder {
 
     /// Get or create a token_id for the given symbol.
     /// Returns `Some((id, is_newly_created))`.
+    ///
+    /// L-12: Deduplication is handled by the `global_symbol_map` — the same
+    /// base symbol (e.g. "SOL") on different exchanges always maps to the
+    /// same `token_id`. The caller is responsible for tracking per-exchange
+    /// precision differences via the `raw_symbol` field on trade paths.
     async fn get_or_create_token_id(&self, symbol: &str, category_mask: u16) -> Option<(u16, bool)> {
         let mut map = self.global_symbol_map.lock().await;
 

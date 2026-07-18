@@ -18,6 +18,9 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+/// L-1: Minimum interval between Discord webhook sends (200ms = 5/sec).
+const DISCORD_RATE_LIMIT_MS: u64 = 200;
+
 // ---------------------------------------------------------------------------
 // Notification payloads
 // ---------------------------------------------------------------------------
@@ -72,6 +75,8 @@ pub struct DiscordWorker {
     webhook_url: String,
     receiver: mpsc::Receiver<DiscordNotification>,
     http: reqwest::Client,
+    /// L-1: Instant of the last successful send, for rate limiting.
+    last_send: std::sync::Mutex<std::time::Instant>,
 }
 
 impl DiscordWorker {
@@ -96,8 +101,28 @@ impl DiscordWorker {
                     tracing::error!("failed to build Discord HTTP client: {}, using default", e);
                     reqwest::Client::new()
                 }),
+            // L-1: Initialise to an instant well in the past so the first send is never delayed.
+            last_send: std::sync::Mutex::new(
+                std::time::Instant::now() - std::time::Duration::from_secs(10),
+            ),
         };
         (worker, tx)
+    }
+
+    /// L-1: Enforces the minimum interval between sends. Returns the
+    /// remaining time to wait if called too soon, or None if ok to send.
+    fn enforce_rate_limit(&self) -> Option<std::time::Duration> {
+        let last = {
+            let guard = self.last_send.lock().unwrap_or_else(|e| e.into_inner());
+            *guard
+        };
+        let elapsed = last.elapsed();
+        let min_interval = std::time::Duration::from_millis(DISCORD_RATE_LIMIT_MS);
+        if elapsed < min_interval {
+            Some(min_interval - elapsed)
+        } else {
+            None
+        }
     }
 
     /// Main event loop — runs until all senders are dropped.
@@ -106,13 +131,17 @@ impl DiscordWorker {
     /// (100 ms × 2^attempt).  All failures are logged; no alert is ever
     /// silently dropped.
     ///
-    // TODO: Add per-second rate limiting on Discord webhook sends.
-    // During volatile markets, the bot can emit hundreds of notifications
-    // per minute, risking Discord API rate limits and message drops.
+    /// L-1: Rate limiting enforced — minimum 200ms between sends to
+    /// respect Discord's 5 requests/second webhook limit.
     pub async fn run(mut self) {
         info!("Discord notification worker started");
 
         while let Some(notification) = self.receiver.recv().await {
+            // L-1: Rate-limit enforcement — sleep if needed.
+            if let Some(wait) = self.enforce_rate_limit() {
+                tokio::time::sleep(wait).await;
+            }
+
             let payload = build_embed_payload(&notification);
 
             const MAX_RETRIES: u32 = 3;
@@ -129,6 +158,11 @@ impl DiscordWorker {
                 {
                     Ok(resp) if resp.status().is_success() => {
                         debug!("discord notification sent");
+                        // L-1: Record successful send time for rate limiting.
+                        {
+                            let mut guard = self.last_send.lock().unwrap_or_else(|e| e.into_inner());
+                            *guard = std::time::Instant::now();
+                        }
                         break;
                     }
                     Ok(resp) => {

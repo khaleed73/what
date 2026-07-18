@@ -130,7 +130,32 @@ impl TcpOptimizer {
     }
 
     /// Build a single optimized `reqwest::Client`.
+    ///
+    /// M-22: If the builder fails (e.g. invalid socket buffer sizes on this
+    /// system), falls back to a default client instead of panicking.
     pub fn build_client(config: &TcpOptimizedClientConfig) -> reqwest::Client {
+        match Self::try_build_client(config) {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    pool_max_idle = config.pool_max_idle_per_host,
+                    "M-22: Failed to build optimized client with requested settings; falling back to defaults"
+                );
+                reqwest::Client::builder()
+                    .tcp_nodelay(config.tcp_nodelay)
+                    .build()
+                    .unwrap_or_else(|e| {
+                        tracing::error!(error = %e, "M-22: Fallback client build also failed; using bare default");
+                        reqwest::Client::new()
+                    })
+            }
+        }
+    }
+
+    /// Attempts to build a client with the full configuration. Returns
+    /// an error string on failure instead of panicking.
+    fn try_build_client(config: &TcpOptimizedClientConfig) -> Result<reqwest::Client, String> {
         let mut builder = reqwest::Client::builder()
             .tcp_nodelay(config.tcp_nodelay)
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
@@ -142,9 +167,7 @@ impl TcpOptimizer {
             builder = builder.http2_prior_knowledge();
         }
 
-        builder
-            .build()
-            .expect("FATAL: failed to build optimized reqwest::Client — aborting")
+        builder.build().map_err(|e| format!("{}", e))
     }
 
     /// Returns the number of registered exchanges.

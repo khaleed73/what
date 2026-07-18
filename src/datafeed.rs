@@ -246,6 +246,9 @@ impl LowLatencyWsListener {
         info!(exchange_id = ex, url = %self.wss_url, "starting ws listener");
 
         let mut consecutive_failures: u32 = 0;
+        // M-8: Exponential backoff constants — 1s base, 30s cap, 50 max retries.
+        // Backoff formula: base_delay = 1 << (failures - 1), capped at MAX_DELAY_SECS,
+        // with random jitter in [0.8x, 1.2x] to avoid thundering-herd effects.
         const BASE_DELAY_SECS: u64 = 1;
         const MAX_DELAY_SECS: u64 = 30;
         const MAX_CONSECUTIVE_FAILURES: u32 = 50; // ~16 min of retries at cap

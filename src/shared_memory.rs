@@ -189,18 +189,35 @@ impl SharedMemoryArena {
     }
 
     /// Write market data for a symbol at the given slot index.
+    ///
+    /// M-14: Returns an error if the slot index is out of bounds.
     #[inline]
-    pub fn write_slot(&self, slot: usize, symbol: &str, best_bid: u64, best_ask: u64) {
+    pub fn write_slot(&self, slot: usize, symbol: &str, best_bid: u64, best_ask: u64) -> Result<(), String> {
+        if slot >= self.capacity {
+            return Err(format!(
+                "shared_memory: write_slot out of bounds: slot={} >= capacity={}",
+                slot, self.capacity
+            ));
+        }
         let seq = self.global_seq.fetch_add(1, Ordering::SeqCst);
         let ts = chrono::Utc::now().timestamp_millis() as u64;
-        if slot < self.capacity {
-            self.frames[slot].write(seq, symbol, best_bid, best_ask, ts);
-        }
+        self.frames[slot].write(seq, symbol, best_bid, best_ask, ts);
+        Ok(())
     }
 
     /// Read a frame from a slot (returns reference for zero-copy access).
+    ///
+    /// M-14: Returns None if the slot is out of bounds. Logs a warning on
+    /// out-of-bounds access for diagnostics.
     #[inline]
     pub fn read_slot(&self, slot: usize) -> Option<&SharedMarketFrame> {
+        if slot >= self.capacity {
+            tracing::warn!(
+                slot, capacity = self.capacity,
+                "shared_memory: read_slot out of bounds"
+            );
+            return None;
+        }
         self.frames.get(slot)
     }
 
@@ -298,6 +315,6 @@ mod tests {
     #[test]
     fn test_out_of_bounds_write_does_not_panic() {
         let arena = SharedMemoryArena::new(1);
-        arena.write_slot(99, "X", 1, 2); // should not panic
+        arena.write_slot(99, "X", 1, 2).unwrap_err(); // M-14: should return Err, not panic
     }
 }

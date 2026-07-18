@@ -16,6 +16,18 @@
 //! fee_mgr.fetch_all_fees().await;
 //! fee_mgr.refresh_periodically(fee_mgr.clone(), 30).await;
 //! ```
+//!
+//! # L-6 Known Limitation: Fee Consistency Across Trade Legs
+//!
+//! Fees are stored in a `DashMap` and updated asynchronously. If a fee
+//! refresh occurs between evaluating leg A and leg B of a multi-leg trade
+//! (cross-exchange or triangular), the legs may use inconsistent fee
+//! values. This can cause a trade that appeared profitable at evaluation
+//! time to be slightly unprofitable after execution.
+//!
+//! **Recommended mitigation**: Snapshot all relevant fees at the start of
+//! each trade evaluation (per-blast) and pass the snapshot to all legs,
+//! rather than reading from the `DashMap` on each leg independently.
 
 use std::collections::HashMap;
 use std::str::FromStr;

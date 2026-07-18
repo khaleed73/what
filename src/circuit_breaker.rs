@@ -73,7 +73,28 @@ impl EngineCircuitBreaker {
     /// Resets the breaker, allowing trading to resume.
     /// Returns true if the system was actually frozen (and is now unfrozen).
     /// Clears stale trip metadata (reason, timestamp) on reset.
+    ///
+    /// # Safety
+    /// This method refuses to clear `REASON_BALANCE_CORRUPTION` and
+    /// `REASON_MANUAL_KILL` trips, since those require explicit operator
+    /// acknowledgment.  Use `reset_forced()` to bypass this guard.
     pub fn reset(&self) -> bool {
+        let reason = self.trip_reason.load(Ordering::Acquire);
+        if matches!(reason, REASON_BALANCE_CORRUPTION | REASON_MANUAL_KILL) {
+            tracing::error!(
+                reason_code = reason,
+                "reset() REFUSED: cannot auto-clear BALANCE_CORRUPTION or MANUAL_KILL — use reset_forced() if intentional"
+            );
+            // Still report that we *are* frozen (the caller needs to know).
+            return self.system_frozen.load(Ordering::Acquire);
+        }
+        self.reset_forced()
+    }
+
+    /// Unconditionally resets the breaker regardless of trip reason.
+    /// Logs a WARNING when clearing a critical reason (BALANCE_CORRUPTION,
+    /// MANUAL_KILL, UNAUTHORIZED_POSITION) so operators can audit.
+    pub fn reset_forced(&self) -> bool {
         let was_frozen = self.system_frozen.swap(false, Ordering::SeqCst);
         if was_frozen {
             self.trip_reason.store(REASON_UNKNOWN, Ordering::SeqCst);
@@ -90,6 +111,8 @@ impl EngineCircuitBreaker {
     /// Checks if trading is allowed. If frozen, increments rejected count.
     /// M-11: Auto-recovers from transient issues (network partition, clock
     /// drift) after a 60-second cooldown period.
+    /// For non-transient reasons (MANUAL_KILL, BALANCE_CORRUPTION, etc.),
+    /// auto-recovery is intentionally blocked.
     pub fn check_and_reject(&self) -> Result<(), CircuitBreakerError> {
         if self.is_frozen() {
             let reason = self.trip_reason.load(Ordering::Acquire);
@@ -113,7 +136,7 @@ impl EngineCircuitBreaker {
                 return Ok(());
             }
 
-            self.rejected_count.fetch_add(1, Ordering::Relaxed);
+            self.rejected_count.fetch_add(1, Ordering::Release);
             Err(CircuitBreakerError::SystemFrozen {
                 reason_code: reason,
                 rejected_total: self.rejected_count.load(Ordering::Acquire),
@@ -203,9 +226,39 @@ mod tests {
     }
 
     #[test]
-    fn test_reset() {
+    fn test_reset_safe_refuses_critical_reasons() {
         let breaker = EngineCircuitBreaker::new();
         breaker.trip(REASON_BALANCE_CORRUPTION);
+        assert!(breaker.is_frozen());
+        // reset() should REFUSE to clear BALANCE_CORRUPTION.
+        let was_frozen = breaker.reset();
+        assert!(was_frozen); // still frozen
+        assert!(breaker.is_frozen()); // NOT cleared
+
+        // reset_forced() should clear it.
+        let was_frozen2 = breaker.reset_forced();
+        assert!(was_frozen2);
+        assert!(!breaker.is_frozen());
+        assert!(breaker.check_and_reject().is_ok());
+    }
+
+    #[test]
+    fn test_reset_safe_refuses_manual_kill() {
+        let breaker = EngineCircuitBreaker::new();
+        breaker.trip(REASON_MANUAL_KILL);
+        assert!(breaker.is_frozen());
+        let was_frozen = breaker.reset();
+        assert!(was_frozen);
+        assert!(breaker.is_frozen());
+
+        breaker.reset_forced();
+        assert!(!breaker.is_frozen());
+    }
+
+    #[test]
+    fn test_reset_clears_transient_reason() {
+        let breaker = EngineCircuitBreaker::new();
+        breaker.trip(REASON_NETWORK_PARTITION);
         assert!(breaker.is_frozen());
         let was_frozen = breaker.reset();
         assert!(was_frozen);

@@ -39,6 +39,24 @@ async fn sync_exchange_balance(
             "USDT".to_string()
         });
     let balance = client.get_balance(http, &symbol).await?;
+
+    // M-9: Detect significant balance drift between exchange-reported and tracked values.
+    let tracked = allocator.get_balance_atomic(exchange_id as usize, token_id);
+    if tracked > Decimal::ZERO {
+        let abs_diff = (balance - tracked).abs();
+        let drift_pct = abs_diff / tracked;
+        if drift_pct > rust_decimal::Decimal::from_str("0.05").unwrap_or_default() {
+            tracing::error!(
+                exchange_id,
+                token_id,
+                exchange_balance = %balance,
+                tracked_balance = %tracked,
+                drift_pct = %drift_pct,
+                "M-9: Balance drift > 5% detected — exchange-reported balance differs significantly from tracked"
+            );
+        }
+    }
+
     allocator.update_balance_atomic(exchange_id as usize, token_id, balance);
     Ok(balance)
 }

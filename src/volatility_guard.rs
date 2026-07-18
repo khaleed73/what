@@ -226,6 +226,14 @@ impl VolatilityGuard {
         self.ema_period.store(period.max(2), Ordering::SeqCst);
         *self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
+
+    /// M-5: Resets the EMA state, forcing re-seeding on the next observation.
+    ///
+    /// Useful when an exchange-specific override is removed or after a
+    /// prolonged market disconnection where the EMA would be stale.
+    pub fn reset_ema(&self) {
+        *self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 impl Default for VolatilityGuard {

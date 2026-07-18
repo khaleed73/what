@@ -941,7 +941,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .get(&exch_cfg.name)
                     .copied()
                     .unwrap_or(default_bps);
-                fees.set_fee(exch_cfg.id as usize, bps, bps);
+                fees.set_fee(exch_cfg.id as usize, bps, bps)
+                    .unwrap_or_else(|e| panic!("H-6: failed to set fee for exchange {}: {}", exch_cfg.name, e));
                 println!(
                     "Friction: {} taker fee = {} bps{}",
                     exch_cfg.name,

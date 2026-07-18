@@ -122,6 +122,9 @@ pub struct MarketArena {
     num_tokens: usize,
     /// Cross-exchange targets with their bitmasks.
     targets: Vec<CrossExchangeTarget>,
+    /// M-20: Maximum number of cross-exchange targets. When exceeded,
+    /// the oldest target is evicted to prevent unbounded memory growth.
+    max_targets: usize,
 }
 
 impl MarketArena {
@@ -141,6 +144,7 @@ impl MarketArena {
             num_exchanges,
             num_tokens,
             targets: Vec::new(),
+            max_targets: 10_000, // M-20: default max entries
         }
     }
 
@@ -194,7 +198,18 @@ impl MarketArena {
     }
 
     /// Register a cross-exchange target.
+    ///
+    /// M-20: If the number of targets exceeds `max_targets`, the oldest
+    /// target is evicted to prevent unbounded memory growth.
     pub fn register_target(&mut self, target: CrossExchangeTarget) {
+        if self.targets.len() >= self.max_targets {
+            tracing::warn!(
+                max = self.max_targets,
+                evicted_token = %self.targets.first().map(|t| t.symbol.as_str()).unwrap_or("?"),
+                "M-20: market_arena target limit reached, evicting oldest"
+            );
+            self.targets.remove(0);
+        }
         self.targets.push(target);
     }
 

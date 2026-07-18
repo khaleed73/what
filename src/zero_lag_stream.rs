@@ -67,13 +67,26 @@ impl Default for StreamConfig {
 pub struct ZeroLagStreamManager {
     config: StreamConfig,
     health: StreamHealth,
+    /// L-8: Count of pending (unconsumed) messages for backpressure.
+    /// Incremented on `record_message()`, decremented by the consumer.
+    pending_count: u64,
+    /// L-8: Maximum pending messages before oldest are dropped.
+    max_pending: u64,
+    /// L-8: Number of messages dropped due to backpressure.
+    dropped_count: u64,
 }
 
 impl ZeroLagStreamManager {
+    /// L-8: Default maximum pending messages before backpressure kicks in.
+    const DEFAULT_MAX_PENDING: u64 = 10_000;
+
     pub fn new(config: StreamConfig) -> Self {
         Self {
             config,
             health: StreamHealth::default(),
+            pending_count: 0,
+            max_pending: Self::DEFAULT_MAX_PENDING,
+            dropped_count: 0,
         }
     }
 
@@ -94,9 +107,35 @@ impl ZeroLagStreamManager {
     }
 
     /// Records a received message.
+    ///
+    /// L-8: If pending messages exceed `max_pending`, increments the drop
+    /// counter instead (consumer is too slow — apply backpressure).
     pub fn record_message(&mut self) {
+        if self.pending_count >= self.max_pending {
+            self.dropped_count += 1;
+            if self.dropped_count == 1 || self.dropped_count % 1000 == 0 {
+                tracing::warn!(
+                    pending = self.pending_count,
+                    dropped = self.dropped_count,
+                    max = self.max_pending,
+                    "L-8: backpressure — dropping oldest messages, consumer too slow"
+                );
+            }
+            return;
+        }
         self.health.total_messages_received += 1;
         self.health.last_message_ts_ms = current_timestamp_ms();
+        self.pending_count += 1;
+    }
+
+    /// Acknowledge that a pending message has been consumed.
+    pub fn acknowledge_message(&mut self) {
+        self.pending_count = self.pending_count.saturating_sub(1);
+    }
+
+    /// Returns the number of messages dropped due to backpressure.
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped_count
     }
 
     /// Records a reconnect event.

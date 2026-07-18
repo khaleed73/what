@@ -156,6 +156,33 @@ impl CapitalStarvationDetector {
     pub fn set_starvation_callback(&mut self, callback: Arc<dyn Fn(usize) + Send + Sync>) {
         self.starvation_callback = Some(callback);
     }
+
+    /// M-17: Suggests a resize factor to reduce position sizes during
+    /// capital starvation. Returns a value in (0, 1] representing the
+    /// fraction of normal position sizes to use.
+    ///
+    /// The factor is computed as:
+    /// ```text
+    /// factor = max(0.1, current_balance / (threshold * 5))
+    /// ```
+    /// This scales down linearly as balance drops, with a floor of 10%
+    /// so that trading never completely stops (a small position is still
+    /// better than a dead bot).
+    ///
+    /// Returns `None` if no starvation is active.
+    pub fn suggested_resize_factor(&self) -> Option<Decimal> {
+        let event = self.last_event.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+        if event.current_balance <= Decimal::ZERO {
+            return Some(Decimal::new(1, 1)); // 0.10 — floor at 10%
+        }
+        let target = self.min_threshold * Decimal::from(5u32);
+        if target <= Decimal::ZERO {
+            return Some(Decimal::ONE);
+        }
+        let factor = event.current_balance / target;
+        let clamped = factor.max(Decimal::new(1, 1)).min(Decimal::ONE); // [0.10, 1.0]
+        Some(clamped)
+    }
 }
 
 // ---------------------------------------------------------------------------

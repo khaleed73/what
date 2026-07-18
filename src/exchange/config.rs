@@ -40,13 +40,18 @@ impl ExchangeConfig {
         api_secret: &str,
         base_url: &str,
     ) -> Self {
-        Self {
+        let cfg = Self {
             api_key: SecretString::new(api_key),
             api_secret: SecretString::new(api_secret),
             base_url: base_url.to_owned(),
             passphrase: None,
             http_timeout_secs: None,
+        };
+        // M-2: Validate at construction time so invalid configs fail early.
+        if let Err(e) = cfg.validate() {
+            tracing::error!(error = %e, "ExchangeConfig::new validation failed");
         }
+        cfg
     }
 
     pub fn with_passphrase(
@@ -55,13 +60,35 @@ impl ExchangeConfig {
         base_url: &str,
         passphrase: &str,
     ) -> Self {
-        Self {
+        let cfg = Self {
             api_key: SecretString::new(api_key),
             api_secret: SecretString::new(api_secret),
             base_url: base_url.to_owned(),
             passphrase: Some(SecretString::new(passphrase)),
             http_timeout_secs: None,
+        };
+        // M-2: Validate at construction time so invalid configs fail early.
+        if let Err(e) = cfg.validate() {
+            tracing::error!(error = %e, "ExchangeConfig::with_passphrase validation failed");
         }
+        cfg
+    }
+
+    /// M-2: Validates the config for production use.
+    ///
+    /// * `base_url` must use HTTPS to prevent credential leakage over plaintext.
+    /// * API key and secret must not be empty.
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.base_url.starts_with("https://") {
+            return Err(format!(
+                "Exchange base_url must use HTTPS for production, got: {}",
+                self.base_url
+            ));
+        }
+        if self.api_key.expose().is_empty() || self.api_secret.expose().is_empty() {
+            return Err("API key and secret must not be empty".to_string());
+        }
+        Ok(())
     }
 }
 

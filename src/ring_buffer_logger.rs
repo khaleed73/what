@@ -6,10 +6,18 @@
 //! The producer (trading thread) pushes log entries without blocking.
 //! A background worker drains entries asynchronously.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use rust_decimal::Decimal;
 use std::fs::OpenOptions;
 use std::io::Write;
+
+/// Log level constants for ring buffer filtering.
+/// Values are ordered so that higher levels include lower ones.
+pub const LOG_LEVEL_TRACE: u8 = 0;
+pub const LOG_LEVEL_DEBUG: u8 = 1;
+pub const LOG_LEVEL_INFO: u8 = 2;
+pub const LOG_LEVEL_WARN: u8 = 3;
+pub const LOG_LEVEL_ERROR: u8 = 4;
 
 /// Maximum number of log entries in the ring buffer.
 const RING_BUFFER_SIZE: usize = 65536;
@@ -19,6 +27,8 @@ const RING_BUFFER_MASK: usize = RING_BUFFER_SIZE - 1;
 /// A single log entry in the ring buffer.
 #[derive(Debug, Clone)]
 pub struct LogEvent {
+    /// Log level of this entry (see LOG_LEVEL_* constants).
+    pub level: u8,
     /// Monotonically increasing log sequence ID.
     pub log_id: u64,
     /// Timestamp in milliseconds since epoch.
@@ -54,6 +64,9 @@ pub struct RingBufferLogger {
     /// will synchronously drain all remaining messages and append them to
     /// this file before the process exits.
     log_file_path: Option<String>,
+    /// M-13: Minimum log level to accept. Messages below this level are
+    /// silently dropped to avoid wasting buffer space on noisy debug output.
+    min_level: AtomicU8,
 }
 
 impl Default for RingBufferLogger {
@@ -72,14 +85,33 @@ impl RingBufferLogger {
             write_seq: AtomicU64::new(0),
             read_seq: AtomicU64::new(0),
             log_file_path: None,
+            min_level: AtomicU8::new(LOG_LEVEL_DEBUG),
         }
+    }
+
+    /// Sets the minimum log level. Messages below this level are dropped.
+    pub fn set_level(&self, level: u8) {
+        self.min_level.store(level, Ordering::Release);
+    }
+
+    /// Returns the current minimum log level.
+    pub fn min_level(&self) -> u8 {
+        self.min_level.load(Ordering::Acquire)
     }
 
     /// Pushes a log entry atomically. This is the hot-path method.
     ///
     /// The entry is written to the next available slot. If the buffer is full,
     /// the oldest entry is silently overwritten (the read pointer is advanced).
+    ///
+    /// M-13: Messages below `min_level` are silently dropped to conserve
+    /// buffer space in production.
     pub fn push(&mut self, event: LogEvent) -> Result<(), &'static str> {
+        // M-13: Filter by minimum log level.
+        if event.level < self.min_level.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
         let write_idx = self.write_seq.fetch_add(1, Ordering::Release);
         let slot = (write_idx as usize) & RING_BUFFER_MASK;
 
@@ -218,6 +250,7 @@ mod tests {
 
     fn make_event(id: u64, profit: Decimal) -> LogEvent {
         LogEvent {
+            level: LOG_LEVEL_INFO,
             log_id: id,
             timestamp_ms: 1700000000000 + id,
             delta_profit: profit,

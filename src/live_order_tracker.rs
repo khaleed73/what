@@ -72,6 +72,12 @@ impl LiveOrderTracker {
                     .min_by_key(|(_, o)| o.submitted_at)
                     .map(|(k, _)| k.clone())
                 {
+                    tracing::warn!(
+                        current_count = map.len(),
+                        max = self.max_tracked_orders,
+                        evicted_order_id = %oldest,
+                        "M-11: Order tracker at capacity — evicting oldest order"
+                    );
                     map.remove(&oldest);
                 }
             }

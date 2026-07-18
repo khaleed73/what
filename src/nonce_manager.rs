@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::RwLock;
 
 /// Per-exchange atomic nonce counter.
 struct ExchangeNonce {
@@ -66,23 +67,30 @@ impl ExchangeNonce {
 /// Manages API nonces across all exchanges.
 ///
 /// The spec requires `AtomicU64` counters for request nonces.
+/// The internal `HashMap` is wrapped in an `RwLock` so that
+/// `register_exchange` (write) and `next_nonce` / `current_nonce`
+/// (read) can be used concurrently from multiple threads, e.g.
+/// during dynamic exchange discovery.
 pub struct ApiNonceManager {
-    nonces: HashMap<String, ExchangeNonce>,
+    nonces: RwLock<HashMap<String, ExchangeNonce>>,
 }
 
 impl ApiNonceManager {
     /// Creates a new nonce manager.
     pub fn new() -> Self {
         Self {
-            nonces: HashMap::new(),
+            nonces: RwLock::new(HashMap::new()),
         }
     }
 
     /// Registers an exchange with an initial nonce value.
     #[cold]
-    pub fn register_exchange(&mut self, exchange_id: &str, initial_nonce: u64) {
+    pub fn register_exchange(&self, exchange_id: &str, initial_nonce: u64) {
         let nonce = ExchangeNonce::new(exchange_id, initial_nonce);
-        self.nonces.insert(exchange_id.to_lowercase(), nonce);
+        self.nonces
+            .write()
+            .expect("nonce_manager RwLock poisoned")
+            .insert(exchange_id.to_lowercase(), nonce);
     }
 
     /// Get the next nonce for an exchange (atomically incrementing).
@@ -93,6 +101,8 @@ impl ApiNonceManager {
     #[inline(always)]
     pub fn next_nonce(&self, exchange_id: &str) -> Option<u64> {
         self.nonces
+            .read()
+            .expect("nonce_manager RwLock poisoned")
             .get(&exchange_id.to_lowercase())
             .map(|n| n.next())
     }
@@ -103,13 +113,20 @@ impl ApiNonceManager {
     #[inline]
     pub fn current_nonce(&self, exchange_id: &str) -> Option<u64> {
         self.nonces
+            .read()
+            .expect("nonce_manager RwLock poisoned")
             .get(&exchange_id.to_lowercase())
             .map(|n| n.peek())
     }
 
     /// Force-set the nonce for an exchange (e.g. after server sync).
     pub fn set_nonce(&self, exchange_id: &str, value: u64) {
-        if let Some(nonce) = self.nonces.get(&exchange_id.to_lowercase()) {
+        if let Some(nonce) = self
+            .nonces
+            .read()
+            .expect("nonce_manager RwLock poisoned")
+            .get(&exchange_id.to_lowercase())
+        {
             nonce.set(value);
         }
     }
@@ -118,7 +135,12 @@ impl ApiNonceManager {
     /// Unlike `set_nonce`, this is a public API intended for manual
     /// operator intervention when automatic sync fails.
     pub fn force_set_nonce(&self, exchange_id: &str, value: u64) {
-        if let Some(nonce) = self.nonces.get(&exchange_id.to_lowercase()) {
+        if let Some(nonce) = self
+            .nonces
+            .read()
+            .expect("nonce_manager RwLock poisoned")
+            .get(&exchange_id.to_lowercase())
+        {
             nonce.current.store(value, Ordering::SeqCst);
         }
     }
@@ -126,7 +148,8 @@ impl ApiNonceManager {
     /// Synchronize nonce with exchange server value.
     /// Ensures local nonce is at least `server_nonce` to prevent collisions.
     pub fn sync_with_server(&self, exchange_id: &str, server_nonce: u64) {
-        if let Some(nonce) = self.nonces.get(&exchange_id.to_lowercase()) {
+        let guard = self.nonces.read().expect("nonce_manager RwLock poisoned");
+        if let Some(nonce) = guard.get(&exchange_id.to_lowercase()) {
             nonce.ensure_min(server_nonce);
             tracing::debug!(
                 exchange = %exchange_id,
@@ -139,7 +162,10 @@ impl ApiNonceManager {
 
     /// Returns the number of registered exchanges.
     pub fn exchange_count(&self) -> usize {
-        self.nonces.len()
+        self.nonces
+            .read()
+            .expect("nonce_manager RwLock poisoned")
+            .len()
     }
 }
 
@@ -158,7 +184,7 @@ mod tests {
     use super::*;
 
     fn make_manager() -> ApiNonceManager {
-        let mut mgr = ApiNonceManager::new();
+        let mgr = ApiNonceManager::new();
         mgr.register_exchange("binance", 1000);
         mgr.register_exchange("bitfinex", 5000);
         mgr

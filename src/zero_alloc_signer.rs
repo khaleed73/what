@@ -16,10 +16,43 @@ pub struct ZeroAllocationSigner {
 }
 
 impl ZeroAllocationSigner {
+    /// L-9: Minimum allowed length for API secret keys.
+    const MIN_KEY_LENGTH: usize = 16;
+
+    /// Creates a new signer, validating the secret key.
+    ///
+    /// # Panics
+    /// Panics if the secret key is shorter than 16 characters or contains
+    /// characters outside the allowed set (alphanumeric, `-`, `_`, `.`, `+`).
     pub fn new(secret: &str) -> Self {
+        Self::validate_key(secret)
+            .unwrap_or_else(|e| panic!("L-9: Invalid API key: {}", e));
         Self {
             secret_key: secret.to_string(),
         }
+    }
+
+    /// L-9: Validates an API key for minimum length and allowed characters.
+    ///
+    /// Allowed characters: alphanumeric, `-`, `_`, `.`, `+`
+    /// Minimum length: 16 characters.
+    pub fn validate_key(key: &str) -> Result<(), String> {
+        if key.len() < Self::MIN_KEY_LENGTH {
+            return Err(format!(
+                "API key too short: {} bytes (minimum {})",
+                key.len(),
+                Self::MIN_KEY_LENGTH
+            ));
+        }
+        for (i, ch) in key.char_indices() {
+            if !ch.is_alphanumeric() && ch != '-' && ch != '_' && ch != '.' && ch != '+' {
+                return Err(format!(
+                    "API key contains invalid character {:?} at byte offset {}",
+                    ch, i
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Compiles the query string and signs it using HMAC-SHA256.

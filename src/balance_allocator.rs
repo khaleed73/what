@@ -306,6 +306,8 @@ impl LocalCapitalAllocator {
     /// The dollar amount to allocate for this trade, capped by:
     ///   1. Strategy-specific percentage of available balance
     ///   2. Maximum single position cap
+    ///   3. L-11: Minimum allocation of $10 (below this, returns 0 to avoid
+    ///      orders that exchanges will reject for being too small)
     pub fn calculate_trade_allocation(
         &self,
         exchange_id: usize,
@@ -333,11 +335,19 @@ impl LocalCapitalAllocator {
         let position_cap = available * max_position_pct;
 
         // Return the smaller of the two
-        if strategy_alloc <= position_cap {
+        let result = if strategy_alloc <= position_cap {
             strategy_alloc
         } else {
             position_cap
+        };
+
+        // L-11: Reject allocations below exchange minimums ($10).
+        // Most exchanges reject orders below ~$10 notional.
+        if result < dec!(10.0) {
+            return Decimal::ZERO;
         }
+
+        result
     }
 }
 

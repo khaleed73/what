@@ -23,6 +23,12 @@ pub trait Exchange: Send + Sync {
     fn kind(&self) -> ExchangeType;
 
     /// Place a market order.
+    ///
+    /// # SAFETY WARNING
+    /// Market orders are PROHIBITED by the HFT safety execution engine
+    /// (`safety_execution::SafetyExecutionEngine`). This method should only
+    /// be used for non-HFT operations (e.g., emergency liquidations).
+    /// For normal trading, use `place_limit_order` with IOC/FOK time-in-force.
     async fn place_order(&self, order: &OrderRequest) -> anyhow::Result<OrderResponse>;
 
     /// Cancel a single order by symbol + order_id.

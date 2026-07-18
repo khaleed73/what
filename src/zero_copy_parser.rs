@@ -14,6 +14,10 @@
 //! Truncated or malformed messages will simply return None (safe default).
 //! The caller (WS listener) handles reconnection on parse failures.
 
+/// L-7: Maximum allowed input size (1 MB). Messages larger than this are
+/// rejected to prevent DoS via large WebSocket frames.
+const MAX_INPUT_SIZE: usize = 1_048_576;
+
 /// Result of parsing an order book update.
 #[derive(Debug, Clone)]
 pub struct FastParsedOrderBook {
@@ -50,6 +54,16 @@ pub struct FastParsedExecutionReport {
 /// A `FastParsedOrderBook` if the expected keys are found.
 #[inline]
 pub fn parse_raw_bytes_fast(payload: &[u8]) -> Option<FastParsedOrderBook> {
+    // L-7: Reject excessively large messages to prevent DoS.
+    if payload.len() > MAX_INPUT_SIZE {
+        tracing::warn!(
+            size = payload.len(),
+            max = MAX_INPUT_SIZE,
+            "zero_copy_parser: input exceeds max size, rejecting"
+        );
+        return None;
+    }
+
     let text = std::str::from_utf8(payload).ok()?;
 
     // Extract value after "t" key (symbol).
@@ -82,6 +96,16 @@ pub fn parse_raw_bytes_fast(payload: &[u8]) -> Option<FastParsedOrderBook> {
 /// A `FastParsedExecutionReport` if the expected keys are found.
 #[inline]
 pub fn parse_execution_report_bytes_simulated(payload: &[u8]) -> Option<FastParsedExecutionReport> {
+    // L-7: Reject excessively large messages to prevent DoS.
+    if payload.len() > MAX_INPUT_SIZE {
+        tracing::warn!(
+            size = payload.len(),
+            max = MAX_INPUT_SIZE,
+            "zero_copy_parser: execution report input exceeds max size, rejecting"
+        );
+        return None;
+    }
+
     let text = std::str::from_utf8(payload).ok()?;
 
     // Extract token_id from "t" key.

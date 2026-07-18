@@ -215,6 +215,20 @@ impl WithdrawalExecutor {
         &self,
         req: &WithdrawalRequest,
     ) -> Result<WithdrawalResult, String> {
+        // M-10: Validate withdrawal request before dispatching.
+        if req.amount <= Decimal::ZERO {
+            return Err(format!(
+                "Withdrawal amount must be positive, got {}",
+                req.amount
+            ));
+        }
+        if req.address.trim().is_empty() {
+            return Err("Withdrawal address must not be empty".to_string());
+        }
+        if req.network.trim().is_empty() {
+            return Err("Withdrawal network must not be empty".to_string());
+        }
+
         let exchange_name = exchange_name_by_id(req.exchange_id);
         info!(
             exchange = exchange_name,

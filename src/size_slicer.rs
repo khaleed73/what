@@ -58,11 +58,19 @@ impl SizeSlicer {
     }
 
     /// Creates a slicer with custom settings.
-    pub fn with_limits(max_slice_usd: Decimal, min_slice_usd: Decimal) -> Self {
-        Self {
+    ///
+    /// M-16: Returns an error if max_slice_usd or min_slice_usd is not positive.
+    pub fn with_limits(max_slice_usd: Decimal, min_slice_usd: Decimal) -> Result<Self, &'static str> {
+        if max_slice_usd <= Decimal::ZERO {
+            return Err("size_slicer: max_slice_usd must be positive (division by zero guard)");
+        }
+        if min_slice_usd < Decimal::ZERO {
+            return Err("size_slicer: min_slice_usd must be non-negative");
+        }
+        Ok(Self {
             max_slice_usd,
             min_slice_usd,
-        }
+        })
     }
 
     /// Splits an order into slices.
@@ -237,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_custom_max_slice() {
-        let slicer = SizeSlicer::with_limits(dec!(2500), dec!(5));
+        let slicer = SizeSlicer::with_limits(dec!(2500), dec!(5)).unwrap();
         let slices = slicer.slice_order(dec!(100), dec!(100)); // $10000 → 4 slices
         assert_eq!(slices.len(), 4);
     }
