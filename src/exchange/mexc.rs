@@ -26,7 +26,7 @@ pub struct MexcExchange {
 
 impl MexcExchange {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
@@ -74,7 +74,8 @@ impl MexcExchange {
         Ok(format!("{}&signature={}", query, signature))
     }
 
-    /// Convert internal symbol (BTC/USDT) to MEXC format (BTCUSDT).
+    /// Convert a trading pair symbol to MEXC format (uppercase, no slash).
+    #[inline]
     fn to_mexc_symbol(symbol: &str) -> String {
         symbol.replace('/', "").to_uppercase()
     }

@@ -29,11 +29,13 @@ fn to_gateio_symbol(symbol: &str) -> String {
 }
 
 /// Convert Gate.io symbol format (BTC_USDT) to our internal format (BTC/USDT).
+#[inline]
 fn from_gateio_symbol(symbol: &str) -> String {
     symbol.replace('_', "/")
 }
 
 /// Compute SHA-256 hex digest of a byte string (used for Gate.io POST body hash).
+#[inline]
 fn sha256_hex(data: &[u8]) -> String {
     use ring::digest;
     let hash = digest::digest(&digest::SHA256, data);
@@ -42,7 +44,7 @@ fn sha256_hex(data: &[u8]) -> String {
 
 impl GateioClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,

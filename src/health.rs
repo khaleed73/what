@@ -20,6 +20,14 @@ pub struct HealthStats {
 
 /// Feeds with no data update for longer than this (ms) are considered stale.
 const FEED_STALENESS_MS: i64 = 10_000;
+/// Seconds after startup during which signal freshness is not checked.
+const STARTUP_GRACE_PERIOD_SECS: u64 = 60;
+/// Milliseconds within which a signal must have been recorded to be "fresh".
+const SIGNAL_FRESHNESS_MS: u64 = 30_000;
+/// Seconds after startup during which feeds are allowed to not be registered.
+const FEED_REGISTRATION_GRACE_SECS: u64 = 10;
+/// Milliseconds per second (for ms→s conversion).
+const MS_PER_SEC: u64 = 1_000;
 
 /// Tracks operational health metrics for monitoring and alerting.
 ///
@@ -45,6 +53,7 @@ pub struct HealthMonitor {
 }
 
 impl HealthMonitor {
+    /// Creates a new health monitor with all counters at zero.
     pub fn new() -> Self {
         Self {
             started_at: Instant::now(),
@@ -124,8 +133,8 @@ impl HealthMonitor {
     fn all_feeds_healthy(&self) -> bool {
         let map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
         if map.is_empty() {
-            // Return false when no feeds registered past 10s grace period.
-            return self.started_at.elapsed().as_secs() < 10;
+            // Return false when no feeds registered past grace period.
+            return self.started_at.elapsed().as_secs() < FEED_REGISTRATION_GRACE_SECS;
         }
         let now_ms = Self::now_ms() as i64;
         map.values().all(|ts| {
@@ -136,28 +145,32 @@ impl HealthMonitor {
     /// Returns `true` if the system is considered healthy.
     ///
     /// The system is healthy when **all** of the following hold:
-    /// - less than 60 seconds have elapsed since startup, **or**
-    ///   a signal was recorded within the last 30 seconds.
+    /// - less than `STARTUP_GRACE_PERIOD_SECS` have elapsed since startup, **or**
+    ///   a signal was recorded within the last `SIGNAL_FRESHNESS_MS` ms.
     /// - every registered data feed has delivered data within the last
-    ///   10 seconds (if any feeds are registered at all; a 10-second
-    ///   grace period applies when no feeds are registered yet).
+    ///   `FEED_STALENESS_MS` ms (if any feeds are registered at all; a
+    ///   `FEED_REGISTRATION_GRACE_SECS` grace period applies when no feeds
+    ///   are registered yet).
+    #[inline]
     pub fn is_healthy(&self) -> bool {
         let uptime = self.started_at.elapsed().as_secs();
-        if uptime < 60 {
+        if uptime < STARTUP_GRACE_PERIOD_SECS {
             return self.all_feeds_healthy();
         }
         let now = Self::now_ms();
         let last = self.last_signal_time_ms.load(Ordering::Acquire);
-        let signal_ok = now.saturating_sub(last) < 30_000;
+        let signal_ok = now.saturating_sub(last) < SIGNAL_FRESHNESS_MS;
         signal_ok && self.all_feeds_healthy()
     }
 
     /// Uptime in whole seconds since creation.
+    #[inline]
     pub fn get_uptime_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
     }
 
     /// Take a consistent snapshot of all counters.
+    #[inline]
     pub fn get_stats(&self) -> HealthStats {
         let now = Self::now_ms();
         let last_signal = self.last_signal_time_ms.load(Ordering::Acquire);
@@ -184,8 +197,8 @@ impl HealthMonitor {
             total_errors: self.total_trade_errors.load(Ordering::Relaxed),
             ws_reconnects: self.total_websocket_reconnects.load(Ordering::Relaxed),
             is_healthy: healthy,
-            last_signal_ago_secs: now.saturating_sub(last_signal) / 1_000,
-            last_trade_ago_secs: now.saturating_sub(last_trade) / 1_000,
+            last_signal_ago_secs: now.saturating_sub(last_signal) / MS_PER_SEC,
+            last_trade_ago_secs: now.saturating_sub(last_trade) / MS_PER_SEC,
             feed_healthy,
         }
     }
@@ -196,7 +209,7 @@ impl HealthMonitor {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 tracing::error!("System clock before UNIX epoch — NTP misconfiguration?");
                 0
             })

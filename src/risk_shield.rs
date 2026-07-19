@@ -7,6 +7,12 @@
 use rust_decimal::prelude::*;
 use rust_decimal_macros::dec;
 
+/// Minimum order notional for triangular loops (in base currency).
+const MIN_ORDER_NOTIONAL: Decimal = dec!(10.0);
+
+/// Minimum order book depth required per leg.
+const MIN_LEG_LIQUIDITY: Decimal = dec!(1.0);
+
 /// Market ticker snapshot with best bid/ask and available quantity.
 #[derive(Debug, Clone)]
 pub struct MarketTicker {
@@ -29,6 +35,7 @@ pub struct RiskShield {
 }
 
 impl RiskShield {
+    /// Creates a new risk shield with the given configuration.
     pub fn new(
         min_capital: Decimal,
         fee_rate: Decimal,
@@ -53,6 +60,7 @@ impl RiskShield {
     /// # Returns
     /// * `Some(profit)` - Net profit after all fees if loop is profitable
     /// * `None` - Loop is unprofitable or unsafe
+    #[inline]
     pub fn verify_triangular_loop(
         &self,
         capital: Decimal,
@@ -67,8 +75,7 @@ impl RiskShield {
         }
 
         // Safety Guard 1: Minimum capital requirement
-        let min_order_size = dec!(10.0);
-        if capital < min_order_size {
+        if capital < MIN_ORDER_NOTIONAL {
             return None;
         }
         if capital < self.min_capital_requirement {
@@ -84,8 +91,7 @@ impl RiskShield {
         }
 
         // Safety Guard 3: Validate minimum liquidity on each leg
-        let min_liquidity = dec!(1.0);
-        if leg1.ask_qty < min_liquidity || leg2.ask_qty < min_liquidity || leg3.bid_qty < min_liquidity {
+        if leg1.ask_qty < MIN_LEG_LIQUIDITY || leg2.ask_qty < MIN_LEG_LIQUIDITY || leg3.bid_qty < MIN_LEG_LIQUIDITY {
             return None;
         }
 
@@ -150,6 +156,7 @@ impl RiskShield {
 
     /// Mathematical verification: (1-f1)*(1-f2)*(1-f3)*product(rates) > 1.0
     /// This is the pure mathematical formulation without order book depth.
+    #[inline]
     pub fn verify_triangular_math(
         &self,
         rate1: Decimal,
@@ -212,6 +219,7 @@ impl CrossExchangeRiskShield {
     /// # Returns
     /// * `Some((qty, profit))` - Trade quantity and expected profit if profitable
     /// * `None` - Not profitable or unsafe
+    #[inline]
     pub fn evaluate_window(
         &self,
         bid_x: Decimal,

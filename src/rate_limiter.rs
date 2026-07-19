@@ -12,6 +12,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+/// Default window duration for weight rotation.
+const DEFAULT_WINDOW_DURATION_SECS: u64 = 60;
+/// Default max consecutive violations before extended cooldown.
+const DEFAULT_MAX_VIOLATIONS: u32 = 3;
+/// Extended cooldown multiplier (3× normal cooldown).
+const EXTENDED_COOLDOWN_MULTIPLIER: u32 = 3;
+/// Basis points per 100% (for pause_threshold storage).
+const BPS_PER_UNIT: f64 = 10_000.0;
+
 /// Per-exchange rate limit state.
 struct ExchangeRateState {
     /// Current used weight within the window.
@@ -41,20 +50,20 @@ impl ExchangeRateState {
         Self {
             used_weight: AtomicU64::new(0),
             max_weight: AtomicU64::new(max_weight),
-            pause_threshold: AtomicU32::new((pause_threshold_pct * 10_000.0).round() as u32),
+            pause_threshold: AtomicU32::new((pause_threshold_pct * BPS_PER_UNIT).round() as u32),
             is_paused: AtomicBool::new(false),
             paused_at: std::sync::Mutex::new(None),
             cooldown_duration: cooldown,
             consecutive_violations: AtomicU32::new(0),
-            max_violations_before_extended: 3,
+            max_violations_before_extended: DEFAULT_MAX_VIOLATIONS,
             window_start: std::sync::Mutex::new(Instant::now()),
-            window_duration: Duration::from_secs(60), // 60-second window by default
+            window_duration: Duration::from_secs(DEFAULT_WINDOW_DURATION_SECS),
         }
     }
 
     #[inline(always)]
     fn is_paused_fast(&self) -> bool {
-        self.is_paused.load(Ordering::SeqCst)
+        self.is_paused.load(Ordering::Acquire)
     }
 
     fn record_weight(&self, weight: u64) -> RateLimitStatus {
@@ -64,21 +73,21 @@ impl ExchangeRateState {
             let elapsed = guard.elapsed();
             if elapsed >= self.window_duration {
                 *guard = Instant::now();
-                self.used_weight.store(weight, Ordering::SeqCst);
+                self.used_weight.store(weight, Ordering::Release);
                 return RateLimitStatus::Ok;
             }
             elapsed
         };
 
-        if self.is_paused.load(Ordering::SeqCst) {
+        if self.is_paused.load(Ordering::Acquire) {
             // Check if cooldown has elapsed — use extended cooldown
             // when consecutive violations exceed the threshold.
             let should_resume = {
                 let guard = self.paused_at.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(paused_at) = *guard {
-                    let violations = self.consecutive_violations.load(Ordering::SeqCst);
+                    let violations = self.consecutive_violations.load(Ordering::Acquire);
                     let effective_cooldown = if violations >= self.max_violations_before_extended {
-                        self.cooldown_duration * 3
+                        self.cooldown_duration * EXTENDED_COOLDOWN_MULTIPLIER
                     } else {
                         self.cooldown_duration
                     };
@@ -89,19 +98,19 @@ impl ExchangeRateState {
             };
 
             if should_resume {
-                self.is_paused.store(false, Ordering::SeqCst);
+                self.is_paused.store(false, Ordering::Release);
                 *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 // Reset weight counter and violation count for new window.
-                self.used_weight.store(weight, Ordering::SeqCst);
-                self.consecutive_violations.store(0, Ordering::SeqCst);
+                self.used_weight.store(weight, Ordering::Release);
+                self.consecutive_violations.store(0, Ordering::Release);
                 return RateLimitStatus::Ok;
             }
             return RateLimitStatus::Paused {
                 remaining_ms: {
                     let guard = self.paused_at.lock().unwrap_or_else(|e| e.into_inner());
-                    let violations = self.consecutive_violations.load(Ordering::SeqCst);
+                    let violations = self.consecutive_violations.load(Ordering::Acquire);
                     let effective_cooldown = if violations >= self.max_violations_before_extended {
-                        self.cooldown_duration * 3
+                        self.cooldown_duration * EXTENDED_COOLDOWN_MULTIPLIER
                     } else {
                         self.cooldown_duration
                     };
@@ -115,21 +124,21 @@ impl ExchangeRateState {
             };
         }
 
-        let prev = self.used_weight.fetch_add(weight, Ordering::SeqCst);
-        let current = prev + weight;
-        let threshold = self.pause_threshold.load(Ordering::SeqCst) as u64;
-        let max = self.max_weight.load(Ordering::SeqCst);
+        let prev = self.used_weight.fetch_add(weight, Ordering::Acquire);
+        let current = prev.saturating_add(weight);
+        let threshold = self.pause_threshold.load(Ordering::Acquire) as u64;
+        let max = self.max_weight.load(Ordering::Acquire);
 
-        if current * 10_000 >= max * threshold {
+        if current * BPS_PER_UNIT as u64 >= max * threshold {
             // Trip the pause.
-            self.is_paused.store(true, Ordering::SeqCst);
+            self.is_paused.store(true, Ordering::Release);
             *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
 
-            let violations = self.consecutive_violations.fetch_add(1, Ordering::SeqCst) + 1;
+            let violations = self.consecutive_violations.fetch_add(1, Ordering::Acquire).saturating_add(1);
 
             // Extended cooldown after multiple violations.
             let cooldown_ms = if violations >= self.max_violations_before_extended {
-                self.cooldown_duration.as_millis() as u64 * 3
+                self.cooldown_duration.as_millis() as u64 * EXTENDED_COOLDOWN_MULTIPLIER as u64
             } else {
                 self.cooldown_duration.as_millis() as u64
             };
@@ -141,14 +150,14 @@ impl ExchangeRateState {
                 cooldown_ms,
             }
         } else {
-            self.consecutive_violations.store(0, Ordering::SeqCst);
+            self.consecutive_violations.store(0, Ordering::Release);
             RateLimitStatus::Ok
         }
     }
 
     fn reset_window(&self) {
-        self.used_weight.store(0, Ordering::SeqCst);
-        self.consecutive_violations.store(0, Ordering::SeqCst);
+        self.used_weight.store(0, Ordering::Release);
+        self.consecutive_violations.store(0, Ordering::Release);
         self.is_paused.store(false, Ordering::Release);
         *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -180,8 +189,11 @@ pub enum RateLimitStatus {
 /// like `record_weight`, `is_paused`, etc. can be used concurrently.
 pub struct RateLimitCircuitBreaker {
     exchanges: RwLock<HashMap<String, Arc<ExchangeRateState>>>,
+    /// Default max API weight per window for unconfigured exchanges.
     default_max_weight: u64,
+    /// Default pause threshold fraction (e.g. 0.80).
     default_pause_threshold: f64,
+    /// Default cooldown duration after tripping.
     default_cooldown: Duration,
 }
 
@@ -211,6 +223,7 @@ impl RateLimitCircuitBreaker {
     }
 
     /// Registers an exchange with custom settings.
+    /// Panics if `exchange_id` is empty.
     pub fn register_exchange_with_config(
         &self,
         exchange_id: &str,
@@ -218,10 +231,13 @@ impl RateLimitCircuitBreaker {
         pause_threshold: f64,
         cooldown: Duration,
     ) {
+        assert!(!exchange_id.is_empty(), "exchange_id must not be empty");
+        assert!(max_weight > 0, "max_weight must be > 0");
+        assert!(pause_threshold > 0.0 && pause_threshold <= 1.0, "pause_threshold must be in (0, 1]");
         let state = Arc::new(ExchangeRateState::new(max_weight, pause_threshold, cooldown));
         self.exchanges
             .write()
-            .expect("rate_limiter RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(exchange_id.to_lowercase(), state);
     }
 
@@ -230,7 +246,7 @@ impl RateLimitCircuitBreaker {
     /// Returns the current rate-limit status.
     #[inline]
     pub fn record_weight(&self, exchange_id: &str, weight: u64) -> RateLimitStatus {
-        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        let guard = self.exchanges.read().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.get(&exchange_id.to_lowercase()) {
             state.record_weight(weight)
         } else {
@@ -244,7 +260,7 @@ impl RateLimitCircuitBreaker {
     /// Quick check if an exchange is currently paused (no weight update).
     #[inline(always)]
     pub fn is_paused(&self, exchange_id: &str) -> bool {
-        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        let guard = self.exchanges.read().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.get(&exchange_id.to_lowercase()) {
             state.is_paused_fast()
         } else {
@@ -254,7 +270,7 @@ impl RateLimitCircuitBreaker {
 
     /// Reset the weight window for an exchange (called on window rotation).
     pub fn reset_window(&self, exchange_id: &str) {
-        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        let guard = self.exchanges.read().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = guard.get(&exchange_id.to_lowercase()) {
             state.reset_window();
         }
@@ -262,7 +278,7 @@ impl RateLimitCircuitBreaker {
 
     /// Reset all exchange weight windows.
     pub fn reset_all_windows(&self) {
-        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        let guard = self.exchanges.read().unwrap_or_else(|e| e.into_inner());
         for state in guard.values() {
             state.reset_window();
         }
@@ -270,23 +286,23 @@ impl RateLimitCircuitBreaker {
 
     /// Get current weight usage for an exchange (used_weight, max_weight).
     pub fn get_usage(&self, exchange_id: &str) -> Option<(u64, u64)> {
-        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        let guard = self.exchanges.read().unwrap_or_else(|e| e.into_inner());
         guard
             .get(&exchange_id.to_lowercase())
-            .map(|s| (s.used_weight.load(Ordering::SeqCst), s.max_weight.load(Ordering::SeqCst)))
+            .map(|s| (s.used_weight.load(Ordering::Acquire), s.max_weight.load(Ordering::Acquire)))
     }
 
     /// Returns the number of registered exchanges.
     pub fn exchange_count(&self) -> usize {
         self.exchanges
             .read()
-            .expect("rate_limiter RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .len()
     }
 
     /// Returns `true` if any exchange is currently paused.
     pub fn any_paused(&self) -> bool {
-        let guard = self.exchanges.read().expect("rate_limiter RwLock poisoned");
+        let guard = self.exchanges.read().unwrap_or_else(|e| e.into_inner());
         guard.values().any(|s| s.is_paused_fast())
     }
 }

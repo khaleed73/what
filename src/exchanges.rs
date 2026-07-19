@@ -31,10 +31,13 @@ use crate::signer::{
 pub struct SecretBytes(Vec<u8>);
 
 impl SecretBytes {
+    /// Creates a new `SecretBytes` wrapper around the given byte buffer.
+    /// The contents will be zeroed on drop.
     pub fn new(data: Vec<u8>) -> Self {
         Self(data)
     }
 
+    /// Returns a reference to the underlying bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -848,6 +851,18 @@ pub mod gateio {
 const LCG_A: u64 = 1_664_525;
 const LCG_C: u64 = 1_013_904_223;
 const LCG_M: u64 = 1u64 << 32;
+/// Default paper trading balance in quote currency.
+const PAPER_DEFAULT_BALANCE: u64 = 10_000;
+/// Satoshis per Bitcoin for BitMEX wallet conversion.
+const SATOSHIS_PER_BTC: i64 = 100_000_000;
+/// BitMEX API request expiry window in seconds.
+const BITMEX_EXPIRE_WINDOW_SECS: u64 = 60;
+/// Minimum slippage in basis points.
+const MIN_SLIPPAGE_BPS: u64 = 1;
+/// Maximum slippage in basis points.
+const MAX_SLIPPAGE_BPS: u64 = 3;
+/// Basis points divisor for converting bps to fraction.
+const BPS_DIVISOR: u64 = 10_000;
 
 /// A no-network exchange client that simulates order fills locally.
 ///
@@ -881,12 +896,12 @@ impl PaperExchangeClient {
     ///
     /// Thread-safe via `AtomicU64` (required because the trait takes `&self`).
     fn compute_slippage(&self) -> Decimal {
-        let prev = self.seed.load(Ordering::SeqCst);
+        let prev = self.seed.load(Ordering::Relaxed);
         let next = (LCG_A.wrapping_mul(prev).wrapping_add(LCG_C)) % LCG_M;
-        self.seed.store(next, Ordering::SeqCst);
-        // Map the 32-bit LCG output to 1, 2, or 3 bps.
-        let bps = 1u64 + (next % 3u64);
-        Decimal::from(bps) / Decimal::from(10000)
+        self.seed.store(next, Ordering::Relaxed);
+        // Map the 32-bit LCG output to slippage in range [MIN_SLIPPAGE_BPS, MAX_SLIPPAGE_BPS].
+        let bps = MIN_SLIPPAGE_BPS + (next % (MAX_SLIPPAGE_BPS - MIN_SLIPPAGE_BPS + 1));
+        Decimal::from(bps) / Decimal::from(BPS_DIVISOR)
     }
 }
 
@@ -931,7 +946,7 @@ impl PrivateExchangeClient for PaperExchangeClient {
         _http_client: &reqwest::Client,
         _asset: &str,
     ) -> Result<Decimal, String> {
-        Ok(Decimal::from(10000))
+        Ok(Decimal::from(PAPER_DEFAULT_BALANCE))
     }
 
     /// No-op cancellation — paper exchange always fills immediately.
@@ -1299,6 +1314,10 @@ pub mod bitmex {
     use chrono::Utc;
 
     const DEFAULT_REST_URL: &str = "https://www.bitmex.com";
+    /// Expiry window in seconds for BitMEX API requests.
+    const BITMEX_EXPIRE_WINDOW_SECS: u64 = 60;
+    /// Number of satoshis per BTC.
+    const SATOSHIS_PER_BTC: u64 = 100_000_000;
 
     /// BitMEX private client.
     ///
@@ -1352,7 +1371,7 @@ pub mod bitmex {
 
         /// Get current timestamp as unix seconds, plus a 60-second expiry window.
         fn expires() -> u64 {
-            Utc::now().timestamp() as u64 + 60
+            Utc::now().timestamp() as u64 + BITMEX_EXPIRE_WINDOW_SECS
         }
 
         /// Convert "BTC/USD" to BitMEX symbol format "XBTUSD".
@@ -1485,7 +1504,7 @@ pub mod bitmex {
 
             // BitMEX /api/v1/user/wallet returns amount in satoshis (1 BTC = 100,000,000 satoshis).
             if let Some(amount) = json_val["amount"].as_i64() {
-                let btc_balance = Decimal::from(amount) / Decimal::from(100_000_000);
+                let btc_balance = Decimal::from(amount) / Decimal::from(SATOSHIS_PER_BTC);
                 // BitMEX reports XBT; accept both "XBT" and "BTC" as the asset query.
                 let asset_upper = asset.to_uppercase();
                 if asset_upper == "XBT" || asset_upper == "BTC" {

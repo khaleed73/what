@@ -114,6 +114,9 @@ pub async fn verify_safety(exchange_id: u16, perms: &ApiKeyPermission) -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// API credentials and REST URL for a single exchange.
+///
+/// Secret fields are redacted in `Debug` output. The `rest_url` is
+/// included in full since it's not secret (public REST endpoint).
 #[derive(Clone)]
 pub struct ExchangeCreds {
     pub api_key: String,
@@ -163,18 +166,27 @@ impl std::fmt::Debug for SubAccountManager {
 }
 
 impl SubAccountManager {
-    /// Create a new `SubAccountManager`.
+    /// Creates a new `SubAccountManager`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a default `reqwest::Client` if the custom builder fails
+    /// (e.g. invalid TLS config).  Subaccount checks will silently fail.
     pub fn new(exchange_configs: HashMap<u16, ExchangeCreds>) -> Self {
         Self {
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
-                .expect("failed to build subaccount HTTP client"),
+                .map_err(|e| format!("failed to build subaccount HTTP client: {}", e))
+                .unwrap_or_else(|_| {
+                    tracing::error!("failed to build HTTP client — subaccount checks will fail");
+                    reqwest::Client::new()
+                }),
             exchange_configs,
         }
     }
 
-    /// Create a new `SubAccountManager` with a custom HTTP client.
+    /// Creates a new `SubAccountManager` with a custom HTTP client.
     pub fn with_http_client(
         exchange_configs: HashMap<u16, ExchangeCreds>,
         http_client: reqwest::Client,
@@ -191,6 +203,10 @@ impl SubAccountManager {
 
     /// Test the API key for `exchange_id` by making a read-only call
     /// and inferring permissions from the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials are missing or the HTTP request fails.
     pub async fn check_permissions(
         &self,
         exchange_id: u16,
@@ -211,7 +227,9 @@ impl SubAccountManager {
         }
     }
 
-    /// Check all configured exchanges and return a per-exchange report.
+    /// Checks all configured exchanges and returns a per-exchange report.
+    ///
+    /// Each entry is `(exchange_id, exchange_name, Result<ApiKeyPermission>)`.
     pub async fn validate_all_keys(
         &self,
     ) -> Vec<(u16, String, Result<ApiKeyPermission, String>)> {
@@ -229,7 +247,7 @@ impl SubAccountManager {
         results
     }
 
-    /// Generate a multi-line setup guide string with per-exchange
+    /// Generates a multi-line setup guide string with per-exchange
     /// instructions for creating a restricted sub-account.
     ///
     /// This is a documentation string — no API calls are made.
@@ -855,6 +873,7 @@ fn hmac_base64(secret: &str, message: &str) -> String {
 }
 
 /// Current UNIX epoch in milliseconds.
+/// Falls back to 0 on clock error.
 fn epoch_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -863,6 +882,7 @@ fn epoch_millis() -> u64 {
 }
 
 /// Current UNIX epoch in seconds.
+/// Falls back to 0 on clock error.
 fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -898,6 +918,7 @@ pub fn redact_secret(s: &str) -> String {
 /// contain HMAC signatures in query parameters (e.g. Binance's
 /// `signature=…`).  We return only the underlying error source to avoid
 /// leaking those values into logs.
+#[inline]
 fn sanitize_reqwest_error(e: &reqwest::Error) -> String {
     match std::error::Error::source(e) {
         Some(source) => format!("{}", source),

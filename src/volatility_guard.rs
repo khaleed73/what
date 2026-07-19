@@ -21,7 +21,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Default spread ceiling: 0.80% (80 basis points).
 const DEFAULT_SPREAD_CEILING_BPS: u64 = 80;
 
+/// Upper bound for a reasonable spread in basis points (1 trillion bps).
+/// Values above this are considered nonsensical and rejected.
+const MAX_REASONABLE_SPREAD_BPS: u64 = 1_000_000_000_000;
+
 /// Stores a Decimal as fixed-point u64 with 9 decimal places.
+#[inline]
 fn decimal_to_fp(d: Decimal) -> u64 {
     match (d * Decimal::from(1_000_000_000u64)).to_u64() {
         Some(fp) if fp > 0 => fp,
@@ -36,6 +41,8 @@ fn decimal_to_fp(d: Decimal) -> u64 {
     }
 }
 
+/// Converts a fixed-point u64 back to a Decimal.
+#[inline]
 fn fp_to_decimal(fp: u64) -> Decimal {
     Decimal::from(fp) / Decimal::from(1_000_000_000u64)
 }
@@ -66,6 +73,13 @@ impl VolatilityGuard {
     const DEFAULT_EMA_PERIOD: u64 = 20;
 
     /// Creates a new guard with the default 0.08% (80 bps) ceiling.
+    ///
+    /// # Example
+    /// ```
+    /// use rust_hft_arb::volatility_guard::VolatilityGuard;
+    /// let guard = VolatilityGuard::new();
+    /// assert_eq!(guard.ceiling_bps(), 80);
+    /// ```
     pub fn new() -> Self {
         Self {
             spread_ceiling_bps: AtomicU64::new(DEFAULT_SPREAD_CEILING_BPS),
@@ -76,7 +90,7 @@ impl VolatilityGuard {
         }
     }
 
-    /// Creates with a custom spread ceiling in basis points.
+    /// Creates a guard with a custom spread ceiling in basis points.
     pub fn with_ceiling_bps(ceiling_bps: u64) -> Self {
         Self {
             spread_ceiling_bps: AtomicU64::new(ceiling_bps),
@@ -119,13 +133,13 @@ impl VolatilityGuard {
 
         // Guard against unreasonable spreads that would poison the EMA.
         // 1 trillion bps (= 10 billion %) is clearly nonsensical for any real spread.
-        if current_spread_bps <= Decimal::ZERO || current_spread_bps > Decimal::from(1_000_000_000_000u64) {
+        if current_spread_bps <= Decimal::ZERO || current_spread_bps > Decimal::from(MAX_REASONABLE_SPREAD_BPS) {
             return false;
         }
 
         // Update EMA: ema = α * new + (1 - α) * ema
         // α = 2 / (period + 1)
-        let period = self.ema_period.load(Ordering::SeqCst);
+        let period = self.ema_period.load(Ordering::Acquire);
         let alpha = Decimal::from(2u64) / Decimal::from(period + 1);
         let one_minus_alpha = Decimal::ONE - alpha;
         let ema_bps = {
@@ -147,12 +161,12 @@ impl VolatilityGuard {
         // Get the effective ceiling for this exchange.
         let ceiling_bps = {
             let overrides = self.exchange_overrides.lock().unwrap_or_else(|e| e.into_inner());
-            *overrides.get(&exchange_id).unwrap_or(&self.spread_ceiling_bps.load(Ordering::SeqCst))
+            *overrides.get(&exchange_id).unwrap_or(&self.spread_ceiling_bps.load(Ordering::Acquire))
         };
 
         // H-3: Compare instantaneous spread against the ceiling (not EMA).
         if current_spread_bps > Decimal::from(ceiling_bps) {
-            self.rejection_count.fetch_add(1, Ordering::SeqCst);
+            self.rejection_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 exchange_id,
                 spread_bps = %current_spread_bps,
@@ -193,7 +207,7 @@ impl VolatilityGuard {
             return;
         }
 
-        let period = self.ema_period.load(Ordering::SeqCst);
+        let period = self.ema_period.load(Ordering::Acquire);
         let alpha = Decimal::from(2u64) / Decimal::from(period + 1);
         let one_minus_alpha = Decimal::ONE - alpha;
         let mut ema_guard = self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,17 +224,17 @@ impl VolatilityGuard {
 
     /// Get the global spread ceiling in basis points.
     pub fn ceiling_bps(&self) -> u64 {
-        self.spread_ceiling_bps.load(Ordering::SeqCst)
+        self.spread_ceiling_bps.load(Ordering::Acquire)
     }
 
     /// Set the global spread ceiling dynamically.
     pub fn set_ceiling_bps(&self, bps: u64) {
-        self.spread_ceiling_bps.store(bps, Ordering::SeqCst);
+        self.spread_ceiling_bps.store(bps, Ordering::Release);
     }
 
-    /// Get the total rejection count.
+    /// Get the total rejection count since creation.
     pub fn rejection_count(&self) -> u64 {
-        self.rejection_count.load(Ordering::SeqCst)
+        self.rejection_count.load(Ordering::Acquire)
     }
 
     /// Returns the current EMA-smoothed spread in basis points, or `None` if
@@ -234,7 +248,7 @@ impl VolatilityGuard {
     /// Note: changing the period resets the EMA so it re-seeds on the next
     /// observation.
     pub fn update_ema_period(&self, period: u64) {
-        self.ema_period.store(period.max(2), Ordering::SeqCst);
+        self.ema_period.store(period.max(2), Ordering::Release);
         *self.ema_spread_bps.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 

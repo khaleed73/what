@@ -466,6 +466,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             profit_bps);
                         tri_signals += 1;
                     }
+                    _ => {}
                 }
                 health.record_signal();
                 all_signals.push(sig);
@@ -583,6 +584,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (pbps, eid) = match sig {
             ArbitrageSignal::CrossExchange { spread_bps, buy_exchange, .. } => (*spread_bps, *buy_exchange),
             ArbitrageSignal::Triangular { profit_bps, exchange_id, .. } => (*profit_bps, *exchange_id),
+            _ => (0, 0),
         };
         match risk_manager.pre_trade_check(pbps, 1_000_000, 10_000_000_000, eid) {
             Ok(()) => {
@@ -712,6 +714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            _ => continue,
         }
     }
 

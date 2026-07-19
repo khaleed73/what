@@ -8,6 +8,7 @@ use rust_decimal::prelude::ToPrimitive;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use tokio::sync::Mutex;
 use rand::Rng;
 use tracing::{debug, error, info, warn};
@@ -19,9 +20,50 @@ use crate::live_order_tracker::LiveOrderTracker;
 use crate::strategies::ExchangeFeeSchedule;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Base retry delay in milliseconds (doubles each attempt).
+const BASE_RETRY_DELAY_MS: u64 = 50;
+
+/// Maximum backoff delay cap in milliseconds.
+const MAX_BACKOFF_MS: u64 = 2000;
+
+/// Minimum jitter floor in milliseconds.
+const MIN_DELAY_MS: u64 = 10;
+
+/// Per-leg timeout in milliseconds for multi-leg blast execution.
+const LEG_TIMEOUT_MS: u64 = 200;
+
+/// Total blast timeout in milliseconds (covers all legs combined).
+const TOTAL_BLAST_TIMEOUT_MS: u64 = 500;
+
+/// Emergency counter-order timeout in milliseconds.
+const COUNTER_ORDER_TIMEOUT_MS: u64 = 100;
+
+/// Default maximum slippage in basis points (0.05 %).
+const DEFAULT_MAX_SLIPPAGE_BPS: u64 = 5;
+
+/// Default pre-trade slippage tolerance as fixed-point (0.0005 × 1_000_000 = 500).
+const DEFAULT_SLIPPAGE_TOLERANCE_FP: u64 = 500;
+
+/// Default daily loss limit in cents ($100.00 = 10 000 cents).
+const DEFAULT_DAILY_LOSS_LIMIT_CENTS: u64 = 10_000;
+
+/// Live order tracker max age in seconds (5 minutes).
+const TRACKER_MAX_AGE_SECS: u64 = 300;
+
+/// Counter-order price nudge factor for sells (0.995 = −0.5 %).
+const COUNTER_SELL_NUDGE: Decimal = dec!(0.995);
+
+/// Counter-order price nudge factor for buys (1.005 = +0.5 %).
+const COUNTER_BUY_NUDGE: Decimal = dec!(1.005);
+
+// ---------------------------------------------------------------------------
 // Order Intent – describes what we want to do on an exchange
 // ---------------------------------------------------------------------------
 
+/// Describes a single order to be executed on an exchange.
 #[derive(Debug, Clone)]
 pub struct OrderIntent {
     pub exchange_id: u16,
@@ -36,6 +78,7 @@ pub struct OrderIntent {
 // Order Result – what came back after submitting
 // ---------------------------------------------------------------------------
 
+/// Result of an order submission, including fill details and any error.
 #[derive(Debug, Clone)]
 pub struct OrderResult {
     pub success: bool,
@@ -61,6 +104,7 @@ pub trait OrderPipeline: Send + Sync {
 // Paper Execution Pipeline – in-memory sandbox with slippage simulation
 // ---------------------------------------------------------------------------
 
+/// In-memory sandbox execution pipeline with slippage simulation for paper trading.
 pub struct PaperExecutionPipeline {
     /// Shared USDT (or quote) balance. Updated in-place on every fill.
     pub balance: Arc<Mutex<Decimal>>,
@@ -210,7 +254,12 @@ where
                 }
 
                 if attempt + 1 < max_retries {
-                    let base_d = (base_delay_ms * (1 << attempt)).min(2000) as f64;
+                    // Cap the shift to prevent u64 overflow when attempt >= 64.
+                    let base_d = if attempt < 64 {
+                        (base_delay_ms.saturating_mul(1u64 << attempt)).min(MAX_BACKOFF_MS) as f64
+                    } else {
+                        MAX_BACKOFF_MS as f64
+                    };
                     let d = (base_d * (0.75 + 0.5 * rand::thread_rng().gen::<f64>())) as u64;
                     warn!(
                         attempt = attempt + 1,
@@ -219,7 +268,7 @@ where
                         error = %e,
                         "Retrying after error (with jitter)"
                     );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(d.max(10))).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(d.max(MIN_DELAY_MS))).await;
                 }
             }
         }
@@ -262,6 +311,7 @@ impl RateLimitCircuitBreaker {
     /// Check whether `exchange_id` is currently rate-limited.
     /// Returns `Ok(())` if trading is allowed, or `Err` with a human-readable
     /// message if the exchange is in cooldown.
+    #[inline]
     pub fn check(&self, exchange_id: u16) -> Result<(), String> {
         let idx = exchange_id as usize;
         if idx >= self.cooldown_until_ms.len() {
@@ -290,6 +340,7 @@ impl RateLimitCircuitBreaker {
 
     /// Mark `exchange_id` as rate-limited for the configured cooldown duration.
     /// Called when a 429 response is detected from the exchange.
+    #[inline]
     pub fn trip(&self, exchange_id: u16) {
         let idx = exchange_id as usize;
         if idx >= self.cooldown_until_ms.len() {
@@ -299,7 +350,7 @@ impl RateLimitCircuitBreaker {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let until = now + (self.cooldown_duration_secs * 1000);
+        let until = now.saturating_add(self.cooldown_duration_secs.saturating_mul(1000));
         self.cooldown_until_ms[idx].store(until, Ordering::Release);
         error!(
             exchange_id = exchange_id,
@@ -329,6 +380,7 @@ impl RateLimitCircuitBreaker {
 // Real Execution Pipeline – HTTP POST to exchange REST API (Binance-style)
 // ---------------------------------------------------------------------------
 
+/// Real execution pipeline that routes orders through typed exchange clients.
 pub struct RealExecutionPipeline {
     /// Pre-built reqwest client (connection-pooled, potentially with TLS pins).
     pub http_client: reqwest::Client,
@@ -468,9 +520,9 @@ impl RealExecutionPipeline {
 #[async_trait]
 impl OrderPipeline for RealExecutionPipeline {
     async fn execute_order(&self, intent: &OrderIntent) -> Result<OrderResult, String> {
-        // Wrap the actual HTTP call with retry: max 2 attempts, 50ms base backoff.
+        // Wrap the actual HTTP call with retry: max 3 attempts, base backoff.
         let intent = intent.clone();
-        retry_with_backoff(3, 50, || {
+        retry_with_backoff(3, BASE_RETRY_DELAY_MS, || {
             let this = self;
             let intent = intent.clone();
             async move { this.execute_order_inner(&intent).await }
@@ -483,6 +535,8 @@ impl OrderPipeline for RealExecutionPipeline {
 // High-Frequency Execution Engine – orchestrates concurrent multi-leg blasts
 // ---------------------------------------------------------------------------
 
+/// Orchestrates concurrent multi-leg arbitrage blasts with risk checks,
+/// slippage guards, and emergency counter-order rollback.
 pub struct HighFrequencyExecutionEngine {
     pub risk_manager: Arc<RiskManager>,
     pub depeg_circuit: Arc<StablecoinMonitor>,
@@ -550,11 +604,10 @@ impl HighFrequencyExecutionEngine {
             real_pipeline,
             is_paper_mode: AtomicBool::new(is_paper_mode), // H-1: Release pairing with Acquire loads
             rollback_count: AtomicU64::new(0),
-            max_slippage_bps: AtomicU64::new(5), // default 0.05 % = 5 bps
+            max_slippage_bps: AtomicU64::new(DEFAULT_MAX_SLIPPAGE_BPS),
             slippage_reject_count: AtomicU64::new(0),
-            // Default pre-trade slippage tolerance: 0.05 % = 500 fp-units.
-            slippage_tolerance_fp: AtomicU64::new(500),
-            order_tracker: Arc::new(LiveOrderTracker::new(300)), // 5-minute max age
+            slippage_tolerance_fp: AtomicU64::new(DEFAULT_SLIPPAGE_TOLERANCE_FP),
+            order_tracker: Arc::new(LiveOrderTracker::new(TRACKER_MAX_AGE_SECS)),
             cancel_http_client: None,
             cancel_pool: None,
             execution_mutex: tokio::sync::Mutex::new(()),
@@ -562,7 +615,7 @@ impl HighFrequencyExecutionEngine {
             daily_loss_cents: AtomicU64::new(0),
             daily_profit_cents: AtomicU64::new(0),
             daily_reset_day: std::sync::Mutex::new(0),
-            daily_loss_limit_cents: AtomicU64::new(10_000), // $100.00 default
+            daily_loss_limit_cents: AtomicU64::new(DEFAULT_DAILY_LOSS_LIMIT_CENTS),
             fee_schedule_bps: None,
         }
     }
@@ -591,6 +644,7 @@ impl HighFrequencyExecutionEngine {
     /// Track a live order in the order tracker.  Called after each leg
     /// execution returns an order_id from the exchange.  In paper mode
     /// this is a no-op (paper fills are instant, no cancellation needed).
+    #[inline]
     fn track_live_order(&self, result: &OrderResult, intent: &OrderIntent) {
         if self.is_paper_mode.load(Ordering::Acquire) {
             return;
@@ -612,6 +666,7 @@ impl HighFrequencyExecutionEngine {
     }
 
     /// Remove a filled/cancelled order from the tracker.
+    #[inline]
     fn untrack_live_order(&self, result: &OrderResult) {
         if let Some(ref order_id) = result.order_id {
             self.order_tracker.remove(order_id);
@@ -620,6 +675,7 @@ impl HighFrequencyExecutionEngine {
 
     /// Check and reset daily counters at midnight UTC.
     /// Returns (daily_loss_cents, daily_profit_cents) after potential reset.
+    #[inline]
     fn check_daily_reset(&self) -> (u64, u64) {
         let today = chrono::Utc::now().ordinal();
         let mut last_day = self.daily_reset_day.lock().unwrap_or_else(|e| {
@@ -650,10 +706,16 @@ impl HighFrequencyExecutionEngine {
 
     /// Check daily loss limit.  Returns Err if the daily loss exceeds
     /// the configured maximum (in cents).
+    #[inline]
     fn check_daily_loss_limit(&self) -> Result<(), String> {
         let max_loss_cents = self.daily_loss_limit_cents.load(Ordering::Acquire);
         let (daily_loss, _) = self.check_daily_reset();
         if daily_loss >= max_loss_cents {
+            tracing::warn!(
+                daily_loss_cents = daily_loss,
+                max_loss_cents,
+                "daily loss limit breached — trading halted until midnight UTC"
+            );
             return Err(format!(
                 "daily loss limit reached: {} cents >= {} cents — trading halted until midnight UTC",
                 daily_loss, max_loss_cents
@@ -664,6 +726,7 @@ impl HighFrequencyExecutionEngine {
 
     /// Record a realized P&L contribution to the daily counter.
     /// `profit_cents` can be negative (loss) or positive (gain).
+    #[inline]
     fn record_daily_pnl(&self, profit_cents: i64) {
         if profit_cents >= 0 {
             self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Release);
@@ -680,6 +743,7 @@ impl HighFrequencyExecutionEngine {
     }
 
     /// Check if the volatility circuit breaker is active.
+    #[inline(always)]
     pub fn is_volatility_circuit_active(&self) -> bool {
         self.volatility_circuit.load(Ordering::Acquire)
     }
@@ -794,14 +858,14 @@ impl HighFrequencyExecutionEngine {
         let leg_a = self.apply_slippage_limit(&leg_a);
         let leg_b = self.apply_slippage_limit(&leg_b);
 
-        // 4. Concurrent execution of both legs with 200ms per-leg timeout
-        //    and a 500ms total blast timeout.
+        // 4. Concurrent execution of both legs with per-leg timeout
+        //    and a total blast timeout.
         // On timeout, fire emergency counter-orders to close any partial positions.
-        let total_timeout = std::time::Duration::from_millis(500);
+        let total_timeout = std::time::Duration::from_millis(TOTAL_BLAST_TIMEOUT_MS);
         let total_result: Result<(OrderResult, OrderResult), String> = tokio::time::timeout(
             total_timeout,
             async {
-                let leg_timeout = std::time::Duration::from_millis(200);
+                let leg_timeout = std::time::Duration::from_millis(LEG_TIMEOUT_MS);
                 let (res_a, res_b) = tokio::join!(
                     tokio::time::timeout(leg_timeout, pipeline.execute_order(&leg_a)),
                     tokio::time::timeout(leg_timeout, pipeline.execute_order(&leg_b)),
@@ -979,7 +1043,7 @@ impl HighFrequencyExecutionEngine {
                     tracker.remove(&entry.order_id);
                 }
             });
-            "blast_arbitrage_legs total timeout exceeded 500ms".to_string()
+            format!("blast_arbitrage_legs total timeout exceeded {}ms", TOTAL_BLAST_TIMEOUT_MS)
         })?;
         let total_result = total_result?;
 
@@ -1096,13 +1160,13 @@ impl HighFrequencyExecutionEngine {
             self.apply_slippage_limit(&legs[2]),
         ];
 
-        // 4. Concurrent execution of all three legs with 200ms per-leg timeout
-        //    and a 500ms total blast timeout.
-        let total_timeout = std::time::Duration::from_millis(500);
+        // 4. Concurrent execution of all three legs with per-leg timeout
+        //    and a total blast timeout.
+        let total_timeout = std::time::Duration::from_millis(TOTAL_BLAST_TIMEOUT_MS);
         let total_result: Result<[OrderResult; 3], String> = tokio::time::timeout(
             total_timeout,
             async {
-                let leg_timeout = std::time::Duration::from_millis(200);
+                let leg_timeout = std::time::Duration::from_millis(LEG_TIMEOUT_MS);
                 let (res_0, res_1, res_2) = tokio::join!(
                     tokio::time::timeout(leg_timeout, pipeline.execute_order(&legs[0])),
                     tokio::time::timeout(leg_timeout, pipeline.execute_order(&legs[1])),
@@ -1232,7 +1296,7 @@ impl HighFrequencyExecutionEngine {
                     tracker.remove(&entry.order_id);
                 }
             });
-            "blast_triangular_legs total timeout exceeded 500ms".to_string()
+            format!("blast_triangular_legs total timeout exceeded {}ms", TOTAL_BLAST_TIMEOUT_MS)
         })?;
         let total_result = total_result?;
 
@@ -1303,11 +1367,13 @@ impl HighFrequencyExecutionEngine {
     }
 
     /// Returns `true` when the engine is in paper (sandbox) mode.
+    #[inline(always)]
     pub fn is_paper_mode(&self) -> bool {
         self.is_paper_mode.load(Ordering::Acquire)
     }
 
     /// Returns the cumulative rollback counter (total emergency counter-orders fired).
+    #[inline(always)]
     pub fn get_rollback_count(&self) -> u64 {
         self.rollback_count.load(Ordering::Acquire)
     }
@@ -1321,11 +1387,12 @@ impl HighFrequencyExecutionEngine {
     /// Stored internally as fixed-point (value × 1_000_000).
     /// Example: `Decimal::new(5, 4)` (= 0.0005 = 5 bps) → stored as 500.
     pub fn set_slippage_tolerance(&self, tolerance: Decimal) {
-        let fp = (tolerance * Decimal::from(1_000_000u64)).round().to_u64().unwrap_or(500);
+        let fp = (tolerance * Decimal::from(1_000_000u64)).round().to_u64().unwrap_or(DEFAULT_SLIPPAGE_TOLERANCE_FP);
         self.slippage_tolerance_fp.store(fp.max(1), Ordering::Release);
     }
 
     /// Returns the cumulative slippage-rejection counter.
+    #[inline(always)]
     pub fn get_slippage_reject_count(&self) -> u64 {
         self.slippage_reject_count.load(Ordering::Acquire)
     }
@@ -1370,6 +1437,7 @@ impl HighFrequencyExecutionEngine {
 
     /// Verify slippage on a single leg result.  Returns `Err` if the fill
     /// exceeded the configured maximum slippage tolerance.
+    #[inline]
     fn verify_leg_slippage(&self, intent: &OrderIntent, result: &OrderResult) -> Result<(), String> {
         if !result.success || result.avg_price <= Decimal::ZERO {
             return Ok(()); // nothing to check on failed fills
@@ -1389,6 +1457,7 @@ impl HighFrequencyExecutionEngine {
     }
 
     /// Internal helper: record a single leg outcome to the risk manager.
+    #[inline]
     fn record_leg_outcome(&self, exchange_id: u16, result: &OrderResult) {
         if result.success {
             self.risk_manager.record_exchange_success(exchange_id);
@@ -1443,19 +1512,19 @@ impl HighFrequencyExecutionEngine {
             // during volatile market conditions when the counter-order is most needed.
             price: if original.is_buy {
                 // Counter: SELL — nudge price DOWN 0.5% to accept a worse sell price
-                base_price * (Decimal::new(995, 3)) // 0.995 → -0.5%
+                base_price * COUNTER_SELL_NUDGE
             } else {
                 // Counter: BUY — nudge price UP 0.5% to pay a worse buy price
-                base_price * (Decimal::new(1005, 3)) // 1.005 → +0.5%
+                base_price * COUNTER_BUY_NUDGE
             },
             is_buy: !original.is_buy,
             symbol: original.symbol.clone(),
         };
         // H-3: Counter-orders are emergency unwinds — use a SHORTER timeout
-        // (100ms) than normal orders (200ms) since the system is already in
-        // a bad state and we must not block indefinitely.
+        // than normal orders since the system is already in a bad state
+        // and we must not block indefinitely.
         match tokio::time::timeout(
-            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(COUNTER_ORDER_TIMEOUT_MS),
             pipeline.execute_order(&counter),
         )
         .await
@@ -1480,7 +1549,7 @@ impl HighFrequencyExecutionEngine {
                     exchange = original.exchange_id,
                     symbol = %original.symbol,
                     qty = %fill_qty,
-                    "emergency counter-order TIMED OUT (100ms) — order may not have been placed, manual intervention required"
+                    "emergency counter-order TIMED OUT ({}ms) — order may not have been placed, manual intervention required", COUNTER_ORDER_TIMEOUT_MS
                 );
             }
         }
@@ -1833,8 +1902,8 @@ mod tests {
 /// Slippage guard: verify that the actual fill price did not deviate beyond
 /// the configured maximum slippage tolerance.
 ///
-/// Returns `Ok(())` when the fill is within tolerance, or `Err` with a
-/// descriptive message when slippage exceeds the limit.
+/// Returns `Ok(observed_bps)` when the fill is within tolerance, or `Err`
+/// with a descriptive message when slippage exceeds the limit.
 ///
 /// # Arguments
 /// * `intended_price` – the price at which we wanted to fill (from the signal).
@@ -1848,6 +1917,7 @@ mod tests {
 /// ```
 /// For a buy, slippage = actual - intended (paying more than expected).
 /// For a sell, slippage = intended - actual (receiving less than expected).
+#[inline]
 pub fn check_slippage(
     intended_price: Decimal,
     actual_price: Decimal,
@@ -2199,13 +2269,13 @@ pub fn spawn_order_status_poller(
     tokio::spawn(async move {
         let mut idle_cycles: u64 = 0;
         const IDLE_MULTIPLIER: u64 = 5;
-        let stale_ms = stale_order_secs * 1000;
+        let stale_ms = stale_order_secs.saturating_mul(1000);
 
         loop {
             // Adaptive sleep: poll faster when there are active candidates,
             // slower when idle to reduce unnecessary API calls.
             let sleep_ms = if idle_cycles > 10 {
-                poll_interval_ms * IDLE_MULTIPLIER
+                poll_interval_ms.saturating_mul(IDLE_MULTIPLIER)
             } else {
                 poll_interval_ms
             };

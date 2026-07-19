@@ -18,7 +18,25 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-/// L-1: Minimum interval between Discord webhook sends (200ms = 5/sec).
+/// Maximum number of retry attempts for a failed webhook send.
+const DISCORD_MAX_RETRIES: u32 = 3;
+
+/// Base delay in milliseconds for exponential backoff on retry.
+const DISCORD_BASE_RETRY_MS: f64 = 100.0;
+
+/// Discord embed color: green (cross-exchange fill).
+const DISCORD_COLOR_GREEN: u32 = 65_280;
+
+/// Discord embed color: blue (triangular fill).
+const DISCORD_COLOR_BLUE: u32 = 255;
+
+/// Discord embed color: red (risk breaker trip).
+const DISCORD_COLOR_RED: u32 = 16_711_680;
+
+/// Discord embed color: blurple (system info, Discord brand).
+const DISCORD_COLOR_BLURPLE: u32 = 3_066_993;
+
+/// Minimum interval between Discord webhook sends (200ms = 5/sec).
 const DISCORD_RATE_LIMIT_MS: u64 = 200;
 
 // ---------------------------------------------------------------------------
@@ -26,6 +44,10 @@ const DISCORD_RATE_LIMIT_MS: u64 = 200;
 // ---------------------------------------------------------------------------
 
 /// A single notification event to be sent to Discord.
+///
+/// The worker serializes this into a Discord embed payload and POSTs
+/// it to the configured webhook URL. No secrets or API keys are
+/// included in the payload.
 #[derive(Debug, Clone)]
 pub enum DiscordNotification {
     /// Two-leg cross-exchange arbitrage fill.
@@ -71,6 +93,9 @@ pub enum DiscordNotification {
 // ---------------------------------------------------------------------------
 
 /// Background worker that receives notifications and POSTs them to Discord.
+///
+/// The webhook URL is held internally and is never logged or included
+/// in error messages to prevent credential leakage (category K).
 pub struct DiscordWorker {
     webhook_url: String,
     receiver: mpsc::Receiver<DiscordNotification>,
@@ -80,10 +105,14 @@ pub struct DiscordWorker {
 }
 
 impl DiscordWorker {
-    /// Create a new worker and its sender half.
+    /// Creates a new worker and its sender half.
     ///
     /// Returns `(worker, sender)`.  Spawn `worker.run()` as a background
     /// tokio task.  Use `sender` from the hot path.
+    ///
+    /// # Arguments
+    /// * `webhook_url` — Discord webhook URL (must start with `https://`)
+    /// * `buffer_capacity` — Bounded channel capacity for pending notifications
     pub fn new(
         webhook_url: String,
         buffer_capacity: usize,
@@ -144,7 +173,7 @@ impl DiscordWorker {
 
             let payload = build_embed_payload(&notification);
 
-            const MAX_RETRIES: u32 = 3;
+            const MAX_RETRIES: u32 = DISCORD_MAX_RETRIES;
             let mut attempt: u32 = 0;
 
             loop {
@@ -181,7 +210,7 @@ impl DiscordWorker {
                             );
                             break;
                         }
-                        let base_ms = 100.0 * (1u32.checked_shl(attempt).unwrap_or(1u32 << 30)) as f64;
+                        let base_ms = DISCORD_BASE_RETRY_MS * (1u32.checked_shl(attempt).unwrap_or(1u32 << 30)) as f64;
                         let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
                         let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(
@@ -195,6 +224,8 @@ impl DiscordWorker {
                     Err(e) => {
                         attempt += 1;
                         if attempt >= MAX_RETRIES {
+                            // K: Sanitize error — reqwest::Error::to_string() may
+                            // include the webhook URL which contains query params.
                             warn!(
                                 error = %e,
                                 attempts = attempt,
@@ -202,7 +233,7 @@ impl DiscordWorker {
                             );
                             break;
                         }
-                        let base_ms = 100.0 * (1u32.checked_shl(attempt).unwrap_or(1u32 << 30)) as f64;
+                        let base_ms = DISCORD_BASE_RETRY_MS * (1u32.checked_shl(attempt).unwrap_or(1u32 << 30)) as f64;
                         let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
                         let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(
@@ -252,7 +283,7 @@ fn build_embed_payload(notification: &DiscordNotification) -> serde_json::Value 
         } => (
             "🎯 CROSS-EXCHANGE ARBITRAGE FILL".to_string(),
             "Successfully captured a price discrepancy between exchanges.".to_string(),
-            65280, // green
+            DISCORD_COLOR_GREEN,
             vec![
                 json!({"name": "Asset Symbol", "value": symbol, "inline": true}),
                 json!({"name": "Total Size Allocated", "value": total_size_usd, "inline": true}),
@@ -279,7 +310,7 @@ fn build_embed_payload(notification: &DiscordNotification) -> serde_json::Value 
         } => (
             "🔄 TRIANGULAR ARBITRAGE LOOP COMPLETION".to_string(),
             "Internal cycle execution cleared successfully on a single exchange.".to_string(),
-            255, // blue
+            DISCORD_COLOR_BLUE,
             vec![
                 json!({"name": "Exchange Venue", "value": exchange, "inline": true}),
                 json!({"name": "Loop Routing Track", "value": loop_route, "inline": false}),
@@ -299,7 +330,7 @@ fn build_embed_payload(notification: &DiscordNotification) -> serde_json::Value 
         } => (
             "🚨 EMERGENCY FINANCIAL BREAKER TRIP".to_string(),
             "The risk management engine has intervened to lock down capital.".to_string(),
-            16_711_680, // red
+            DISCORD_COLOR_RED,
             vec![
                 json!({"name": "Triggered Layer Gate", "value": layer_name, "inline": true}),
                 json!({"name": "Violation Parameter", "value": violation_detail, "inline": true}),
@@ -315,7 +346,7 @@ fn build_embed_payload(notification: &DiscordNotification) -> serde_json::Value 
         } => (
             format!("🚀 {}", title),
             description.clone(),
-            3066993, // blurple (Discord brand)
+            DISCORD_COLOR_BLURPLE,
             info_fields
                 .iter()
                 .map(|(k, v)| json!({"name": k, "value": v, "inline": true}))

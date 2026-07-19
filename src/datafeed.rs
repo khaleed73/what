@@ -9,6 +9,14 @@ use serde_json;
 use rand::Rng;
 use tracing::{error, info, warn};
 
+/// H-1: Maximum allowed WebSocket message size (64 KiB).
+/// Messages larger than this are dropped to prevent OOM from malicious/buggy servers.
+const WS_MAX_MESSAGE_SIZE: usize = 65_536;
+
+/// H-2: Connect timeout in seconds. Prevents hung DNS/TCP/TLS from blocking
+/// the feed worker indefinitely.
+const WS_CONNECT_TIMEOUT_SECS: u64 = 10;
+
 // ---------------------------------------------------------------------------
 // Zero-allocation hot-path parser
 // ---------------------------------------------------------------------------
@@ -201,9 +209,15 @@ fn parse_u64_skip_dot(bytes: &[u8], pos: usize) -> Option<(u64, usize)> {
 // WebSocket listener
 // ---------------------------------------------------------------------------
 
+/// Low-latency WebSocket listener that streams ticker price updates into
+/// the shared `MarketArena`. Handles exponential backoff reconnection and
+/// dynamic symbol list updates via a watch channel.
 pub struct LowLatencyWsListener {
+    /// Exchange identifier (0–16).
     pub exchange_id: u16,
+    /// WebSocket URL for this exchange's ticker stream.
     pub wss_url: String,
+    /// Shared price matrix updated on every parsed message.
     pub arena: Arc<MarketArena>,
     /// Receives updated symbol lists from the coin finder.
     /// The WS listener re-subscribes with the latest symbols on reconnect.
@@ -215,6 +229,7 @@ pub struct LowLatencyWsListener {
 }
 
 impl LowLatencyWsListener {
+    /// Creates a new listener for the given exchange.
     pub fn new(
         exchange_id: u16,
         wss_url: String,
@@ -230,16 +245,14 @@ impl LowLatencyWsListener {
         }
     }
 
-    /// Set the heartbeat handle.  Call this after construction to enable
-    /// rebalancer liveness tracking for this exchange's feed worker.
+    /// Enables rebalancer liveness tracking. Call after construction.
     pub fn with_heartbeat(mut self, handle: ExchangeHeartbeatHandle) -> Self {
         self.heartbeat = Some(handle);
         self
     }
 
     /// Connects to the WebSocket endpoint and streams price updates into the
-    /// shared `MarketArena`.  On error the connection is re-established after
-    /// an exponential back-off (1s, 2s, 4s, …, capped at 30s).
+    /// shared `MarketArena`.  Reconnects with exponential back-off on failure.
     /// A close frame terminates the loop.
     pub async fn start_streaming(&self) {
         let ex = self.exchange_id;
@@ -254,9 +267,9 @@ impl LowLatencyWsListener {
         const MAX_CONSECUTIVE_FAILURES: u32 = 50; // ~16 min of retries at cap
 
         loop {
-            // Wrap connect in a 10-second timeout to prevent hung DNS/TCP/TLS.
+            // H-2: Wrap connect in a timeout to prevent hung DNS/TCP/TLS.
             let connect_result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(WS_CONNECT_TIMEOUT_SECS),
                 connect_async(&self.wss_url),
             ).await;
 
@@ -285,9 +298,9 @@ impl LowLatencyWsListener {
                     while let Some(msg) = read.next().await {
                         match msg {
                             Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                                // Reject oversized messages to prevent OOM from
+                                // H-1: Reject oversized messages to prevent OOM from
                                 // a malicious or buggy server.
-                                if text.len() > 65_536 {
+                                if text.len() > WS_MAX_MESSAGE_SIZE {
                                     warn!(
                                         exchange_id = ex,
                                         msg_len = text.len(),

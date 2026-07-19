@@ -13,6 +13,13 @@ use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+/// Maximum number of exchanges supported by the u64 bitmask system.
+const MAX_EXCHANGES: usize = 64;
+/// Minimum length for a valid blockchain deposit address (after "0x" prefix).
+const MIN_DEPOSIT_ADDR_LEN: usize = 10;
+/// Maximum length for a blockchain deposit address.
+const MAX_DEPOSIT_ADDR_LEN: usize = 44;
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Raw (TOML-mirroring) structs — parsed directly via serde::Deserialize
 // ═══════════════════════════════════════════════════════════════════════════
@@ -42,32 +49,47 @@ pub struct RawConfig {
 
 // ── Leaf sections ────────────────────────────────────────────────────────
 
+/// VPS deployment settings (CPU pinning, network tuning).
 #[derive(Debug, Deserialize, Clone)]
 pub struct VpsSettings {
+    /// CPU core index to pin the trading thread to (0-based).
     pub pinned_cpu_core: usize,
+    /// Network interface listen backlog (e.g. `somaxconn`).
     pub network_interface_backlog: u32,
 }
 
+/// Discord webhook notification settings.
 #[derive(Debug, Deserialize, Clone)]
 pub struct DiscordConfig {
+    /// Discord webhook URL for trade alerts.
     pub webhook_url: String,
+    /// Maximum number of notifications buffered before flushing.
     pub buffer_capacity: usize,
 }
 
 // ── Strategies ───────────────────────────────────────────────────────────
 
+/// Raw strategy configuration as parsed from TOML.
 #[derive(Debug, Deserialize)]
 pub struct RawStrategies {
+    /// Cross-exchange arbitrage strategy settings.
     pub cross_exchange: RawCrossExchangeConfig,
+    /// Triangular arbitrage strategy settings.
     pub triangular: RawTriangularConfig,
 }
 
+/// Raw cross-exchange strategy config (numeric fields as strings).
 #[derive(Debug, Deserialize)]
 pub struct RawCrossExchangeConfig {
+    /// Whether this strategy is active.
     pub enabled: bool,
+    /// Minimum spread percentage (as a decimal string, e.g. "0.001").
     pub min_spread_pct: String,
+    /// Maximum allowed round-trip latency in milliseconds.
     pub max_target_latency_ms: u64,
+    /// Minimum L2 order book liquidity in USD required for signal emission.
     pub min_l2_liquidity_usd: String,
+    /// Maximum slippage tolerance as a fraction (e.g. "0.0005").
     pub max_slippage_tolerance: String,
     /// Optional allowlist of exchange IDs for this strategy.
     /// When present, only signals involving these exchanges are emitted.
@@ -76,12 +98,18 @@ pub struct RawCrossExchangeConfig {
     pub exchanges: Option<Vec<u16>>,
 }
 
+/// Raw triangular arbitrage config (numeric fields as strings).
 #[derive(Debug, Deserialize)]
 pub struct RawTriangularConfig {
+    /// Whether this strategy is active.
     pub enabled: bool,
+    /// Minimum loop profit percentage (decimal string).
     pub min_loop_profit_pct: String,
+    /// Maximum path length in hops (must be >= 3).
     pub max_path_length: u32,
+    /// Minimum 24h trading volume for a pair (decimal string, USD).
     pub min_pair_volume_24h: String,
+    /// Quote currency anchors for loop discovery (e.g. ["USDT", "USDC"]).
     pub quote_anchors: Vec<String>,
     /// Optional allowlist of exchange IDs for this strategy.
     /// When present, only signals on these exchanges are emitted.
@@ -92,32 +120,51 @@ pub struct RawTriangularConfig {
 
 // ── Exchanges (dynamic `[exchanges.<name>]`) ────────────────────────────
 
+/// Raw per-exchange configuration as parsed from TOML.
 #[derive(Debug, Deserialize, Clone)]
 pub struct RawExchangeConfig {
+    /// Numeric exchange identifier (used as HashMap key in validated config).
     pub id: u16,
+    /// Exchange name (must match the TOML section key).
     pub name: String,
+    /// API key for authenticated endpoints.
     pub api_key: String,
+    /// API secret for request signing.
     pub api_secret: String,
-    /// Not every exchange requires a passphrase (e.g. OKX does, Binance does not).
+    /// Optional passphrase (required by OKX, KuCoin, Bitget).
     #[serde(default)]
     pub passphrase: Option<String>,
+    /// WebSocket URL for real-time market data.
     pub wss_url: String,
+    /// REST API base URL.
     pub rest_url: String,
 }
 
 // ── Risk limits ──────────────────────────────────────────────────────────
 
+/// Raw risk limits configuration (numeric fields as strings).
 #[derive(Debug, Deserialize)]
 pub struct RawRiskLimits {
+    /// Minimum net profit percentage required to execute a trade.
     pub min_net_profit_pct: String,
+    /// Maximum seconds without an equity update before halting.
     pub max_equity_staleness_seconds: i64,
+    /// Absolute hard loss cap in USD.
     pub absolute_hard_loss_cap: String,
+    /// Percentage hard loss cap (fraction, e.g. "0.02" = 2%).
     pub pct_hard_loss_cap: String,
+    /// Maximum drawdown percentage before halting.
     pub max_drawdown_pct: String,
+    /// Maximum total exposure as a fraction of equity.
     pub max_total_exposure_pct: String,
+    /// Maximum single-position size as a fraction of equity.
     pub max_single_position_pct: String,
+    /// Consecutive failures before pausing an exchange.
     pub exchange_failure_threshold: u32,
+    /// Seconds to pause an exchange after reaching the failure threshold.
     pub exchange_pause_duration_seconds: i64,
+    /// Stablecoin depeg threshold (decimal string).
+    #[serde(default = "default_stablecoin_depeg_threshold")]
     pub stablecoin_depeg_threshold: String,
     /// Maximum daily loss in USD (as a string decimal, e.g. "100.00").
     /// The execution engine halts trading for the rest of the UTC day once
@@ -163,12 +210,18 @@ pub struct RawFrictionProtections {
     pub exchange_taker_fees: HashMap<String, u64>,
 }
 
+/// Default gas/network fee in USD for inter-exchange transfers.
 fn default_gas_fee() -> String { "2.00".to_string() }
+/// Default value for boolean fields that default to true.
 fn default_true() -> bool { true }
+/// Default taker fee as a fraction (10 bps = 0.001).
 fn default_taker_fee() -> String { "0.0010".to_string() }
+/// Default daily loss limit in USD.
 fn default_daily_loss_limit() -> String { "100.00".to_string() }
+fn default_stablecoin_depeg_threshold() -> String { "0.02".to_string() }
 
 impl Default for RawFrictionProtections {
+    /// Returns defaults: $2.00 gas fee, fee-aware enabled, 10 bps taker fee.
     fn default() -> Self {
         Self {
             transfer_gas_fee_usd: default_gas_fee(),
@@ -183,6 +236,9 @@ impl Default for StablecoinConfig {
     /// Sensible defaults consumed by the depeg module when `[stablecoin]`
     /// is omitted from `config.toml`.
     fn default() -> Self {
+        // Default depeg threshold: 0.998 (0.2% depeg)
+        // Default USDT max allocation: 80%
+        // Default USDC min allocation: 20%
         Self {
             depeg_threshold: 0.998,
             usdt_max_pct: 0.80,
@@ -202,15 +258,25 @@ impl Default for StablecoinConfig {
 /// or reference it directly.
 #[derive(Debug, Clone)]
 pub struct ValidatedRiskConfig {
+    /// Minimum net profit percentage required to execute a trade.
     pub min_net_profit_pct: Decimal,
+    /// Maximum seconds without an equity update before halting.
     pub max_equity_staleness_seconds: i64,
+    /// Absolute hard loss cap in USD.
     pub absolute_hard_loss_cap: Decimal,
+    /// Percentage hard loss cap (fraction).
     pub pct_hard_loss_cap: Decimal,
+    /// Maximum drawdown percentage before halting.
     pub max_drawdown_pct: Decimal,
+    /// Maximum total exposure as a fraction of equity.
     pub max_total_exposure_pct: Decimal,
+    /// Maximum single-position size as a fraction of equity.
     pub max_single_position_pct: Decimal,
+    /// Consecutive failures before pausing an exchange.
     pub exchange_failure_threshold: u32,
+    /// Seconds to pause an exchange after reaching the failure threshold.
     pub exchange_pause_duration_seconds: i64,
+    /// Stablecoin depeg threshold.
     pub stablecoin_depeg_threshold: Decimal,
     /// Maximum daily loss in USD.  The execution engine converts this to
     /// cents at boot and halts trading once the daily loss counter reaches
@@ -324,6 +390,7 @@ pub struct EngineConfig {
 // ── Validation helpers ───────────────────────────────────────────────────
 
 /// Parse a `&str` into a `Decimal`, annotating the field name on failure.
+#[inline]
 fn parse_decimal(s: &str, field: &str) -> Result<Decimal, Box<dyn std::error::Error>> {
     Decimal::from_str(s).map_err(|e| {
         format!(
@@ -335,6 +402,7 @@ fn parse_decimal(s: &str, field: &str) -> Result<Decimal, Box<dyn std::error::Er
 }
 
 /// Assert that a percentage value lies in [0, 1].
+#[inline]
 fn validate_pct_range(value: Decimal, field: &str) -> Result<(), Box<dyn std::error::Error>> {
     if value < Decimal::ZERO || value > Decimal::ONE {
         return Err(format!(
@@ -347,6 +415,7 @@ fn validate_pct_range(value: Decimal, field: &str) -> Result<(), Box<dyn std::er
 }
 
 /// Assert that a value is strictly positive (> 0).
+#[inline]
 fn validate_positive(value: Decimal, field: &str) -> Result<(), Box<dyn std::error::Error>> {
     if value <= Decimal::ZERO {
         return Err(format!(
@@ -359,6 +428,7 @@ fn validate_positive(value: Decimal, field: &str) -> Result<(), Box<dyn std::err
 }
 
 /// Convert an `f64` to `Decimal`, preserving the float's bit representation.
+#[inline]
 fn f64_to_decimal(val: f64, field: &str) -> Result<Decimal, Box<dyn std::error::Error>> {
     Decimal::from_f64(val).ok_or_else(|| {
         format!(
@@ -372,6 +442,7 @@ fn f64_to_decimal(val: f64, field: &str) -> Result<Decimal, Box<dyn std::error::
 
 /// Assert that a percentage value is strictly positive (> 0, <= 1).
 /// Used for profit minimums and loss caps where 0 would be financially dangerous.
+#[inline]
 fn validate_strictly_positive_pct(value: Decimal, field: &str) -> Result<(), Box<dyn std::error::Error>> {
     if value <= Decimal::ZERO || value > Decimal::ONE {
         return Err(format!(
@@ -383,6 +454,7 @@ fn validate_strictly_positive_pct(value: Decimal, field: &str) -> Result<(), Box
     Ok(())
 }
 /// Validate that an `i64` is strictly positive (> 0).
+#[inline]
 fn validate_positive_i64(value: i64, field: &str) -> Result<(), Box<dyn std::error::Error>> {
     if value <= 0 {
         return Err(format!(
@@ -399,12 +471,14 @@ fn validate_positive_i64(value: i64, field: &str) -> Result<(), Box<dyn std::err
 /// Check an environment variable and return `Some(value)` if it is set and
 /// non-empty.  Returns `None` when the variable is absent or blank, so
 /// callers can use `.unwrap_or(config_value)` to fall back to TOML.
+#[inline]
 fn env_override(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
 /// Convert an exchange name (e.g. "KuCoin", "GateIO") into the uppercase
 /// env-var prefix used for secret overrides (e.g. "KUCOIN", "GATEIO").
+#[inline]
 fn exchange_env_prefix(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric())
@@ -427,8 +501,10 @@ impl EngineConfig {
         // of the TOML config.  Silently ignore if the file is missing.
         dotenvy::dotenv().ok();
 
-        let contents = fs::read_to_string(&path)?;
-        let raw: RawConfig = toml::from_str(&contents)?;
+        let contents = fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read config file '{}': {}", path.as_ref().display(), e))?;
+        let raw: RawConfig = toml::from_str(&contents)
+            .map_err(|e| format!("failed to parse TOML from '{}': {}", path.as_ref().display(), e))?;
 
         // ── Strategies ───────────────────────────────────────────────────
 
@@ -620,9 +696,9 @@ impl EngineConfig {
         // bitmask limit (64 exchanges).  The bitmask system used in
         // strategies.rs and market_arena.rs can represent at most 64 exchanges
         // (bits 0..63).  Exceeding this would cause silent bitmask overflow.
-        if exchanges.len() > 64 {
+        if exchanges.len() > MAX_EXCHANGES {
             return Err(
-                "FATAL: More than 64 exchanges configured. The u64 bitmask system supports at most 64 exchanges.".to_string()
+                format!("FATAL: More than {} exchanges configured. The u64 bitmask system supports at most {} exchanges.", MAX_EXCHANGES, MAX_EXCHANGES)
                     .into(),
             );
         }
@@ -721,7 +797,7 @@ impl EngineConfig {
             if addr.is_empty() {
                 continue; // empty is ok, means not configured
             }
-            if !addr.starts_with("0x") || addr.len() < 10 {
+            if !addr.starts_with("0x") || addr.len() < MIN_DEPOSIT_ADDR_LEN {
                 return Err(format!(
                     "deposit_addresses.{} = \"{}\" is not a valid blockchain address (must start with 0x, min 10 chars)",
                     key, addr
@@ -745,13 +821,18 @@ impl EngineConfig {
                     key, addr
                 ).into());
             }
-            if addr.len() > 44 {
+            if addr.len() > MAX_DEPOSIT_ADDR_LEN {
                 return Err(format!(
-                    "deposit_addresses.{} = \"{}\" is too long (>44 chars)",
-                    key, addr
+                    "deposit_addresses.{} = \"{}\" is too long (>{} chars)",
+                    key, addr, MAX_DEPOSIT_ADDR_LEN
                 ).into());
             }
         }
+
+        tracing::info!(
+            exchanges = exchanges.len(),
+            "Config loaded and validated successfully"
+        );
 
         Ok(Self {
             force_live_mode: raw.force_live_mode,

@@ -417,12 +417,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut blocked = 0usize;
 
     for sig in &all_signals {
+        let t0 = Instant::now();
         let (pbps, eid) = match sig {
             ArbitrageSignal::CrossExchange { spread_bps, buy_exchange, .. } => (*spread_bps, *buy_exchange),
             ArbitrageSignal::Triangular { profit_bps, exchange_id, .. } => (*profit_bps, *exchange_id),
+            _ => (0, 0),
         };
-
-        let t0 = Instant::now();
         match risk_manager.pre_trade_check(pbps, 1_000_000, 10_000_000_000, eid) {
             Ok(()) => {
                 let us = t0.elapsed().as_micros();
@@ -503,6 +503,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = engine.blast_triangular_legs(legs, *profit_bps, 10_000_000_000).await;
                 tri_exec_us.push(t0.elapsed().as_micros());
             }
+            _ => {}
         }
     }
 
@@ -563,6 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (pbps, eid) = match sig {
                 ArbitrageSignal::CrossExchange { spread_bps, buy_exchange, .. } => (*spread_bps, *buy_exchange),
                 ArbitrageSignal::Triangular { profit_bps, exchange_id, .. } => (*profit_bps, *exchange_id),
+                _ => (0, 0),
             };
             let _ = risk_manager.pre_trade_check(pbps, 1_000_000, 10_000_000_000, eid);
         }

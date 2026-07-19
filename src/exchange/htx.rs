@@ -27,7 +27,7 @@ pub struct HtxClient {
 
 impl HtxClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,

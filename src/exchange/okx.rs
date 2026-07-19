@@ -14,7 +14,12 @@ use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
 
-/// OKX exchange client with rate limiting.
+/// Default HTTP timeout in seconds when not configured.
+    const DEFAULT_TIMEOUT_SECS: u64 = 30;
+    /// OKX rate limit in requests per second.
+    const OKX_RATE_LIMIT: u64 = 100;
+
+/// OKX client with rate limiting.
 pub struct OkxClient {
     name: String,
     config: ExchangeConfig,
@@ -43,13 +48,13 @@ impl OkxClient {
                 name
             );
         }
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
             config,
             http,
-            rate_limiter: RateLimiter::new(100),
+            rate_limiter: RateLimiter::new(OKX_RATE_LIMIT),
         })
     }
 
@@ -112,6 +117,7 @@ impl OkxClient {
     /// Parse the OKX order response into an OrderResponse, fetching fill
     /// data from fetch_order_status when the create response has none.
     /// Normalize OKX order state to uppercase standard form.
+    #[inline]
     fn normalize_okx_state(state: &str) -> String {
         match state.to_lowercase().as_str() {
             "live" => "NEW".to_string(),

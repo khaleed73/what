@@ -27,7 +27,7 @@ pub struct BitgetClient {
 
 impl BitgetClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
 
         // B8 FIX: Bitget V2 requires passphrase to be HMAC-SHA256 encrypted
@@ -63,9 +63,10 @@ impl BitgetClient {
         }
     }
 
-    /// Build the Bitget spot symbol format (e.g. "BTCUSDT").
-    /// Note: V2 public market endpoints use plain symbols without suffix.
-    fn bitget_symbol(symbol: &str) -> String {
+/// Build the Bitget spot symbol format (e.g. "BTCUSDT").
+/// Note: V2 public market endpoints use plain symbols without suffix.
+#[inline]
+fn bitget_symbol(symbol: &str) -> String {
         symbol.replace('/', "").to_uppercase()
     }
 

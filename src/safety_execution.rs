@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Maximum deviation from best bid/ask before rejection (0.5 %).
+const MAX_SLIPPAGE_THRESHOLD: Decimal = dec!(0.005);
+
+/// Client order ID hash modulo mask (32-bit).
+const ORDER_ID_HASH_MASK: u64 = 0xFFFFFFFF;
+
 // H-3 fix: Monotonic counter to prevent client order ID collisions.
 static ORDER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -97,31 +103,63 @@ impl SafetyExecutionEngine {
     ) -> Result<SafeOrderPayload, String> {
         // Guard 1: Price must be positive
         if price <= Decimal::ZERO {
-            return Err("Price must be positive and non-zero".to_string());
+            tracing::warn!(
+                symbol = symbol,
+                exchange_id = exchange_id,
+                "build_safe_order rejected: price must be positive"
+            );
+            return Err(format!(
+                "symbol={}, exchange={}: price must be positive and non-zero",
+                symbol, exchange_id
+            ));
         }
 
         // Guard 2: Quantity must be positive
         if quantity <= Decimal::ZERO {
-            return Err("Quantity must be positive and non-zero".to_string());
+            tracing::warn!(
+                symbol = symbol,
+                exchange_id = exchange_id,
+                "build_safe_order rejected: quantity must be positive"
+            );
+            return Err(format!(
+                "symbol={}, exchange={}: quantity must be positive and non-zero",
+                symbol, exchange_id
+            ));
         }
 
         // Guard 3: Validate side
         let side_upper = side.to_uppercase();
         if side_upper != "BUY" && side_upper != "SELL" {
-            return Err(format!("Invalid side: {}. Must be BUY or SELL", side));
+            tracing::warn!(
+                symbol = symbol,
+                exchange_id = exchange_id,
+                side = %side,
+                "build_safe_order rejected: invalid side"
+            );
+            return Err(format!(
+                "symbol={}, exchange={}: invalid side '{}'. Must be BUY or SELL",
+                symbol, exchange_id, side
+            ));
         }
 
         // Guard 4: Slippage validation against current order book
-        let max_slippage = dec!(0.005); // 0.5% maximum deviation
         match side_upper.as_str() {
             "BUY" => {
                 if let Some(ask) = best_ask {
                     if ask > Decimal::ZERO {
                         let deviation = (price - ask) / ask;
-                        if deviation > max_slippage {
+                        if deviation > MAX_SLIPPAGE_THRESHOLD {
+                            tracing::warn!(
+                                symbol = symbol,
+                                exchange_id = exchange_id,
+                                price = %price,
+                                best_ask = %ask,
+                                deviation_pct = %deviation * dec!(100.0),
+                                "build_safe_order rejected: buy price exceeds slippage threshold"
+                            );
                             return Err(format!(
-                                "Buy price {} exceeds best ask {} by {:.4}% (max {}%)",
-                                price, ask, deviation * dec!(100.0), max_slippage * dec!(100.0)
+                                "symbol={}, exchange={}: buy price {} exceeds best ask {} by {:.4}% (max {:.4}%)",
+                                symbol, exchange_id, price, ask, deviation * dec!(100.0), MAX_SLIPPAGE_THRESHOLD * dec!(100.0)
                             ));
                         }
                     }
@@ -131,10 +169,18 @@ impl SafetyExecutionEngine {
                 if let Some(bid) = best_bid {
                     if bid > Decimal::ZERO {
                         let deviation = (bid - price) / bid;
-                        if deviation > max_slippage {
+                        if deviation > MAX_SLIPPAGE_THRESHOLD {
+                            tracing::warn!(
+                                symbol = symbol,
+                                exchange_id = exchange_id,
+                                price = %price,
+                                best_bid = %bid,
+                                deviation_pct = %deviation * dec!(100.0),
+                                "build_safe_order rejected: sell price below slippage threshold"
+                            );
                             return Err(format!(
-                                "Sell price {} below best bid {} by {:.4}% (max {}%)",
-                                price, bid, deviation * dec!(100.0), max_slippage * dec!(100.0)
+                                "symbol={}, exchange={}: sell price {} below best bid {} by {:.4}% (max {:.4}%)",
+                                symbol, exchange_id, price, bid, deviation * dec!(100.0), MAX_SLIPPAGE_THRESHOLD * dec!(100.0)
                             ));
                         }
                     }
@@ -145,7 +191,14 @@ impl SafetyExecutionEngine {
 
         // Guard 5: Symbol must be non-empty
         if symbol.is_empty() {
-            return Err("Symbol must not be empty".to_string());
+            tracing::warn!(
+                exchange_id = exchange_id,
+                "build_safe_order rejected: symbol must not be empty"
+            );
+            return Err(format!(
+                "exchange={}: symbol must not be empty",
+                exchange_id
+            ));
         }
 
         let tif = match order_type {
@@ -163,7 +216,7 @@ impl SafetyExecutionEngine {
                 0
             });
 
-        let price_hash = (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(1) % 0xFFFFFFFF;
+        let price_hash = (price * dec!(1000000)).to_string().replace(".", "").parse::<u64>().unwrap_or(1) % ORDER_ID_HASH_MASK;
         // H-3 fix: Add monotonic counter to prevent collisions within same ms.
         let seq = ORDER_COUNTER.fetch_add(1, Ordering::Release);
         let client_order_id = if timestamp_ms == 0 && price_hash == 0 {
@@ -191,21 +244,37 @@ impl SafetyExecutionEngine {
     ///   1. The fill price is within acceptable slippage of the intended price
     ///   2. The filled quantity is not zero
     ///   3. For FOK orders, the order was either fully filled or fully cancelled
+    #[inline]
     pub fn validate_execution_result(
         payload: &SafeOrderPayload,
         result: &SafeExecutionResult,
         max_slippage_bps: u64,
     ) -> Result<(), String> {
         if !result.success {
+            tracing::warn!(
+                symbol = %payload.symbol,
+                exchange_id = payload.exchange_id,
+                error = ?result.error_message,
+                "validate_execution_result: order failed"
+            );
             return Err(format!(
-                "Order failed: {}",
+                "symbol={}, exchange={}: order failed: {}",
+                payload.symbol, payload.exchange_id,
                 result.error_message.as_deref().unwrap_or("unknown error")
             ));
         }
 
         // Check filled quantity
         if result.filled_quantity <= Decimal::ZERO {
-            return Err("Order returned success but filled quantity is zero".to_string());
+            tracing::warn!(
+                symbol = %payload.symbol,
+                exchange_id = payload.exchange_id,
+                "validate_execution_result: success but zero filled quantity"
+            );
+            return Err(format!(
+                "symbol={}, exchange={}: order returned success but filled quantity is zero",
+                payload.symbol, payload.exchange_id
+            ));
         }
 
         // Check slippage
@@ -214,16 +283,31 @@ impl SafetyExecutionEngine {
             let slippage_bps = (price_diff / payload.price) * dec!(10000.0);
             let max_allowed = Decimal::from(max_slippage_bps);
             if slippage_bps > max_allowed {
+                tracing::warn!(
+                    symbol = %payload.symbol,
+                    exchange_id = payload.exchange_id,
+                    slippage_bps = %slippage_bps,
+                    max_allowed = %max_allowed,
+                    "validate_execution_result: slippage exceeds maximum"
+                );
                 return Err(format!(
-                    "Slippage {} bps exceeds maximum allowed {} bps",
-                    slippage_bps, max_slippage_bps
+                    "symbol={}, exchange={}: slippage {} bps exceeds maximum allowed {} bps",
+                    payload.symbol, payload.exchange_id, slippage_bps, max_slippage_bps
                 ));
             }
         }
 
         // For FOK orders, verify full fill
         if payload.order_type == SafeOrderType::Fok && !result.was_fully_filled {
-            return Err("FOK order was not fully filled".to_string());
+            tracing::warn!(
+                symbol = %payload.symbol,
+                exchange_id = payload.exchange_id,
+                "validate_execution_result: FOK order was not fully filled"
+            );
+            return Err(format!(
+                "symbol={}, exchange={}: FOK order was not fully filled",
+                payload.symbol, payload.exchange_id
+            ));
         }
 
         Ok(())
@@ -235,6 +319,7 @@ impl SafetyExecutionEngine {
     /// `filled_quantity_override` — if `Some(q)`, use the actual filled quantity
     /// instead of `original.quantity`.  This prevents reversing more than was
     /// actually filled on partial IOC fills.
+    #[inline]
     pub fn build_counter_order(
         original: &SafeOrderPayload,
         adverse_nudge_bps: u64,
@@ -259,12 +344,12 @@ impl SafetyExecutionEngine {
         let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 tracing::error!("safety_execution: system clock before UNIX epoch — counter-order will use timestamp 0");
                 0
             });
 
-        SafeOrderPayload {
+        let counter_order = SafeOrderPayload {
             symbol: original.symbol.clone(),
             side: counter_side.to_string(),
             order_type: SafeOrderType::Ioc, // Always IOC for emergency unwinds
@@ -275,7 +360,18 @@ impl SafetyExecutionEngine {
             client_order_id: format!("COUNTER-{}-{}-{}", original.exchange_id, timestamp_ms, ORDER_COUNTER.fetch_add(1, Ordering::Release)),
             timestamp_ms,
             exchange_id: original.exchange_id,
-        }
+        };
+
+        tracing::info!(
+            exchange_id = original.exchange_id,
+            symbol = %original.symbol,
+            counter_side = %counter_side,
+            qty = %counter_qty,
+            price = %counter_price,
+            "counter-order built for emergency unwind"
+        );
+
+        counter_order
     }
 }
 

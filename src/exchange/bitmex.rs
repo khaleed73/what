@@ -24,7 +24,7 @@ pub struct BitmexClient {
 
 impl BitmexClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
@@ -93,10 +93,13 @@ impl BitmexClient {
         body
     }
 
+    /// BitMEX order signature expires (seconds from now). Must be > current time.
+    const BITMEX_ORDER_EXPIRES_SECS: i64 = 300;
+
     /// Send a signed POST order request to BitMEX.
     async fn send_bitmex_order(&self, body: serde_json::Value) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 300;
+        let expires = chrono::Utc::now().timestamp() as u64 + Self::BITMEX_ORDER_EXPIRES_SECS as u64;
         let body_str = body.to_string();
         let (api_key, expires_str, sign) =
             self.build_signed_headers("POST", "/api/v1/order", expires, &body_str)?;
@@ -241,7 +244,7 @@ impl Exchange for BitmexClient {
 
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 300;
+        let expires = chrono::Utc::now().timestamp() as u64 + Self::BITMEX_ORDER_EXPIRES_SECS as u64;
         let body = serde_json::json!({ "orderID": order_id });
         let body_str = body.to_string();
         let (api_key, expires_str, sign) =
@@ -289,7 +292,7 @@ impl Exchange for BitmexClient {
 
     async fn fetch_balance(&self) -> Result<HashMap<String, Decimal>> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 300;
+        let expires = chrono::Utc::now().timestamp() as u64 + Self::BITMEX_ORDER_EXPIRES_SECS as u64;
         let sign = sign_bitmex(
             self.config.api_secret.expose(),
             "GET",
@@ -339,7 +342,7 @@ impl Exchange for BitmexClient {
 
     async fn fetch_order_status(&self, _symbol: &str, order_id: &str) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 300;
+        let expires = chrono::Utc::now().timestamp() as u64 + Self::BITMEX_ORDER_EXPIRES_SECS as u64;
         let path = format!("/api/v1/order?filter={{\"orderID\":\"{}\"}}", order_id);
         let sign = sign_bitmex(self.config.api_secret.expose(), "GET", &path, expires, "")?;
         let url = format!(
@@ -408,7 +411,7 @@ impl Exchange for BitmexClient {
         let mut results = Vec::new();
         for symbol in symbols {
             let bitmex_symbol = symbol.replace('/', "").to_uppercase();
-            let expires = chrono::Utc::now().timestamp() as u64 + 300;
+            let expires = chrono::Utc::now().timestamp() as u64 + Self::BITMEX_ORDER_EXPIRES_SECS as u64;
             let query = format!("symbol={}", bitmex_symbol);
             let path = format!("/api/v1/order/all?{}", query);
             let (api_key, expires_str, sign) =

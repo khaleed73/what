@@ -153,6 +153,7 @@ impl RingBufferLogger {
     }
 
     /// Returns the number of unread entries.
+    #[inline]
     pub fn unread_count(&self) -> usize {
         let write = self.write_seq.load(Ordering::Acquire);
         let read = self.read_seq.load(Ordering::Acquire);
@@ -160,11 +161,13 @@ impl RingBufferLogger {
     }
 
     /// Returns the total number of entries ever pushed (including overwritten).
+    #[inline]
     pub fn total_pushed(&self) -> u64 {
         self.write_seq.load(Ordering::Acquire)
     }
 
     /// Returns the total number of entries ever popped.
+    #[inline]
     pub fn total_popped(&self) -> u64 {
         self.read_seq.load(Ordering::Acquire)
     }
@@ -237,13 +240,20 @@ impl Drop for RingBufferLogger {
 /// Shared market frame — a compact, atomic snapshot of market state for logging.
 pub const MAX_SYMBOL_LEN: usize = 32;
 
+/// A compact snapshot of market state for external consumption.
 #[derive(Debug, Clone)]
 pub struct SharedMarketFrame {
+    /// Monotonically increasing sequence ID.
     pub sequence_id: u64,
+    /// Traded symbol (e.g. "BTCUSDT").
     pub symbol: String,
+    /// Best bid price.
     pub best_bid: Decimal,
+    /// Best ask price.
     pub best_ask: Decimal,
+    /// Timestamp in milliseconds since epoch.
     pub timestamp_ms: u64,
+    /// Exchange ID where this frame originated.
     pub exchange_id: u16,
 }
 

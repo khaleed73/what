@@ -1381,7 +1381,7 @@ impl CoinFinder {
 
         loop {
             ticker.tick().await;
-            cycle += 1;
+            cycle = cycle.saturating_add(1);
 
             let (new_tokens, total_pairs) = self.scan_cycle().await;
 

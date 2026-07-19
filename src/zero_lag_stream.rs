@@ -7,26 +7,46 @@
 //!   3. Uses minimal-allocation JSON parsing for depth updates
 //!   4. Tracks connection health metrics
 
+/// H-6: Minimum reconnect delay in milliseconds (floor after jitter).
+const MIN_RECONNECT_DELAY_MS: f64 = 100.0;
+
+/// H-7: Jitter fraction (±10% of the computed delay).
+const JITTER_FRACTION: f64 = 0.1;
+
+/// H-8: LCG modulus for deterministic jitter generation.
+const JITTER_LCG_MODULUS: u64 = 1000;
+
 use std::time::Duration;
 
 /// Parsed order book update from a WebSocket message.
 #[derive(Debug, Clone)]
 pub struct ParsedBookUpdate {
+    /// Symbol (e.g. "BTCUSDT").
     pub symbol: String,
-    pub bids: Vec<(String, String)>, // (price_str, qty_str)
+    /// Bid levels as (price_str, qty_str) pairs.
+    pub bids: Vec<(String, String)>,
+    /// Ask levels as (price_str, qty_str) pairs.
     pub asks: Vec<(String, String)>,
+    /// Whether this represents a full snapshot (true) or incremental update.
     pub is_snapshot: bool,
+    /// Last update ID from the exchange.
     pub last_update_id: u64,
 }
 
-/// Connection health metrics.
+/// Connection health metrics for monitoring stream quality.
 #[derive(Debug, Clone, Default)]
 pub struct StreamHealth {
+    /// Total messages received since connection start.
     pub total_messages_received: u64,
+    /// Total reconnection attempts.
     pub total_reconnects: u64,
+    /// Total messages that failed to parse.
     pub total_parse_errors: u64,
+    /// Timestamp (ms) of the last received message.
     pub last_message_ts_ms: u64,
+    /// Timestamp (ms) when the current connection was established.
     pub connected_since_ms: u64,
+    /// Current measured round-trip latency (ms).
     pub current_latency_ms: u64,
 }
 
@@ -99,11 +119,13 @@ impl ZeroLagStreamManager {
     pub fn next_reconnect_delay(&self, attempt: u32) -> Duration {
         let base_delay = self.config.initial_reconnect_delay_ms as f64;
         let max_delay = self.config.max_reconnect_delay_ms as f64;
-        let delay_ms = base_delay * self.config.backoff_multiplier.powi(attempt as i32);
+        // D-1: Clamp attempt to i32 range to prevent negative exponent.
+        let attempt_clamped = attempt.min(i32::MAX as u32) as i32;
+        let delay_ms = base_delay * self.config.backoff_multiplier.powi(attempt_clamped);
         let capped = delay_ms.min(max_delay);
-        // Add jitter: +/- 10%
-        let jitter = capped * 0.1 * (rand_jitter(self.config.exchange_id) - 0.5);
-        Duration::from_millis((capped + jitter).max(100.0) as u64)
+        // H-7: Add jitter: ±JITTER_FRACTION
+        let jitter = capped * JITTER_FRACTION * (rand_jitter(self.config.exchange_id) - 0.5);
+        Duration::from_millis((capped + jitter).max(MIN_RECONNECT_DELAY_MS) as u64)
     }
 
     /// Records a received message.
@@ -253,7 +275,7 @@ fn extract_number_field(json: &str, key: &str) -> Option<u64> {
     let value_start = start + pattern.len();
     let num_str: String = json[value_start..]
         .chars()
-        .take_while(|c| c.is_ascii_digit() || c == '.')
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     num_str.parse().ok()
 }
@@ -304,6 +326,7 @@ fn extract_price_quantity_array(json: &str, key: &str) -> Option<Vec<(String, St
 
 /// Simple pseudo-random jitter generator using system time seeded
 /// with exchange_id for deterministic-but-different jitter per exchange.
+#[inline]
 fn rand_jitter(exchange_id: u16) -> f64 {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -312,10 +335,11 @@ fn rand_jitter(exchange_id: u16) -> f64 {
     // LCG seeded with exchange_id to avoid all exchanges jittering identically.
     let seed = ts ^ (exchange_id as u64 * 1_000_003);
     let x = seed.wrapping_mul(1103515245).wrapping_add(12345);
-    (x % 1000) as f64 / 1000.0
+    (x % JITTER_LCG_MODULUS) as f64 / JITTER_LCG_MODULUS as f64
 }
 
 /// Returns current timestamp in milliseconds since epoch.
+#[inline]
 fn current_timestamp_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

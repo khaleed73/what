@@ -28,6 +28,7 @@ impl std::fmt::Debug for ExchangeConfig {
 impl ExchangeConfig {
     /// Return the passphrase as a `&str`, or `""` if not set.
     /// This is the safe accessor — never exposes the secret through `Deref`.
+    #[inline]
     pub fn passphrase_str(&self) -> &str {
         match &self.passphrase {
             Some(p) => p.expose(),
@@ -35,6 +36,7 @@ impl ExchangeConfig {
         }
     }
 
+    /// Create a new `ExchangeConfig` with the given credentials and base URL.
     pub fn new(
         api_key: &str,
         api_secret: &str,
@@ -54,6 +56,7 @@ impl ExchangeConfig {
         cfg
     }
 
+    /// Create a new `ExchangeConfig` with an additional passphrase (e.g. OKX, KuCoin).
     pub fn with_passphrase(
         api_key: &str,
         api_secret: &str,
@@ -74,7 +77,7 @@ impl ExchangeConfig {
         cfg
     }
 
-    /// M-2: Validates the config for production use.
+    /// Validate the config for production use.
     ///
     /// * `base_url` must use HTTPS to prevent credential leakage over plaintext.
     /// * API key and secret must not be empty.

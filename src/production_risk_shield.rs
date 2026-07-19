@@ -15,6 +15,9 @@ use rust_decimal_macros::dec;
 /// Number of depth levels in the production order book.
 const MATRIX_BOOK_DEPTH: usize = 4;
 
+/// Fixed-point scale for Decimal-to-u64 conversion (9 decimals).
+const FP_SCALE: u64 = 1_000_000_000;
+
 /// A single order book layer — stack-allocated for zero-allocation parsing.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OrderBookLayer {
@@ -37,11 +40,13 @@ impl OrderBookLayer {
     }
 
     /// Get price as Decimal.
+    #[inline(always)]
     pub fn price(&self) -> Decimal {
         fp_to_decimal(self.price_fp)
     }
 
     /// Get quantity as Decimal.
+    #[inline(always)]
     pub fn quantity(&self) -> Decimal {
         fp_to_decimal(self.quantity_fp)
     }
@@ -264,13 +269,15 @@ impl ProductionRiskShield {
 }
 
 // Helper functions
+#[inline(always)]
 fn decimal_to_fp(d: Decimal) -> Option<u64> {
-    let scaled = d * Decimal::from(1_000_000_000u64);
+    let scaled = d * Decimal::from(FP_SCALE);
     scaled.to_u64()
 }
 
+#[inline(always)]
 fn fp_to_decimal(fp: u64) -> Decimal {
-    Decimal::from(fp) / Decimal::from(1_000_000_000u64)
+    Decimal::from(fp) / Decimal::from(FP_SCALE)
 }
 
 // ---------------------------------------------------------------------------

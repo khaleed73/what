@@ -65,6 +65,7 @@ impl CoreExecutionShield {
     /// 3. Calculate fee cost
     /// 4. Estimate net profit at expected sell price
     /// 5. Validate minimum profit threshold
+    #[inline]
     pub fn evaluate_buy(
         &self,
         allocated_capital: Decimal,
@@ -165,6 +166,7 @@ impl CoreExecutionShield {
     /// * `intended_price` - The strategy's target sell price
     /// * `depth` - Current order book depth (bids)
     /// * `entry_cost` - Original cost basis for P&L calculation
+    #[inline]
     pub fn evaluate_sell(
         &self,
         asset_quantity: Decimal,
@@ -204,7 +206,13 @@ impl CoreExecutionShield {
         }
 
         // VWAP sell price
-        let vwap = proceeds / asset_quantity;
+        // Defensive check: avoid division by zero if asset_quantity is zero
+        // (should not happen since the caller is selling a non-zero quantity)
+        let vwap = if asset_quantity > Decimal::ZERO {
+            proceeds / asset_quantity
+        } else {
+            Decimal::ZERO
+        };
 
         // Fee
         let fee_cost = proceeds * self.fee_rate;
@@ -248,16 +256,19 @@ impl CoreExecutionShield {
     }
 
     /// Convenience: trip the circuit breaker with a reason code.
+    #[inline]
     pub fn trip_breaker(&self, reason: u64) {
         self.breaker.trip(reason);
     }
 
     /// Convenience: reset the circuit breaker.
+    #[inline]
     pub fn reset_breaker(&self) -> bool {
         self.breaker.reset()
     }
 
     /// Check if the system is frozen.
+    #[inline(always)]
     pub fn is_frozen(&self) -> bool {
         self.breaker.is_frozen()
     }

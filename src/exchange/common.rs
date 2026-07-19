@@ -14,6 +14,9 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 use serde_json::Value;
 
+/// Default HTTP timeout in seconds when not configured.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
 // ---------------------------------------------------------------------------
 // ExchangeError
 // ---------------------------------------------------------------------------
@@ -119,10 +122,10 @@ impl KrakenNonce {
     }
 
     pub fn next(&self) -> u64 {
-        // Poisoned mutex is unrecoverable in a nonce generator — use expect
-        // to provide a clear diagnostic message rather than a bare unwrap.
+        // Poisoned mutex is unrecoverable in a nonce generator — use
+        // unwrap_or_else to recover the counter and keep monotonicity.
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        *last += 1;
+        *last = last.saturating_add(1);
         *last
     }
 }
@@ -163,18 +166,14 @@ pub struct TlsPinningConfig {
 ///
 /// Uses system TLS trust anchors.  For certificate pinning, use
 /// [`build_pinned_http_client`] instead.
-///
-/// TODO: Consider TLS certificate pinning for production deployments.
-/// Default reqwest trusts system root CAs which may include compromised CAs.
-/// For exchange API connections, pin the exchange's certificate to prevent MITM.
 pub fn build_http_client(timeout_secs: u64) -> anyhow::Result<reqwest::Client> {
-    let timeout_secs = timeout_secs.max(5); // floor at 5s
+    let timeout_secs = timeout_secs.max(HTTP_TIMEOUT_MIN_SECS);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .connect_timeout(Duration::from_secs(timeout_secs.min(10))) // cap connect at 10s
-        .pool_max_idle_per_host(4)
-        .pool_idle_timeout(Duration::from_secs(90)) // evict idle connections
-        .tcp_keepalive(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(timeout_secs.min(HTTP_CONNECT_TIMEOUT_CAP_SECS)))
+        .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST)
+        .pool_idle_timeout(Duration::from_secs(HTTP_POOL_IDLE_TIMEOUT_SECS))
+        .tcp_keepalive(Duration::from_secs(HTTP_TCP_KEEPALIVE_SECS))
         .user_agent("rust-hft-arb/1.0")
         .build()
         .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))?;
@@ -197,7 +196,7 @@ pub fn build_pinned_http_client(
     timeout_secs: u64,
     tls: &TlsPinningConfig,
 ) -> anyhow::Result<reqwest::Client> {
-    let timeout_secs = timeout_secs.max(5);
+    let timeout_secs = timeout_secs.max(HTTP_TIMEOUT_MIN_SECS);
     match &tls.ca_cert_pem {
         Some(pem) => {
             let cert = reqwest::Certificate::from_pem(pem.as_bytes())
@@ -205,10 +204,10 @@ pub fn build_pinned_http_client(
 
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(timeout_secs))
-                .connect_timeout(Duration::from_secs(timeout_secs.min(10)))
-                .pool_max_idle_per_host(4)
-                .pool_idle_timeout(Duration::from_secs(90))
-                .tcp_keepalive(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(timeout_secs.min(HTTP_CONNECT_TIMEOUT_CAP_SECS)))
+                .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE_PER_HOST)
+                .pool_idle_timeout(Duration::from_secs(HTTP_POOL_IDLE_TIMEOUT_SECS))
+                .tcp_keepalive(Duration::from_secs(HTTP_TCP_KEEPALIVE_SECS))
                 .use_native_tls()
                 .add_root_certificate(cert)
                 .min_tls_version(reqwest::tls::Version::TLS_1_2)
@@ -239,6 +238,8 @@ pub fn extract_currency(v: &serde_json::Value, field: &str, exchange: &str) -> O
     }
 }
 
+/// Extract a client order ID from JSON, returning empty string on failure.
+#[inline]
 pub fn extract_client_order_id(v: &serde_json::Value, field: &str, exchange: &str) -> String {
     match v.as_str() {
         Some(s) if !s.is_empty() => s.to_string(),
@@ -254,13 +255,19 @@ pub fn extract_client_order_id(v: &serde_json::Value, field: &str, exchange: &st
     }
 }
 
+/// Base delay in milliseconds for rate-limit backoff sleep.
+const RATE_LIMIT_BACKOFF_BASE_MS: f64 = 1000.0;
+/// Minimum jitter fraction (0.75 = -25%) for rate-limit backoff.
+const RATE_LIMIT_JITTER_MIN_FRAC: f64 = 0.75;
+/// Jitter range width (0.5 = +/-25%) for rate-limit backoff.
+const RATE_LIMIT_JITTER_RANGE: f64 = 0.5;
+
 /// Sleep for approximately 1 second with +/-25% random jitter.
 /// This prevents all exchanges from retrying at exactly the same moment
 /// when multiple exchanges rate-limit simultaneously (e.g. during network partitions).
 pub async fn jittered_rate_limit_sleep() {
     use rand::Rng;
-    let base_ms = 1000.0_f64;
-    let jittered = base_ms * (0.75 + 0.5 * rand::thread_rng().gen::<f64>());
+    let jittered = RATE_LIMIT_BACKOFF_BASE_MS * (RATE_LIMIT_JITTER_MIN_FRAC + RATE_LIMIT_JITTER_RANGE * rand::thread_rng().gen::<f64>());
     tokio::time::sleep(Duration::from_millis(jittered as u64)).await;
 }
 
@@ -522,6 +529,7 @@ pub fn sign_kraken(
 
 /// Extract an f64 from a JSON Value (convenience for exchange responses).
 #[must_use]
+#[inline]
 pub fn parse_json_f64(v: &Value) -> f64 {
     v.as_f64()
         .unwrap_or(0.0)
@@ -545,8 +553,20 @@ pub fn parse_balance_f64(v: &Value, exchange: &str, asset: &str) -> f64 {
     }
 }
 
+/// Minimum timeout in seconds for HTTP clients.
+const HTTP_TIMEOUT_MIN_SECS: u64 = 5;
+/// Maximum connect timeout cap in seconds.
+const HTTP_CONNECT_TIMEOUT_CAP_SECS: u64 = 10;
+/// Default idle connection timeout in seconds.
+const HTTP_POOL_IDLE_TIMEOUT_SECS: u64 = 90;
+/// TCP keepalive interval in seconds.
+const HTTP_TCP_KEEPALIVE_SECS: u64 = 30;
+/// Maximum idle connections per host.
+const HTTP_POOL_MAX_IDLE_PER_HOST: usize = 4;
+
 /// Convert f64 to Decimal for balance, logging when conversion fails (NaN/Inf).
 #[must_use]
+#[inline]
 pub fn balance_f64_to_decimal(f: f64, exchange: &str, asset: &str) -> Decimal {
     match Decimal::from_f64(f) {
         Some(d) => d,
@@ -562,7 +582,9 @@ pub fn balance_f64_to_decimal(f: f64, exchange: &str, asset: &str) -> Decimal {
     }
 }
 
-/// HMAC-SHA256 hex (LBank style).
+/// HMAC-SHA256 hex (LBank style). Identical to [`sign_hmac`] but kept as a
+/// separate named function for clarity at call sites.
+#[inline]
 pub fn sign_lbank_hmac(secret: &str, payload: &str) -> anyhow::Result<String> {
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
     let sig = hmac::sign(&key, payload.as_bytes());

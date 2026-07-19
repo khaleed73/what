@@ -8,6 +8,7 @@
 //! exchange balance hits $0, triggers rebalance request"
 
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use std::sync::Arc;
 
 /// A detected starvation event.
@@ -178,15 +179,22 @@ impl CapitalStarvationDetector {
     /// Returns `None` if no starvation is active.
     pub fn suggested_resize_factor(&self) -> Option<Decimal> {
         let event = self.last_event.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+
+        /// Resize factor floor — trading continues at 10% of normal size
+        /// even when the balance is effectively zero.
+        const RESIZE_FLOOR_PCT: Decimal = dec!(0.10);
+        /// Multiplication factor for the starvation target (5× threshold).
+        const STARVATION_TARGET_MULTIPLIER: u32 = 5;
+
         if event.current_balance <= Decimal::ZERO {
-            return Some(Decimal::new(1, 1)); // 0.10 — floor at 10%
+            return Some(RESIZE_FLOOR_PCT);
         }
-        let target = self.min_threshold * Decimal::from(5u32);
+        let target = self.min_threshold * Decimal::from(STARVATION_TARGET_MULTIPLIER);
         if target <= Decimal::ZERO {
             return Some(Decimal::ONE);
         }
         let factor = event.current_balance / target;
-        let clamped = factor.max(Decimal::new(1, 1)).min(Decimal::ONE); // [0.10, 1.0]
+        let clamped = factor.max(RESIZE_FLOOR_PCT).min(Decimal::ONE); // [0.10, 1.0]
         Some(clamped)
     }
 }

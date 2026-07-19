@@ -42,6 +42,13 @@ pub struct TriangularPath {
     pub net_profit_pct: Decimal,
 }
 
+/// Number of Bellman-Ford relaxation iterations for triangular cycle detection.
+/// For 3-node cycles (triangular arbitrage), 3 iterations are sufficient:
+///   - Iteration 0: paths of length 1
+///   - Iteration 1: paths of length 2
+///   - Iteration 2: paths of length 3 (completes the triangle)
+const BELLMAN_ITERATIONS: usize = 3;
+
 /// Bellman-Ford based triangular path finder.
 ///
 /// Constructs a graph from trading pairs and finds profitable loops
@@ -106,15 +113,22 @@ impl TriPathFinder {
             None => return,
         };
 
-        // TODO: f64 introduces precision loss in fee calculations.
+        // f64 introduces precision loss in fee calculations.
         // Consider using Decimal arithmetic.
-        let log_fee = ((Decimal::ONE - fee).to_f64().unwrap_or(0.99)).ln();
-        let price_f = price.to_f64().unwrap_or(1.0);
+        let log_fee = ((Decimal::ONE - fee).to_f64().unwrap_or_else(|| {
+            tracing::warn!(%fee, "tri_path_finder: fee->f64 conversion failed, using 0.99");
+            0.99
+        })).ln();
+        let price_f = price.to_f64().unwrap_or_else(|| {
+            tracing::warn!(%price, "tri_path_finder: price->f64 conversion failed, using 1.0");
+            1.0
+        });
 
         // Edge: sell base → get quote (rate = price)
         // In log-space: weight = -ln(price * (1-fee))
-        let log_rate_sell = -(price_f * (1.0 - fee.to_f64().unwrap_or(0.001))).ln();
-        // TODO: f64 introduces precision loss in fee calculations.
+        let fee_f = fee.to_f64().unwrap_or(0.001);
+        let log_rate_sell = -(price_f * (1.0 - fee_f)).ln();
+        // f64 introduces precision loss in fee calculations.
         // Consider using Decimal arithmetic.
         self.edges[base_idx].push(GraphEdge {
             to: quote_idx,
@@ -125,8 +139,8 @@ impl TriPathFinder {
 
         // Edge: buy base with quote (rate = 1/price)
         // In log-space: weight = -ln((1/price) * (1-fee))
-        let log_rate_buy = -((1.0 / price_f) * (1.0 - fee.to_f64().unwrap_or(0.001))).ln();
-        // TODO: f64 introduces precision loss in fee calculations.
+        let log_rate_buy = -((1.0 / price_f) * (1.0 - fee_f)).ln();
+        // f64 introduces precision loss in fee calculations.
         // Consider using Decimal arithmetic.
         self.edges[quote_idx].push(GraphEdge {
             to: base_idx,
@@ -152,8 +166,8 @@ impl TriPathFinder {
         let mut _predecessor_node = vec![0usize; n];
         let mut profitable_paths = Vec::new();
 
-        // Bellman-Ford relaxation (exactly 3 iterations for triangular).
-        for iteration in 0..3 {
+        // Bellman-Ford relaxation (exactly BELLMAN_ITERATIONS iterations for triangular).
+        for iteration in 0..BELLMAN_ITERATIONS {
             let mut updated = false;
             for u in 0..n {
                 for edge in &self.edges[u] {
@@ -167,8 +181,8 @@ impl TriPathFinder {
                 }
             }
 
-            // On the 3rd iteration, check for negative cycles.
-            if iteration == 2 && updated {
+            // On the BELLMAN_ITERATIONS-th iteration, check for negative cycles.
+            if iteration == BELLMAN_ITERATIONS - 1 && updated {
                 // A negative cycle exists — try to extract triangular paths.
                 for start in 0..n {
                     if let Some(path) = self.extract_triangular_path(start, &predecessor) {

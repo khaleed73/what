@@ -14,6 +14,9 @@ use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
 
+/// Default receive window in milliseconds for Bybit API requests.
+const BYBIT_DEFAULT_RECV_WINDOW_MS: u64 = 5000;
+
 /// Bybit exchange client.
 pub struct BybitClient {
     name: String,
@@ -21,6 +24,11 @@ pub struct BybitClient {
     http: reqwest::Client,
     rate_limiter: RateLimiter,
 }
+
+    /// Default HTTP timeout in seconds when not configured.
+    const DEFAULT_TIMEOUT_SECS: u64 = 30;
+    /// Bybit rate limit in requests per second.
+    const BYBIT_RATE_LIMIT: u64 = 20;
 
 impl BybitClient {
     pub fn new(name: String, mut config: ExchangeConfig) -> Result<Self> {
@@ -40,13 +48,13 @@ impl BybitClient {
             config.base_url.clone()
         };
         config.base_url = base_url;
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
             config,
             http,
-            rate_limiter: RateLimiter::new(20), // Bybit: 20 req/s limit
+            rate_limiter: RateLimiter::new(BYBIT_RATE_LIMIT),
         })
     }
 
@@ -115,12 +123,13 @@ impl Exchange for BybitClient {
             }
             ("Market", b)
         };
-        let _ = order_type; // Used for logging, suppressed for now
+ // BYBIT_DEFAULT_RECV_WINDOW_MS: configurable via BYBIT_RECV_WINDOW env var (default 5000ms).
+        const BYBIT_DEFAULT_RECV_WINDOW_MS: u64 = 5000;
         let body_str = serde_json::to_string(&body)?;
 
         // M97 FIX: configurable recvWindow (default 5000ms)
         let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
@@ -196,8 +205,9 @@ impl Exchange for BybitClient {
             "orderId": order_id
         });
         let body_str = serde_json::to_string(&body)?;
+        // BYBIT_DEFAULT_RECV_WINDOW_MS: configurable via BYBIT_RECV_WINDOW env var (default 5000ms).
         let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
@@ -341,7 +351,7 @@ impl Exchange for BybitClient {
             order_id
         );
         let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,

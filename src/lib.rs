@@ -1,6 +1,8 @@
-// lib.rs — Library target for rust-hft-arb.
-//
-// Exposes modules needed by integration tests and E2E test binaries.
+//! rust-hft-arb — Library target for integration tests and E2E test binaries.
+//!
+//! Exposes all public modules needed by external crates (integration tests,
+//! benchmark binaries, and the E2E pipeline test). This is the **library**
+//! crate; the binary target lives in `src/main.rs`.
 
 #![allow(dead_code)]
 

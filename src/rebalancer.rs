@@ -58,6 +58,7 @@ use base64::Engine;
 use reqwest;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde_json;
 
 use tokio::sync::mpsc;
@@ -547,20 +548,23 @@ impl AutoCapitalRebalancer {
                     // C-3 FIX: Do NOT blindly credit on NotFound/ApiError.
                     // Retry verification after 30 seconds, up to 3 retries.
                     // Only credit after a Confirmed result.
-                    let max_retries: u32 = 3;
-                    let retry_delay = Duration::from_secs(30);
+                    /// Maximum retry count for deposit verification.
+                    const MAX_VERIFY_RETRIES: u32 = 3;
+                    /// Delay between deposit verification retries (seconds).
+                    const RETRY_DELAY_SECS: u64 = 30;
                     let mut confirmed = false;
 
-                    for attempt in 1..=max_retries {
+                    for attempt in 1..=MAX_VERIFY_RETRIES {
                         warn!(
                             from = req.from_exchange_id,
                             to = req.to_exchange_id,
                             token = %req.token_symbol,
                             attempt,
-                            max_retries,
-                            "Stage 3.5: Deposit not yet confirmed — retrying after 30s"
+                            max_retries = MAX_VERIFY_RETRIES,
+                            "Stage 3.5: Deposit not yet confirmed — retrying after {}s",
+                            RETRY_DELAY_SECS
                         );
-                        tokio::time::sleep(retry_delay).await;
+                        tokio::time::sleep(Duration::from_secs(RETRY_DELAY_SECS)).await;
 
                         let retry_result = self
                             .attempt_deposit_verification(
@@ -619,14 +623,17 @@ impl AutoCapitalRebalancer {
                         let net_amount = req.amount - effective_gas;
 
                         // max_blind_credit_amount safety check
-                        let max_blind_credit_amount = Decimal::from(1_000u64); // $1000
-                        if net_amount > max_blind_credit_amount {
+                        /// Maximum amount (USD) that can be credited without explicit
+                        /// deposit confirmation.  Above this threshold, manual investigation
+                        /// is required to prevent phantom credits.
+                        const MAX_BLIND_CREDIT_USD: Decimal = dec!(1000);
+                        if net_amount > MAX_BLIND_CREDIT_USD {
                             error!(
                                 from = req.from_exchange_id,
                                 to = req.to_exchange_id,
                                 token = %req.token_symbol,
                                 unconfirmed_amount = %net_amount,
-                                max_safe = %max_blind_credit_amount,
+                                max_safe = %MAX_BLIND_CREDIT_USD,
                                 "Stage 3.5: CRITICAL — all retries exhausted for LARGE unconfirmed deposit. \
                                  NOT crediting balance. Manual investigation required."
                             );

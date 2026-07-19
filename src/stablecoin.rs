@@ -10,8 +10,13 @@ use tracing;
 // Config
 // ---------------------------------------------------------------------------
 
+/// Default check interval in milliseconds for the depeg monitor loop.
+pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 5000;
+
+/// Configuration for the stablecoin depeg monitor and capital
+/// concentration tracker.
 pub struct StablecoinConfig {
-    /// Price below which a stablecoin is considered depegged (e.g. 0.998)
+    /// Depeg detection threshold — stablecoin price below this trips the circuit.
     pub depeg_threshold: Decimal,
     /// Maximum allowed fraction of capital held in USDT (e.g. 0.80)
     pub usdt_max_pct: Decimal,
@@ -35,7 +40,7 @@ impl Default for StablecoinConfig {
                 "USDC".to_string(),
                 "DAI".to_string(),
             ],
-            check_interval_ms: 5000, // L-5: default 5-second check interval
+            check_interval_ms: DEFAULT_CHECK_INTERVAL_MS,
         }
     }
 }
@@ -104,12 +109,16 @@ pub struct RotationRecommendation {
 // Monitor
 // ---------------------------------------------------------------------------
 
+/// Monitors stablecoin prices, depeg status, and capital concentration.
+/// Uses `RwLock` for async-safe state access. The monitor is
+/// designed to be shared across tokio tasks via `Arc<StablecoinMonitor>.
 pub struct StablecoinMonitor {
     config: StablecoinConfig,
     state: Arc<RwLock<StablecoinState>>,
 }
 
 impl StablecoinMonitor {
+    /// Creates a new stablecoin monitor with the given configuration.
     pub fn new(config: StablecoinConfig) -> Self {
         Self {
             config,
@@ -117,12 +126,24 @@ impl StablecoinMonitor {
         }
     }
 
-    /// Ingest a new price for `symbol` and re-evaluate depeg status across all
-    /// monitored coins.
+    /// Updates the price for a monitored stablecoin and evaluates depeg status.
+    ///
+    /// Empty symbols and non-positive prices are silently rejected (category I).
+    /// If the price crosses the depeg threshold, the circuit activates and
+    /// all trading is blocked until the peg is restored.
     pub async fn update_price(&self, symbol: &str, price: Decimal, exchange: &str) {
+        // I: Validate inputs before acquiring the write lock.
+        let sym = symbol.trim();
+        if sym.is_empty() {
+            return;
+        }
+        if price <= Decimal::ZERO {
+            return;
+        }
+
         let now = Utc::now().timestamp_millis();
         let entry = StablecoinPrice {
-            symbol: symbol.to_uppercase(),
+            symbol: sym.to_uppercase(),
             price,
             exchange: exchange.to_string(),
             timestamp: now,
@@ -165,7 +186,7 @@ impl StablecoinMonitor {
         }
     }
 
-    /// Record current stablecoin holdings.
+    /// Records current stablecoin holdings.
     pub async fn update_holdings(&self, usdt: Decimal, usdc: Decimal, dai: Decimal, total: Decimal) {
         let mut state = self.state.write().await;
         state.usdt_held = usdt;
@@ -175,6 +196,7 @@ impl StablecoinMonitor {
     }
 
     /// Returns `true` when a depeg event is currently active.
+    #[inline]
     pub async fn is_depeg_active(&self) -> bool {
         self.state.read().await.depeg_active
     }
@@ -183,6 +205,8 @@ impl StablecoinMonitor {
     ///
     /// Returns `true` when all concentration rules are satisfied, `false` when
     /// at least one rule is breached.
+    ///
+    /// If `total_capital <= 0`, returns `true` (nothing to check).
     pub async fn check_concentration(&self) -> bool {
         let state = self.state.read().await;
 

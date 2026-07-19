@@ -45,6 +45,11 @@ use crate::signer::PrivateExchangeClient;
 /// Stored separately from `SecretString` because withdrawal operations
 /// need synchronous access to the key material for HMAC signing in
 /// async contexts without borrow-checker friction.
+///
+/// # Security
+///
+/// Credentials are cleared from memory on `Drop`. The caller is
+/// responsible for ensuring process-level memory protection (mlock, etc.).
 #[derive(Clone)]
 pub struct ExchangeCredentials {
     pub api_key: String,
@@ -87,6 +92,7 @@ impl Drop for ExchangeCredentials {
 }
 
 impl ExchangeCredentials {
+    /// Creates a new `ExchangeCredentials` with key and secret.
     pub fn new(api_key: &str, api_secret: &str) -> Self {
         Self {
             api_key: api_key.to_owned(),
@@ -95,6 +101,7 @@ impl ExchangeCredentials {
         }
     }
 
+    /// Creates credentials with an optional passphrase (required by some exchanges like OKX, KuCoin).
     pub fn with_passphrase(api_key: &str, api_secret: &str, passphrase: &str) -> Self {
         Self {
             api_key: api_key.to_owned(),
@@ -109,6 +116,10 @@ impl ExchangeCredentials {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A request to withdraw funds from an exchange.
+///
+/// All fields must be explicitly populated — the executor does NOT
+/// apply defaults. A withdrawal with zero or negative amount, or an
+/// empty address/network, will be rejected before any HTTP request.
 #[derive(Debug, Clone)]
 pub struct WithdrawalRequest {
     /// Numeric exchange ID (see `exchange_name_by_id`).
@@ -152,10 +163,15 @@ impl Default for WithdrawalResult {
 /// Unified withdrawal executor that dispatches to exchange-specific
 /// authenticated REST APIs.
 ///
-/// Each exchange has a different:
-/// * HTTP body format (form-encoded vs JSON vs form-urlencoded-in-query)
-/// * Signature scheme (hex vs base64, different preimage layouts)
-/// * Authentication headers
+/// Each exchange has a different HTTP body format, signature scheme, and
+/// authentication headers. The `execute_withdrawal` method routes to the
+/// correct implementation based on `exchange_id`.
+///
+/// # Safety
+///
+/// Withdrawal URLs are validated to use HTTPS at construction time.
+/// All error messages are URL-redacted to prevent leaking HMAC
+/// signatures embedded in query parameters.
 pub struct WithdrawalExecutor {
     /// Connection-pooled HTTP client.
     pub http_client: reqwest::Client,
@@ -178,7 +194,7 @@ impl std::fmt::Debug for WithdrawalExecutor {
 }
 
 impl WithdrawalExecutor {
-    /// Create a new withdrawal executor.
+    /// Creates a new withdrawal executor.
     ///
     /// # Parameters
     ///
@@ -186,6 +202,11 @@ impl WithdrawalExecutor {
     /// * `execution_pool` — Shared reference to the trading execution pool.
     /// * `rest_urls` — REST base URL per exchange ID.
     /// * `exchange_configs` — Validated exchange configs (cloned at construction).
+    ///
+    /// # Panics
+    ///
+    /// Logs a CRITICAL error for any REST URL that doesn't use HTTPS,
+    /// but does NOT panic — the executor still initialises.
     pub fn new(
         http_client: reqwest::Client,
         execution_pool: Arc<HashMap<u16, Arc<dyn PrivateExchangeClient>>>,
@@ -227,31 +248,39 @@ impl WithdrawalExecutor {
     //  Main dispatch
     // -------------------------------------------------------------------
 
-    /// Execute a withdrawal request by dispatching to the appropriate
+    /// Executes a withdrawal request by dispatching to the appropriate
     /// exchange-specific implementation.
+    ///
+ /// Returns an error if validation fails or the HTTP request fails.
+    /// Logs structured info/warn/error at each stage.
     pub async fn execute_withdrawal(
         &self,
         req: &WithdrawalRequest,
     ) -> Result<WithdrawalResult, String> {
-        // M-10: Validate withdrawal request before dispatching.
+        // B: Resolve exchange name for logging context.
+        let exchange_name = exchange_name_by_id(req.exchange_id);
+
+        // I: Validate withdrawal request before dispatching.
         if req.amount <= Decimal::ZERO {
             return Err(format!(
-                "Withdrawal amount must be positive, got {}",
-                req.amount
+                "withdrawal amount must be positive, got {} for {} on exchange {}",
+                req.amount, req.currency, exchange_name
             ));
         }
         if req.address.trim().is_empty() {
-            return Err("Withdrawal address must not be empty".to_string());
+            return Err("withdrawal address must not be empty".to_string());
         }
         if req.network.trim().is_empty() {
-            return Err("Withdrawal network must not be empty".to_string());
+            return Err("withdrawal network must not be empty".to_string());
         }
-
-        let exchange_name = exchange_name_by_id(req.exchange_id);
-        if req.amount <= Decimal::ZERO {
-            return Err("withdrawal amount must be positive".into());
+        // I: Basic address format validation — must look like a hex or base58 address.
+        let addr = req.address.trim();
+        if addr.len() < 10 {
+            return Err(format!(
+                "withdrawal address too short ({} chars) — likely invalid",
+                addr.len()
+            ));
         }
-
         info!(
             exchange = exchange_name,
             currency = %req.currency,
@@ -260,15 +289,7 @@ impl WithdrawalExecutor {
             "Executing withdrawal"
         );
 
-        // Validate withdrawal amount.
-        if req.amount <= Decimal::ZERO {
-            let msg = format!(
-                "withdrawal amount must be positive, got {} for {} on exchange {}",
-                req.amount, req.currency, exchange_name
-            );
-            warn!(%msg);
-            return Err(msg);
-        }
+        // L: Remove duplicate amount check — already validated above.
         // TODO: Add balance-aware validation: warn/reject if amount > 90% of
         // estimated balance. This requires passing balance state into the
         // executor or querying it from the exchange before dispatching.
@@ -317,7 +338,10 @@ impl WithdrawalExecutor {
         result
     }
 
-    /// Query the withdrawal fee for a given currency/network on an exchange.
+    /// Queries the withdrawal fee for a given currency/network on an exchange.
+    ///
+    /// Returns the fee as a `Decimal`, or an error if the exchange
+    /// does not support fee queries or the request fails.
     pub async fn get_withdrawal_fee(
         &self,
         exchange_id: u16,
@@ -481,7 +505,7 @@ impl WithdrawalExecutor {
             .map_err(|e| format!("Bybit body serialize: {}", e))?;
 
         let timestamp = epoch_millis().to_string();
-        let recv_window = "5000".to_string();
+        let recv_window = DEFAULT_RECV_WINDOW_MS.to_string();
         let preimage = format!(
             "{}{}{}{}",
             timestamp, creds.api_key, recv_window, body_str
@@ -520,7 +544,7 @@ impl WithdrawalExecutor {
         network: &str,
     ) -> Result<Decimal, String> {
         let timestamp = epoch_millis().to_string();
-        let recv_window = "5000".to_string();
+        let recv_window = DEFAULT_RECV_WINDOW_MS.to_string();
         let param_str = format!("coin={}&chain={}", currency, network);
         let preimage = format!(
             "GET/api/v5/asset/coin/query-info{}{}{}{}",
@@ -1792,7 +1816,11 @@ fn redact_urls_in_error(msg: &str) -> String {
     result
 }
 
+/// Default recv_window value sent to exchanges that require it (5 seconds).
+const DEFAULT_RECV_WINDOW_MS: &str = "5000";
+
 /// HMAC-SHA256 signing returning hex-encoded signature.
+#[inline]
 fn hmac_hex(secret: &str, message: &str) -> String {
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
     let signature = hmac::sign(&key, message.as_bytes());
@@ -1800,6 +1828,7 @@ fn hmac_hex(secret: &str, message: &str) -> String {
 }
 
 /// HMAC-SHA256 signing returning base64-encoded signature.
+#[inline]
 fn hmac_base64(secret: &str, message: &str) -> String {
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
     let signature = hmac::sign(&key, message.as_bytes());
@@ -1807,11 +1836,13 @@ fn hmac_base64(secret: &str, message: &str) -> String {
 }
 
 /// Current UNIX epoch in milliseconds.
+/// Falls back to 0 on clock error (system time before UNIX epoch).
+#[inline]
 fn epoch_millis() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(d) => d.as_millis() as u64,
         Err(e) => {
-            tracing::critical!(
+            tracing::error!(
                 error = %e,
                 "epoch_millis: system clock error — timestamps will be wrong"
             );
@@ -1821,6 +1852,8 @@ fn epoch_millis() -> u64 {
 }
 
 /// Current UNIX epoch in seconds.
+/// Falls back to 0 on clock error.
+#[inline]
 fn epoch_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1829,6 +1862,7 @@ fn epoch_secs() -> u64 {
 }
 
 /// Map common network names to GateIO short chain codes.
+#[inline]
 fn gateio_chain_code(network: &str) -> String {
     let upper = network.to_uppercase();
     match upper.as_str() {
@@ -1844,6 +1878,7 @@ fn gateio_chain_code(network: &str) -> String {
 }
 
 /// Safely extract a u64 from a JSON value (handles both string and number).
+#[inline]
 fn as_u64_safe(v: &Value) -> Option<u64> {
     if let Some(s) = v.as_str() {
         s.parse::<u64>().ok()

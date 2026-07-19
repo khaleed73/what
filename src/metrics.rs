@@ -37,8 +37,11 @@ impl Default for MetricsConfig {
 
 /// Shared references needed by the metrics endpoint.
 pub struct MetricsState {
+    /// Health monitor for uptime/signal/trade counters.
     pub health: Arc<HealthMonitor>,
+    /// Risk manager for P&L and kill-switch state.
     pub risk: Arc<RiskManager>,
+    /// Optional execution engine for rollback counter.
     pub execution: Option<Arc<HighFrequencyExecutionEngine>>,
 }
 
@@ -245,7 +248,9 @@ fn render_prometheus(state: &MetricsState) -> String {
 
     // --- Risk metrics ---
     let session_pnl_cents = state.risk.get_session_pnl();
-    let session_pnl_usd = session_pnl_cents as f64 / 100.0;
+    /// Cents-to-USD conversion factor.
+    const CENTS_PER_USD: f64 = 100.0;
+    let session_pnl_usd = session_pnl_cents as f64 / CENTS_PER_USD;
 
     out.push_str("# HELP rust_hft_arb_session_pnl_usd Current session P&L in USD (cents / 100).\n");
     out.push_str("# TYPE rust_hft_arb_session_pnl_usd gauge\n");

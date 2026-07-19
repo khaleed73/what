@@ -179,7 +179,11 @@ impl SharedMemoryArena {
     /// Creates a shared memory arena with the given number of slots.
     ///
     /// Each slot holds one `SharedMarketFrame` (44 bytes).
+    ///
+    /// # Panics
+    /// Panics if `capacity` is zero.
     pub fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "SharedMemoryArena capacity must be > 0");
         let frames = (0..capacity).map(|_| SharedMarketFrame::zeroed()).collect();
         Self {
             frames,
@@ -199,7 +203,7 @@ impl SharedMemoryArena {
                 slot, self.capacity
             ));
         }
-        let seq = self.global_seq.fetch_add(1, Ordering::SeqCst);
+        let seq = self.global_seq.fetch_add(1, Ordering::Relaxed);
         let ts = chrono::Utc::now().timestamp_millis() as u64;
         self.frames[slot].write(seq, symbol, best_bid, best_ask, ts);
         Ok(())
@@ -222,13 +226,15 @@ impl SharedMemoryArena {
     }
 
     /// Returns the number of slots.
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
     /// Returns the current global sequence number.
+    #[inline]
     pub fn global_sequence(&self) -> u64 {
-        self.global_seq.load(Ordering::SeqCst)
+        self.global_seq.load(Ordering::Acquire)
     }
 }
 

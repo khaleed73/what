@@ -102,7 +102,9 @@ impl TcpOptimizer {
     /// Register an exchange and pre-build its optimized HTTP client.
     ///
     /// This should be called at startup to pre-heat connections.
+    /// Panics if `exchange_id` is empty.
     pub fn register_exchange(&mut self, exchange_id: &str, config: TcpOptimizedClientConfig) {
+        assert!(!exchange_id.is_empty(), "exchange_id must not be empty");
         let client = Self::build_client(&config);
         self.clients.insert(exchange_id.to_lowercase(), Arc::new(client));
         self.configs.insert(exchange_id.to_lowercase(), config);
@@ -171,11 +173,13 @@ impl TcpOptimizer {
     }
 
     /// Returns the number of registered exchanges.
+    #[inline]
     pub fn exchange_count(&self) -> usize {
         self.clients.len()
     }
 
     /// Returns the configuration for a specific exchange.
+    #[inline]
     pub fn get_config(&self, exchange_id: &str) -> Option<&TcpOptimizedClientConfig> {
         self.configs.get(&exchange_id.to_lowercase())
     }

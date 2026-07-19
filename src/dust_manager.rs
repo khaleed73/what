@@ -132,6 +132,9 @@ impl DustManager {
     }
 
     /// Check if total dust exceeds sweep threshold and generate conversion requests.
+    ///
+    /// Logs a warning when a dust sweep is about to be generated
+    /// so operators can monitor automated conversion behaviour.
     pub fn evaluate_and_generate_requests(&self) -> Vec<DustConversionRequest> {
         let inventory = self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner());
         let total_dust: Decimal = inventory.iter().map(|e| e.estimated_usd_value).sum();
@@ -139,6 +142,12 @@ impl DustManager {
         if total_dust < self.sweep_threshold_usd {
             return vec![];
         }
+
+        tracing::info!(
+            total_dust_usd = %total_dust,
+            sweep_threshold = %self.sweep_threshold_usd,
+            "Dust sweep triggered — generating conversion requests"
+        );
 
         inventory
             .iter()

@@ -14,6 +14,11 @@ use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
 
+/// Default HTTP timeout in seconds when not configured.
+    const DEFAULT_TIMEOUT_SECS: u64 = 30;
+    /// KuCoin rate limit in requests per second.
+    const KUCOIN_RATE_LIMIT: u64 = 100;
+
 /// KuCoin exchange client with rate limiting.
 pub struct KucoinClient {
     name: String,
@@ -24,13 +29,13 @@ pub struct KucoinClient {
 
 impl KucoinClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
             config,
             http,
-            rate_limiter: RateLimiter::new(100),
+            rate_limiter: RateLimiter::new(KUCOIN_RATE_LIMIT),
         })
     }
 

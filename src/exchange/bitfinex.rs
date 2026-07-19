@@ -30,8 +30,12 @@ pub struct BitfinexClient {
 }
 
 impl BitfinexClient {
+    /// Bitfinex rate limit in requests per second.
+    const BITFINEX_RATE_LIMIT: u64 = 10;
+    /// Bitfinex IOC flag bitmask (4096).
+    const BITFINEX_IOC_FLAG: u64 = 4096;
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         // H40 FIX: initialize nonce counter to current time in ms so it
         // starts higher than any previous nonce from earlier runs.
@@ -40,15 +44,17 @@ impl BitfinexClient {
             name,
             config,
             http,
-            rate_limiter: RateLimiter::new(100),
+            rate_limiter: RateLimiter::new(Self::BITFINEX_RATE_LIMIT),
             nonce_counter: std::sync::atomic::AtomicU64::new(initial_nonce),
         })
     }
 
     /// H40 FIX: Generate a strictly monotonic nonce. Each call returns
     /// a value greater than all previous calls (within this process).
+    /// Generate a strictly monotonic nonce for Bitfinex.
+    #[inline]
     fn next_nonce(&self) -> u64 {
-        self.nonce_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+        self.nonce_counter.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1
     }
 
     /// Handle exchange response with rate limit detection and backoff.
@@ -123,7 +129,7 @@ impl BitfinexClient {
             }
         }
         // Bitfinex API uses [0, "on", null, {order_details}] format
-        serde_json::json!([0, "on", null, order_obj])
+        Ok(serde_json::json!([0, "on", null, order_obj]))
     }
 
     /// Parse a Bitfinex order response.
@@ -205,7 +211,7 @@ impl Exchange for BitfinexClient {
                 .and_then(|a| a.get_mut(3))
                 .and_then(|v| v.as_object_mut())
             {
-                obj.insert("flags".to_string(), serde_json::Value::Number(4096.into()));
+                obj.insert("flags".to_string(), serde_json::Value::Number(Self::BITFINEX_IOC_FLAG.into()));
             }
         }
         let json = self.auth_post("/auth/w/order/submit", body).await?;

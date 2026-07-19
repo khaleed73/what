@@ -185,9 +185,8 @@ impl AbsoluteMathEngine {
 
         if spend_allocated > Decimal::ZERO {
             return Err(format!(
-                "Insufficient ask depth to fill ${:.2} — ${:.2} unfilled",
-                spend_allocated + (depth.asks.iter().map(|l| l.price * l.quantity).sum::<Decimal>() - spend_allocated),
-                spend_allocated
+                "Insufficient ask depth: total available ${:.2}, unfilled ${:.2}",
+                total_depth, spend_allocated
             ));
         }
 
@@ -237,9 +236,8 @@ impl AbsoluteMathEngine {
 
         if asset_quantity > Decimal::ZERO {
             return Err(format!(
-                "Insufficient bid depth to sell {:.8} units — {:.8} unfilled",
-                asset_quantity + (depth.bids.iter().map(|l| l.quantity).sum::<Decimal>() - asset_quantity),
-                asset_quantity
+                "Insufficient bid depth: total available {:.8} units, unfilled {:.8}",
+                total_depth, asset_quantity
             ));
         }
 

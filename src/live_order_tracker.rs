@@ -8,6 +8,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Default maximum number of orders to track before forced pruning.
+const DEFAULT_MAX_TRACKED_ORDERS: usize = 10_000;
+
+/// Default interval (seconds) for the periodic cleanup task.
+const PERIODIC_CLEANUP_INTERVAL_SECS: u64 = 60;
+
 /// A tracked live order.
 #[derive(Debug, Clone)]
 pub struct TrackedOrder {
@@ -22,7 +28,10 @@ pub struct TrackedOrder {
 }
 
 /// Thread-safe live order tracker.
-/// Maps order_id → TrackedOrder for O(1) cancellation lookup.
+///
+/// Maps `order_id` → `TrackedOrder` for O(1) cancellation lookup.
+/// Supports automatic eviction of the oldest orders when capacity
+/// is reached, and periodic cleanup of stale entries.
 pub struct LiveOrderTracker {
     pub orders: Mutex<HashMap<String, TrackedOrder>>,
     /// Maximum age (in seconds) before an order is considered stale.
@@ -35,16 +44,18 @@ pub struct LiveOrderTracker {
 }
 
 impl LiveOrderTracker {
+    /// Creates a new tracker with a default maximum of
+    /// [`DEFAULT_MAX_TRACKED_ORDERS`] concurrent orders.
     pub fn new(max_age_secs: u64) -> Self {
         Self {
             orders: Mutex::new(HashMap::new()),
             max_age_secs,
-            max_tracked_orders: 10_000,
+            max_tracked_orders: DEFAULT_MAX_TRACKED_ORDERS,
             total_tracked: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    /// Create a tracker with a custom max tracked orders limit.
+    /// Creates a tracker with a custom maximum order count.
     pub fn with_max_orders(max_age_secs: u64, max_tracked_orders: usize) -> Self {
         Self {
             orders: Mutex::new(HashMap::new()),
@@ -83,7 +94,7 @@ impl LiveOrderTracker {
             }
 
             map.insert(order_id.to_string(), TrackedOrder {
-                order_id: order_id.to_string(),
+                order_id: order_id.to_string(), // B-6: order_id cloned for key; could optimize with Cow
                 exchange_id,
                 symbol: symbol.to_uppercase(),
                 is_buy,
@@ -91,26 +102,30 @@ impl LiveOrderTracker {
                 submitted_at_epoch_ms: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "live_order_tracker: clock error, using epoch 0");
+                        0
+                    }),
                 filled_qty: rust_decimal::Decimal::ZERO,
             });
             self.total_tracked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
-    /// Look up a tracked order by ID.
+    /// Looks up a tracked order by ID. Returns a clone of the order.
     pub fn get(&self, order_id: &str) -> Option<TrackedOrder> {
         self.orders.lock().ok()?.get(order_id).cloned()
     }
 
-    /// Remove a tracked order (e.g. after confirmed fill or cancellation).
+    /// Removes a tracked order (e.g. after confirmed fill or cancellation).
+    /// Silently no-ops if the order_id is not found.
     pub fn remove(&self, order_id: &str) {
         if let Ok(mut map) = self.orders.lock() {
             map.remove(order_id);
         }
     }
 
-    /// Get all orders for a specific exchange.
+    /// Returns all tracked orders for a specific exchange.
     pub fn get_by_exchange(&self, exchange_id: u16) -> Vec<TrackedOrder> {
         self.orders
             .lock()
@@ -123,7 +138,7 @@ impl LiveOrderTracker {
             .unwrap_or_default()
     }
 
-    /// Remove all orders older than max_age_secs.
+    /// Removes all orders older than `max_age_secs`.
     /// Returns the number of orders cleaned up.
     pub fn cleanup_stale(&self) -> usize {
         if let Ok(mut map) = self.orders.lock() {
@@ -137,7 +152,7 @@ impl LiveOrderTracker {
         }
     }
 
-    /// Remove the oldest entries until the map is within the limit.
+    /// Removes the oldest entries until the map is within the limit.
     /// Returns the number of orders pruned.
     pub fn prune_oldest(&self) -> usize {
         let limit = self.max_tracked_orders;
@@ -174,7 +189,7 @@ impl LiveOrderTracker {
         let tracker = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_secs(PERIODIC_CLEANUP_INTERVAL_SECS)).await;
                 let cleaned = tracker.cleanup_stale();
                 if cleaned > 0 {
                     tracing::info!(
@@ -187,7 +202,7 @@ impl LiveOrderTracker {
         })
     }
 
-    /// Return current count of tracked orders.
+    /// Returns the current count of tracked orders.
     pub fn len(&self) -> usize {
         self.orders.lock().unwrap_or_else(|e| {
             tracing::error!(
@@ -198,22 +213,23 @@ impl LiveOrderTracker {
         }).len()
     }
 
-    /// Return true if no orders are tracked.
+    /// Returns `true` if no orders are tracked.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// Return total orders ever tracked.
+    /// Returns the total number of orders ever tracked (monotonic counter).
     pub fn total_tracked(&self) -> u64 {
         self.total_tracked.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Return a snapshot of all tracked orders.
+    /// Returns a snapshot of all currently tracked orders.
     pub fn get_all(&self) -> Vec<TrackedOrder> {
         self.orders.lock().map(|m| m.values().cloned().collect()).unwrap_or_default()
     }
 
-    /// Update the filled_qty for a tracked order (called by the status poller).
+    /// Updates the filled quantity for a tracked order (called by the status poller).
+    /// Silently no-ops if the order_id is not found.
     pub fn update_fill(&self, order_id: &str, filled_qty: rust_decimal::Decimal) {
         if let Ok(mut map) = self.orders.lock() {
             if let Some(order) = map.get_mut(order_id) {

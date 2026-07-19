@@ -12,6 +12,11 @@
 
 use std::thread;
 
+/// Number of retry attempts for CPU pinning after the initial attempt.
+const PIN_RETRY_COUNT: u32 = 3;
+/// Delay between pinning retry attempts in milliseconds.
+const PIN_RETRY_DELAY_MS: u64 = 10;
+
 /// Pin the current thread to a specific CPU core.
 ///
 /// The spec defines: `core_affinity::set_for_current(core_id)`.
@@ -64,13 +69,13 @@ where
         .spawn({
             let f = f.clone();
             move || {
-                // Retry pinning up to 3 times with a short sleep between
+                // Retry pinning up to `PIN_RETRY_COUNT` times with a short sleep between
                 // attempts — the OS may temporarily fail affinity on first
                 // try under load.
                 let mut pinned = pin_current_thread(core_id);
                 if !pinned {
-                    for attempt in 1..=3 {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    for attempt in 1..=PIN_RETRY_COUNT {
+                        std::thread::sleep(std::time::Duration::from_millis(PIN_RETRY_DELAY_MS));
                         pinned = pin_current_thread(core_id);
                         if pinned { break; }
                     }
@@ -79,7 +84,9 @@ where
                     tracing::warn!(
                         thread = %name_owned,
                         core_id,
-                        "Running on unpinned core after 4 attempts — latency may be degraded"
+                        attempts = PIN_RETRY_COUNT + 1,
+                        "Running on unpinned core after {} attempts — latency may be degraded",
+                        PIN_RETRY_COUNT + 1
                     );
                 }
                 f()
@@ -96,6 +103,8 @@ where
 }
 
 /// Get the number of available CPU cores.
+/// Returns 1 if core affinity detection fails.
+#[inline]
 pub fn available_cores() -> usize {
     core_affinity::get_core_ids()
         .map(|ids| ids.len())
@@ -103,6 +112,7 @@ pub fn available_cores() -> usize {
 }
 
 /// Check if a specific core is available.
+#[inline]
 pub fn is_core_available(core_id: usize) -> bool {
     core_affinity::get_core_ids()
         .map(|ids| core_id < ids.len())

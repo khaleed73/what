@@ -31,7 +31,7 @@ pub struct DeribitExchange {
 
 impl DeribitExchange {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
@@ -78,7 +78,7 @@ impl DeribitExchange {
         {
             let mut guard = self.access_token.lock().unwrap_or_else(|e| {
                 tracing::error!("Deribit auth mutex poisoned, clearing token");
-                let g = e.into_inner();
+                let mut g = e.into_inner();
                 *g = None;
                 g
             });
@@ -154,14 +154,17 @@ impl DeribitExchange {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Deribit auth failed: no access_token in response"))?
             .to_string();
+        // BITMEX/DERIBIT_EXPIRES_SECS: 1-hour default fallback (seconds).
+        const DEFAULT_EXPIRES_SECS: u64 = 3600;
         let expires_in_ms = json["result"]["expires_in"]
             .as_u64()
-            .unwrap_or(3600) * 1000;
+            .unwrap_or(DEFAULT_EXPIRES_SECS);
         let now_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
-        let expires_at_us = now_us + expires_in_ms * 1000;
+        // D FIX: use saturating_mul to prevent overflow when expires_in_ms is large.
+        let expires_at_us = now_us.saturating_add(expires_in_ms.saturating_mul(1000));
 
         // Cache it with expiry
         {

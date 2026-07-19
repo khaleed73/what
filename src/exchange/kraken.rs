@@ -28,7 +28,7 @@ pub struct KrakenClient {
 
 impl KrakenClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
@@ -113,9 +113,10 @@ impl KrakenClient {
 
 /// Derive a deterministic Kraken `userref` (i32) from a client_order_id string.
 ///
-/// H2 FIX (audit): Previously, UUID-style client_order_ids couldn't parse
+/// Previously, UUID-style client_order_ids couldn't parse
 /// as i64, so userref was always 0 — meaning retries placed duplicate orders.
 /// Now we use FNV-1a hashing to derive a deterministic 31-bit positive integer.
+#[inline]
 fn derive_userref(client_order_id: Option<&String>) -> i64 {
     if let Some(coid) = client_order_id {
         if !coid.is_empty() {

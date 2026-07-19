@@ -112,6 +112,10 @@ const DEFAULT_PAPER_CAPITAL: Decimal = dec!(100_000.0);
 /// Fixed-point scale used by risk manager and balance allocator.
 const FP_SCALE: u64 = 1_000_000;
 
+/// Fixed-point scale used by the MarketArena price matrix (8 decimal places).
+/// Arena prices are stored as `price * ARENA_FP_SCALE`.
+const ARENA_FP_SCALE: u64 = 100_000_000;
+
 /// Key patterns that indicate "no real API key configured".
 const PLACEHOLDER_PATTERNS: &[&str] = &[
     "", "YOUR_", "PLACEHOLDER", "REPLACE", "XXXX", "XXXXXXXX",
@@ -264,6 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         usdt_max_pct: config.stablecoin.usdt_max_pct,
         usdc_min_pct: config.stablecoin.usdc_min_pct,
         monitored_symbols: config.stablecoin.monitored_symbols.clone(),
+        check_interval_ms: stablecoin::DEFAULT_CHECK_INTERVAL_MS,
     };
     let depeg_circuit = Arc::new(StablecoinMonitor::new(stable_config));
     println!("Stablecoin depeg circuit active — monitoring {:?}", config.stablecoin.monitored_symbols);
@@ -1606,7 +1611,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         qty: tri_qty.clone(),
                                         price: Decimal::from(
                                             signal_arena.ask_prices[idx_a].load(Ordering::Relaxed),
-                                        ) / Decimal::from(100_000_000u64),
+                                        ) / Decimal::from(ARENA_FP_SCALE),
                                         is_buy: true,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_a)
@@ -1620,7 +1625,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         qty: tri_qty.clone(),
                                         price: Decimal::from(
                                             signal_arena.bid_prices[idx_b].load(Ordering::Relaxed),
-                                        ) / Decimal::from(100_000_000u64),
+                                        ) / Decimal::from(ARENA_FP_SCALE),
                                         is_buy: leg2_is_buy,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_b)
@@ -1634,7 +1639,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         qty: tri_qty,
                                         price: Decimal::from(
                                             signal_arena.bid_prices[idx_c].load(Ordering::Relaxed),
-                                        ) / Decimal::from(100_000_000u64),
+                                        ) / Decimal::from(ARENA_FP_SCALE),
                                         is_buy: false,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_c)

@@ -7,6 +7,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing;
 
+/// Default flush interval in seconds between periodic auto-saves.
+const DEFAULT_FLUSH_INTERVAL_SECS: u64 = 30;
+/// POSIX EXDEV error code for cross-device rename (Linux/macOS).
+const EXDEV_ERRNO: i32 = 18;
+
 // ---------------------------------------------------------------------------
 // PersistentState – the serialisable snapshot the bot persists to disk
 // ---------------------------------------------------------------------------
@@ -71,7 +76,7 @@ impl AsyncPersistenceWorker {
         let worker = Self {
             state_file_path: path.to_string(),
             receiver: rx,
-            flush_interval_secs: 30,
+            flush_interval_secs: DEFAULT_FLUSH_INTERVAL_SECS,
         };
         (worker, tx)
     }
@@ -158,7 +163,7 @@ impl AsyncPersistenceWorker {
                 .map_err(|e| format!("sync_all failed: {}", e))?;
             // M-10: EXDEV fallback — rename fails across filesystems.
             if let Err(e) = fs::rename(&tmp_path, &path) {
-                if e.raw_os_error() == Some(18) {
+                if e.raw_os_error() == Some(EXDEV_ERRNO) {
                     // EXDEV: cross-device link — copy + delete instead.
                     // NOTE: 18 is libc::EXDEV on Linux/macOS (POSIX).
                     // On Windows this branch will never match.

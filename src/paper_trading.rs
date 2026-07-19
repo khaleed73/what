@@ -28,6 +28,9 @@ const LCG_M: u64 = 1 << 32;
 /// Minimum partial-fill amount in basis points (50 %).
 const PARTIAL_FILL_MIN_BPS: u64 = 5000;
 
+/// Fallback seed when SystemTime is unavailable.
+const LCG_FALLBACK_SEED: u64 = 42;
+
 /// Advance the global LCG and return the raw 32-bit value.
 /// Safe to call from multiple threads.
 fn lcg_next() -> u32 {
@@ -36,15 +39,15 @@ fn lcg_next() -> u32 {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(42);
+            .unwrap_or(LCG_FALLBACK_SEED);
         LCG_STATE.store(seed, Ordering::Relaxed);
         LCG_INITIALISED.store(1, Ordering::Relaxed);
     }
     LCG_STATE
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |s| {
+        .fetch_update(Ordering::Acquire, Ordering::Acquire, |s| {
             Some((LCG_A.wrapping_mul(s).wrapping_add(LCG_C)) % LCG_M)
         })
-        .unwrap_or(1) as u32
+        .unwrap_or(LCG_FALLBACK_SEED) as u32
 }
 
 /// Returns a pseudo-random slippage in the range **1–5 basis points** using a
@@ -148,7 +151,7 @@ impl PaperTradingPipeline {
     /// the fill is **rejected** (simulating network errors, rate limits, or
     /// insufficient exchange liquidity).
     pub fn set_fill_probability(&self, pct: u64) {
-        self.fill_probability.store(pct.min(100), Ordering::SeqCst);
+        self.fill_probability.store(pct.min(100), Ordering::Release);
     }
 
     /// Set the maximum partial-fill amount in **basis points** (0–10 000).
@@ -157,7 +160,7 @@ impl PaperTradingPipeline {
     /// in the range `[PARTIAL_FILL_MIN_BPS, partial_fill_max_pct)` divided by
     /// 10 000.  A value of 10 000 disables partial fills (100 % fill every time).
     pub fn set_partial_fill_max_pct(&self, bps: u64) {
-        self.partial_fill_max_pct.store(bps.min(10_000), Ordering::SeqCst);
+        self.partial_fill_max_pct.store(bps.min(10_000), Ordering::Release);
     }
 
     /// Set the simulated round-trip exchange latency in **microseconds**.
@@ -165,7 +168,7 @@ impl PaperTradingPipeline {
     /// Before processing a fill the pipeline sleeps for this duration, mimicking
     /// real-world network + matching-engine round-trip time.
     pub fn set_simulated_latency_us(&self, us: u64) {
-        self.simulated_latency_us.store(us, Ordering::SeqCst);
+        self.simulated_latency_us.store(us, Ordering::Release);
     }
 
     /// Allocate capital for an FX triangular arbitrage loop.
@@ -237,13 +240,13 @@ impl PaperTradingPipeline {
         let ts = Utc::now().timestamp_millis();
 
         // --- 1. Simulated latency ---
-        let latency = self.simulated_latency_us.load(Ordering::SeqCst);
+        let latency = self.simulated_latency_us.load(Ordering::Acquire);
         if latency > 0 {
             tokio::time::sleep(Duration::from_micros(latency)).await;
         }
 
         // --- 2. Fill-probability gate ---
-        let fill_pct = self.fill_probability.load(Ordering::SeqCst);
+        let fill_pct = self.fill_probability.load(Ordering::Acquire);
         let rand_val = lcg_next() as u64;
         if rand_val % 100 >= fill_pct {
             return PaperTradeRecord {
@@ -262,7 +265,7 @@ impl PaperTradingPipeline {
         // --- 3. Partial fill ---
         // A value of 10 000 bps disables partial fills (100 % every time).
         let actual_qty = {
-            let partial_max = self.partial_fill_max_pct.load(Ordering::SeqCst);
+            let partial_max = self.partial_fill_max_pct.load(Ordering::Acquire);
             if partial_max >= 10_000 {
                 qty
             } else if partial_max <= PARTIAL_FILL_MIN_BPS {
@@ -327,6 +330,14 @@ impl PaperTradingPipeline {
         if !ok {
             // Insufficient balance – return zeroed record, do NOT increment
             // counters or push to history.
+            tracing::warn!(
+                exchange_id,
+                token_id,
+                symbol = %symbol,
+                side = %side,
+                required = %total,
+                "Insufficient balance for paper trade fill"
+            );
             return PaperTradeRecord {
                 timestamp: ts,
                 exchange_id,
@@ -343,7 +354,7 @@ impl PaperTradingPipeline {
         // --- trade succeeded ---
         drop(balances); // release write lock before acquiring history lock
 
-        self.total_trades.fetch_add(1, Ordering::SeqCst);
+        self.total_trades.fetch_add(1, Ordering::Release);
 
         // Update the cached PnL in fixed-point cents.
         {
@@ -351,7 +362,7 @@ impl PaperTradingPipeline {
             let usdt = bals.get(&0u16).copied().unwrap_or(Decimal::ZERO);
             let pnl_decimal = usdt - self.initial_capital;
             let pnl_cents = decimal_to_cents(pnl_decimal);
-            self.total_pnl.store(pnl_cents, Ordering::SeqCst);
+            self.total_pnl.store(pnl_cents, Ordering::Release);
         }
 
         let record = PaperTradeRecord {
@@ -392,7 +403,7 @@ impl PaperTradingPipeline {
 
     /// Return the number of successfully filled trades.
     pub async fn get_total_trades(&self) -> u64 {
-        self.total_trades.load(Ordering::SeqCst)
+        self.total_trades.load(Ordering::Acquire)
     }
 
     /// Compute current PnL as `USDT_balance - initial_capital`.
@@ -433,8 +444,8 @@ impl PaperTradingPipeline {
         balances.insert(53u16, dec!(1500));    // AUD
         balances.insert(54u16, dec!(1300));    // CAD
 
-        self.total_trades.store(0, Ordering::SeqCst);
-        self.total_pnl.store(0, Ordering::SeqCst);
+        self.total_trades.store(0, Ordering::Release);
+        self.total_pnl.store(0, Ordering::Release);
 
         let mut history = self.trade_history.write().await;
         history.clear();

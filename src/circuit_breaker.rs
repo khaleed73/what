@@ -67,6 +67,11 @@ impl EngineCircuitBreaker {
                 Ordering::SeqCst,
             );
             self.trip_count.fetch_add(1, Ordering::SeqCst);
+            tracing::error!(
+                reason_code,
+                reason = self.trip_reason_string(),
+                "ENGINE CIRCUIT BREAKER TRIPPED — all trading frozen"
+            );
         }
     }
 
@@ -97,6 +102,14 @@ impl EngineCircuitBreaker {
     pub fn reset_forced(&self) -> bool {
         let was_frozen = self.system_frozen.swap(false, Ordering::SeqCst);
         if was_frozen {
+            let prev_reason = self.trip_reason.load(Ordering::Acquire);
+            if matches!(prev_reason, REASON_BALANCE_CORRUPTION | REASON_MANUAL_KILL | REASON_UNAUTHORIZED_POSITION) {
+                tracing::warn!(
+                    prev_reason_code = prev_reason,
+                    prev_reason = self.trip_reason_string(),
+                    "reset_forced(): CRITICAL reason cleared — operator audit required"
+                );
+            }
             self.trip_reason.store(REASON_UNKNOWN, Ordering::SeqCst);
             self.trip_timestamp_ms.store(0, Ordering::SeqCst);
         }
@@ -104,6 +117,7 @@ impl EngineCircuitBreaker {
     }
 
     /// Returns true if the system is currently frozen.
+    #[inline(always)]
     pub fn is_frozen(&self) -> bool {
         self.system_frozen.load(Ordering::Acquire)
     }
@@ -151,11 +165,13 @@ impl EngineCircuitBreaker {
     }
 
     /// Returns the reason code for the last trip.
+    #[inline(always)]
     pub fn trip_reason_code(&self) -> u64 {
         self.trip_reason.load(Ordering::Acquire)
     }
 
     /// Returns a human-readable reason string for the last trip.
+    #[inline]
     pub fn trip_reason_string(&self) -> &'static str {
         match self.trip_reason.load(Ordering::Acquire) {
             REASON_MANUAL_KILL => "Manual kill switch activated",
@@ -170,16 +186,19 @@ impl EngineCircuitBreaker {
     }
 
     /// Returns the timestamp of the last trip in milliseconds.
+    #[inline(always)]
     pub fn trip_timestamp(&self) -> u64 {
         self.trip_timestamp_ms.load(Ordering::Acquire)
     }
 
     /// Returns the total number of times the breaker has been tripped.
+    #[inline(always)]
     pub fn trip_count(&self) -> u64 {
         self.trip_count.load(Ordering::Acquire)
     }
 
     /// Returns the total number of trades rejected due to frozen state.
+    #[inline(always)]
     pub fn rejected_count(&self) -> u64 {
         self.rejected_count.load(Ordering::Acquire)
     }

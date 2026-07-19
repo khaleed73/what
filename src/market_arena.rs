@@ -39,9 +39,10 @@ impl OrderBookState {
     }
 
     /// Compute the mid-price as fixed-point.
+    /// Uses `saturating_add` to prevent u64 overflow on extreme values.
     #[inline(always)]
     pub fn mid_price_fp(&self) -> u64 {
-        (self.bid_price + self.ask_price) / 2
+        self.bid_price.saturating_add(self.ask_price) / 2
     }
 
     /// Compute the spread in fixed-point.
@@ -104,6 +105,7 @@ impl CrossExchangeTarget {
     }
 
     /// Count the number of exchanges that carry this token.
+    #[inline]
     pub fn exchange_count(&self) -> u32 {
         self.exchange_mask.count_ones()
     }

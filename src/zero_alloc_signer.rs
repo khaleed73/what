@@ -20,16 +20,31 @@ impl ZeroAllocationSigner {
     /// L-9: Minimum allowed length for API secret keys.
     const MIN_KEY_LENGTH: usize = 16;
 
+    /// LCG multiplier constant for the pseudo-random jitter in the
+    /// exponential backoff (4 billion ≈ u32::MAX range).
+    const JITTER_SCALE: f64 = 0.5;
+
     /// Creates a new signer, validating the secret key.
     ///
     /// # Panics
-    /// Panics if the secret key is shorter than 16 characters or contains
-    /// characters outside the allowed set (alphanumeric, `-`, `_`, `.`, `+`).
+    ///
+    /// Panics if the secret key is shorter than [`MIN_KEY_LENGTH`] characters
+    /// or contains characters outside the allowed set.
+    ///
+    /// # Safety
+    ///
+    /// In production, prefer [`validate_key`] + conditional construction
+    /// to avoid panicking on invalid key material from config files.
     pub fn new(secret: &str) -> Self {
-        Self::validate_key(secret)
-            .unwrap_or_else(|e| panic!("L-9: Invalid API key: {}", e));
-        Self {
-            secret_key: secrecy::SecretString::new(secret.into()),
+        match Self::validate_key(secret) {
+            Ok(()) => Self {
+                secret_key: secrecy::SecretString::new(secret.into()),
+            },
+            Err(e) => {
+                tracing::error!(key_len = secret.len(), error = %e,
+                    "L-9: Invalid API key — signer construction failed");
+                panic!("L-9: Invalid API key: {}", e);
+            }
         }
     }
 
@@ -111,6 +126,7 @@ impl ZeroAllocationSigner {
 
     /// Signs a raw string message using HMAC-SHA256.
     /// Returns the 64-character hex-encoded signature.
+    #[inline]
     pub fn sign_raw(&self, message: &str) -> String {
         use ring::hmac;
         let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret_key.expose_secret().as_bytes());
@@ -121,6 +137,7 @@ impl ZeroAllocationSigner {
     /// Generates a signed query string in the format used by most exchanges.
     ///
     /// Output: `param1=val1&param2=val2&timestamp=1234&signature=<hex>`
+    #[inline]
     pub fn generate_signed_query(&self, base_payload: &str, timestamp: u64) -> String {
         let preimage = if base_payload.is_empty() {
             format!("timestamp={}", timestamp)
@@ -135,6 +152,9 @@ impl ZeroAllocationSigner {
 
 /// Creates a decimal from a raw byte slice (zero-copy where possible).
 /// Used for parsing execution report data without allocation.
+///
+/// Returns `None` if the bytes are not valid UTF-8 or not a valid `Decimal`.
+#[inline]
 pub fn parse_decimal_from_bytes(bytes: &[u8]) -> Option<Decimal> {
     let s = std::str::from_utf8(bytes).ok()?;
     Decimal::from_str(s).ok()

@@ -46,22 +46,22 @@ impl ExchangeFeeSchedule {
     #[inline(always)]
     pub fn round_trip_taker_bps(&self, exch_a: usize, exch_b: usize) -> u64 {
         let a = self.taker_fees.get(exch_a).copied().unwrap_or_else(|| {
-            tracing::warn!(exchange = exch_a, "Unknown exchange in fee schedule, using 10 bps default");
-            10
+            tracing::warn!(exchange = exch_a, "Unknown exchange in fee schedule, using {} bps default", DEFAULT_TAKER_FEE_BPS);
+            DEFAULT_TAKER_FEE_BPS
         });
         let b = self.taker_fees.get(exch_b).copied().unwrap_or_else(|| {
-            tracing::warn!(exchange = exch_b, "Unknown exchange in fee schedule, using 10 bps default");
-            10
+            tracing::warn!(exchange = exch_b, "Unknown exchange in fee schedule, using {} bps default", DEFAULT_TAKER_FEE_BPS);
+            DEFAULT_TAKER_FEE_BPS
         });
-        a + b
+        a.saturating_add(b)
     }
 
     /// Return the **three-leg taker fee** (sum of three taker fees) for
     /// triangular arbitrage on a single exchange, in basis points.
     #[inline(always)]
     pub fn tri_leg_taker_bps(&self, exchange_id: usize) -> u64 {
-        let fee = self.taker_fees.get(exchange_id).copied().unwrap_or(10);
-        fee * 3
+        let fee = self.taker_fees.get(exchange_id).copied().unwrap_or(DEFAULT_TAKER_FEE_BPS);
+        fee.saturating_mul(3)
     }
 }
 
@@ -72,6 +72,7 @@ impl ExchangeFeeSchedule {
 /// Single slot in the order-book matrix. Used for non-hot-path bulk reads;
 /// hot-path price reads go through the atomic arrays instead.
 #[derive(Copy, Clone, Default, Debug)]
+#[non_exhaustive]
 pub struct OrderBookState {
     pub bid_price: u64,
     pub ask_price: u64,
@@ -82,6 +83,7 @@ pub struct OrderBookState {
 
 /// Pre-compiled 3-step cycle A → B → C → A on a single exchange.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TriangularLoop {
     pub token_a: u16,
     pub token_b: u16,
@@ -91,6 +93,7 @@ pub struct TriangularLoop {
 /// A token that is listed on ≥ 2 exchanges, together with a bitmask of
 /// which exchanges carry it.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct CrossExchangeTarget {
     pub token_id: u16,
     pub exchange_mask: u64,
@@ -99,6 +102,7 @@ pub struct CrossExchangeTarget {
 
 /// Outcome of an arbitrage evaluation pass.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum ArbitrageSignal {
     CrossExchange {
         buy_exchange: u16,
@@ -121,10 +125,23 @@ pub enum ArbitrageSignal {
 
 const BPS_SCALE: u64 = 10_000;
 
+/// Default taker fee in basis points used as fallback when an exchange
+/// is not found in the fee schedule (0.1 %).
+const DEFAULT_TAKER_FEE_BPS: u64 = 10;
+
+/// Maximum allowed ratio per step in triangular profit calculation.
+/// A step exceeding 100× indicates a data anomaly (e.g. near-zero ask).
+const MAX_RATIO_BPS_MULTIPLIER: u64 = 100;
+
 // ---------------------------------------------------------------------------
 // MarketArena – the core arbitrage brain
 // ---------------------------------------------------------------------------
 
+/// Core arbitrage signal evaluation engine.
+///
+/// Maintains lock-free price arrays, pre-compiled cross-exchange targets,
+/// and triangular loop definitions. The hot-path method [`Self::evaluate_tick`]
+/// is designed to complete in under 1 µs per invocation.
 pub struct MarketArena {
     /// Full order-book snapshot (for cold-path / diagnostics).
     pub matrix: Vec<OrderBookState>,
@@ -133,7 +150,9 @@ pub struct MarketArena {
     pub bid_prices: Vec<AtomicU64>,
     pub ask_prices: Vec<AtomicU64>,
 
+    /// Total number of token slots in the flat price arrays.
     pub total_tokens: usize,
+    /// Total number of exchange slots in the flat price arrays.
     pub total_exchanges: usize,
 
     /// Pre-computed at boot: one entry per token listed on ≥ 2 exchanges.
@@ -203,7 +222,7 @@ impl MarketArena {
             total_exchanges,
         );
 
-        let size = total_exchanges * total_tokens;
+        let size = total_exchanges.saturating_mul(total_tokens);
 
         let bid_prices: Vec<AtomicU64> = (0..size).map(|_| AtomicU64::new(0)).collect();
         let ask_prices: Vec<AtomicU64> = (0..size).map(|_| AtomicU64::new(0)).collect();
@@ -223,7 +242,7 @@ impl MarketArena {
             enabled_cross: AtomicBool::new(true),
             enabled_tri: AtomicBool::new(true),
             fee_schedule: std::sync::RwLock::new(
-                ExchangeFeeSchedule::new(total_exchanges, 10), // default 0.1%
+                ExchangeFeeSchedule::new(total_exchanges, DEFAULT_TAKER_FEE_BPS),
             ),
             fee_aware_enabled: AtomicBool::new(true), // enabled by default
             // Default: all exchanges eligible for both strategies.
@@ -237,8 +256,10 @@ impl MarketArena {
     // -----------------------------------------------------------------------
 
     /// Register a token as actively discovered by the coin finder.
+    ///
     /// Called from the coin finder's cold path when a token passes all filters.
     /// Uses `try_lock()` for non-blocking insertion on the hot path.
+    #[inline]
     pub fn register_active_token(&self, token_id: u16) {
         if let Ok(mut tokens) = self.active_tokens.lock() {
             if !tokens.contains(&token_id) {
@@ -248,6 +269,7 @@ impl MarketArena {
     }
 
     /// Returns a snapshot of all currently active token IDs.
+    ///
     /// Uses a blocking `lock()` — do **not** call this from a hot-path
     /// async context.  The signal loop should use `active_tokens.try_lock()`
     /// directly to avoid blocking the tokio runtime.
@@ -327,7 +349,7 @@ impl MarketArena {
                 let ask = self.ask_prices[idx].load(Ordering::Acquire);
                 if bid > 0 && ask > 0 {
                     exchange_mask |= 1u64 << exch_id;
-                    shared_count += 1;
+                    shared_count = shared_count.saturating_add(1);
                 }
             }
 
@@ -589,7 +611,7 @@ impl MarketArena {
 
                     // Guard: reject if any step produced an unreasonable ratio (>100x),
                     // which indicates a data anomaly (e.g., near-zero ask price).
-                    if step1 > BPS_SCALE * 100 || step3 > BPS_SCALE * 100 {
+                    if step1 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER || step3 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER {
                         continue;
                     }
 

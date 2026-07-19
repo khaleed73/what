@@ -30,7 +30,9 @@ pub enum Side {
 /// A single price level in the order book.
 #[derive(Debug, Clone, Copy)]
 pub struct PriceLevel {
+    /// Price of this level.
     pub price: Decimal,
+    /// Available quantity at this price.
     pub quantity: Decimal,
 }
 
@@ -47,6 +49,8 @@ pub struct PriceLevel {
 /// BTreeMap corruption.
 #[derive(Debug, Clone, Default)]
 pub struct OrderBook {
+    // J: Doc comments are on individual fields below.
+
     /// Price → quantity, sorted descending via `Reverse` wrapper at query
     /// time or by iterating `.rev()`.
     pub bids: BTreeMap<Decimal, Decimal>,
@@ -235,6 +239,7 @@ pub struct OrderBookDelta {
     /// A quantity of zero means the level should be deleted.
     pub bid_updates: Vec<(Decimal, Decimal)>,
     /// Price levels to insert / update / remove on the ask side.
+    /// A quantity of zero means the level should be deleted.
     pub ask_updates: Vec<(Decimal, Decimal)>,
     /// When true the delta represents a full snapshot and the book should be
     /// cleared before applying these levels.
@@ -398,6 +403,7 @@ impl Default for L2OrderBookManager {
 ///
 /// * Best bid = highest bid price (last entry in the BTreeMap).
 /// * Best ask = lowest ask price  (first entry in the BTreeMap).
+#[inline]
 pub fn get_best_bid_ask(book: &OrderBook) -> Option<(Decimal, Decimal, Decimal, Decimal)> {
     let best_bid = book.bids.last_key_value()?;
     let best_ask = book.asks.first_key_value()?;
@@ -756,8 +762,7 @@ pub fn build_orderbook_subscribe(exchange_id: u16, symbols: &[String]) -> Option
 // Symbol format converters
 // ---------------------------------------------------------------------------
 
-/// `"BTCUSDT"` → `"BTC-USDT"` (inserts hyphen before the last 3 chars, or
-/// before the last quote-stable suffix if recognisable).
+/// Converts a concatenated symbol to OKX format (`"BTCUSDT"` → `"BTC-USDT"`).
 fn symbol_to_okx(sym: &str) -> String {
     if sym.len() > 3 {
         let sep = find_quote_separator(sym);
@@ -767,7 +772,7 @@ fn symbol_to_okx(sym: &str) -> String {
     }
 }
 
-/// `"BTCUSDT"` → `"BTC_USDT"`
+/// Converts a concatenated symbol to GateIO format (`"BTCUSDT"` → `"BTC_USDT"`).
 fn symbol_to_gateio(sym: &str) -> String {
     if sym.len() > 3 {
         let sep = find_quote_separator(sym);
@@ -777,7 +782,7 @@ fn symbol_to_gateio(sym: &str) -> String {
     }
 }
 
-/// `"BTCUSDT"` → `"tBTCUSD"`
+/// Converts a concatenated symbol to Bitfinex format (`"BTCUSDT"` → `"tBTC_USDT"`).
 fn symbol_to_bitfinex(sym: &str) -> String {
     if sym.len() > 3 {
         let sep = find_quote_separator(sym);
@@ -787,18 +792,18 @@ fn symbol_to_bitfinex(sym: &str) -> String {
     }
 }
 
-/// `"BTCUSDT"` → `"XBTUSDT"` (BTC → XBT for BitMEX)
+/// Converts BTC to XBT for BitMEX (`"BTCUSDT"` → `"XBTUSDT"`).
 fn symbol_to_bitmex(sym: &str) -> String {
     sym.replace("BTCUSDT", "XBTUSDT")
         .replace("BTC", "XBT")
 }
 
-/// `"BTCUSDT"` → `"BTC-USDT"`
+/// Converts a concatenated symbol to Coinbase format (`"BTCUSDT"` → `"BTC-USDT"`).
 fn symbol_to_coinbase(sym: &str) -> String {
     symbol_to_okx(sym)
 }
 
-/// `"BTCUSDT"` → `"XBT/USDT"`
+/// Converts a concatenated symbol to Kraken format (`"BTCUSDT"` → `"XBT/USDT"`).
 fn symbol_to_kraken(sym: &str) -> String {
     if sym.len() > 3 {
         let sep = find_quote_separator(sym);
@@ -1381,9 +1386,8 @@ fn parse_bitfinex_book(raw: &str) -> Option<OrderBookDelta> {
     } else if arr.len() >= 2 {
         // Multi-level: [chan_id, [[px, cnt, amt], ...]]
         let levels = arr[1].as_array()?;
-        // Heuristic: snapshots typically have many levels (>= 10),
-        // while deltas are usually single-level updates.
-        is_snapshot = levels.len() >= 10;
+        // H-4: Snapshot detection threshold
+        is_snapshot = levels.len() >= SNAPSHOT_LEVEL_THRESHOLD;
 
         for level in levels {
             let level_arr = level.as_array()?;
@@ -1906,7 +1910,7 @@ fn parse_deribit_book(raw: &str) -> Option<OrderBookDelta> {
     // Heuristic snapshot detection: if a "type" field indicates snapshot,
     // or if there are many levels (snapshots typically have > 10 levels).
     let is_snapshot = v.get("type").and_then(|t| t.as_str()) == Some("snapshot")
-        || total_levels > 10;
+        || total_levels > SNAPSHOT_LEVEL_THRESHOLD;
 
     Some(OrderBookDelta {
         bid_updates,
@@ -1958,7 +1962,7 @@ fn parse_generic_book(raw: &str) -> Option<OrderBookDelta> {
 
     // Heuristic snapshot detection: check for "type":"snapshot" or large level count.
     let is_snapshot = v.get("type").and_then(|t| t.as_str()) == Some("snapshot")
-        || total_levels > 10;
+        || total_levels > SNAPSHOT_LEVEL_THRESHOLD;
 
     Some(OrderBookDelta {
         bid_updates,
@@ -2014,6 +2018,7 @@ fn parse_price_qty_pairs_3(arr: &[serde_json::Value]) -> Vec<(Decimal, Decimal)>
 
 /// Parse a `serde_json::Value` into a `Decimal`.
 /// Handles both string (`"50000.50"`) and number (`50000.50`) forms.
+#[inline]
 fn parse_decimal_value(v: &serde_json::Value) -> Option<Decimal> {
     if let Some(s) = v.as_str() {
         s.parse::<Decimal>().ok()
@@ -2023,6 +2028,17 @@ fn parse_decimal_value(v: &serde_json::Value) -> Option<Decimal> {
         Some(Decimal::from(n))
     } else { v.as_u64().map(Decimal::from) }
 }
+
+/// H-3: L2 WS message size limit (1 MiB).
+/// Messages larger than this are dropped to prevent OOM.
+const L2_WS_MAX_MESSAGE_SIZE: usize = 1_048_576;
+
+/// H-4: Heuristic threshold: if a multi-level update contains more than this
+/// many levels, it is assumed to be a snapshot.
+const SNAPSHOT_LEVEL_THRESHOLD: usize = 10;
+
+/// H-5: Connect timeout in seconds for L2 WS connections.
+const L2_WS_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 // ---------------------------------------------------------------------------
 // L2OrderBookListener — WebSocket consumer for order book data
@@ -2087,7 +2103,7 @@ impl L2OrderBookListener {
 
         loop {
             let connect_result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(L2_WS_CONNECT_TIMEOUT_SECS),
                 connect_async(&self.wss_url),
             ).await;
 
@@ -2133,7 +2149,8 @@ impl L2OrderBookListener {
                         match msg {
                             Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                                 // Reject oversized messages to prevent OOM.
-                                if text.len() > 1_048_576 {
+                                // H-3: Reject oversized messages to prevent OOM.
+                                if text.len() > L2_WS_MAX_MESSAGE_SIZE {
                                     warn!(
                                         exchange_id = ex,
                                         msg_len = text.len(),
@@ -2216,10 +2233,6 @@ impl L2OrderBookListener {
                             consecutive_failures,
                             "L2 WS connect failed {} times — giving up, feed worker exiting",
                             MAX_CONSECUTIVE_FAILURES
-                        );
-                        tracing::error!(
-                            exchange = %self.exchange_name,
-                            "WebSocket listener died after 50 consecutive failures — manual intervention required"
                         );
                         return;
                     }

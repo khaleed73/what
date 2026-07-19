@@ -312,21 +312,27 @@ impl RebalanceMatrixEngine {
             return None;
         }
 
+        /// Tolerance for how far the post-rebalance ratio can be from 50/50.
+        /// 0.05 = 5 %. Values beyond this are rejected to prevent
+        /// oscillating rebalance loops.
+        const RATIO_TOLERANCE_PCT: Decimal = dec!(0.05);
         let new_ratio_source = new_source / (new_source + new_dest);
-        if (new_ratio_source - Decimal::from(5) / Decimal::from(10)).abs() > dec!(0.05) {
+        if (new_ratio_source - Decimal::from(5) / Decimal::from(10)).abs() > RATIO_TOLERANCE_PCT {
             // If we'd be more than 5% off from 50/50, skip
             return None;
         }
 
         let current_imbalance = ratio_x.max(ratio_y);
 
+        /// Target ratio for a perfectly balanced split (50/50).
+        const TARGET_RATIO: Decimal = dec!(0.5);
         Some(RebalanceAction {
             transfer_amount,
             from_exchange: from_id,
             to_exchange: to_id,
             estimated_fee: fee,
             current_imbalance_ratio: current_imbalance,
-            target_ratio: Decimal::from(5) / Decimal::from(10),
+            target_ratio: TARGET_RATIO,
         })
     }
 

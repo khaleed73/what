@@ -28,6 +28,13 @@ pub struct BinanceClient {
     seen_assets: Arc<RwLock<HashSet<String>>>,
 }
 
+    /// Default HTTP timeout in seconds when not configured.
+    const DEFAULT_TIMEOUT_SECS: u64 = 30;
+    /// Binance rate limit in requests per second.
+    const BINANCE_RATE_LIMIT: u64 = 20;
+    /// Time sync deadline in seconds.
+    const TIME_SYNC_DEADLINE_SECS: u64 = 30;
+
 impl BinanceClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
         let timeout_secs = config.http_timeout_secs.unwrap_or(30);
@@ -36,7 +43,7 @@ impl BinanceClient {
             name,
             config,
             http,
-            rate_limiter: RateLimiter::new(20), // Binance: 20 req/s limit
+            rate_limiter: RateLimiter::new(BINANCE_RATE_LIMIT),
             time_offset_ms: Arc::new(RwLock::new(0)),
             time_sync_at: Arc::new(RwLock::new(None)),
             seen_assets: Arc::new(RwLock::new(HashSet::new())),
@@ -103,7 +110,7 @@ impl BinanceClient {
 
     /// Get a server-synchronized timestamp, re-syncing every 30 seconds.
     async fn get_binance_timestamp(&self) -> Result<u64> {
-        let sync_deadline = Duration::from_secs(30);
+        let sync_deadline = Duration::from_secs(TIME_SYNC_DEADLINE_SECS);
         let needs_sync = {
             let last = self.time_sync_at.read().await;
             last.map(|t| t.elapsed() > sync_deadline).unwrap_or(true)

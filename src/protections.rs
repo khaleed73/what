@@ -14,6 +14,7 @@
 use crate::configs::ValidatedRiskConfig;
 use chrono::Utc;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
@@ -182,13 +183,13 @@ impl ExchangeHealthTracker {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn idx(exchange_id: u16) -> usize {
         (exchange_id as usize) % MAX_EXCHANGES
     }
 
     /// Returns `true` if the exchange is currently paused.
-    #[inline]
+    #[inline(always)]
     fn is_paused(&self, exchange_id: u16) -> bool {
         let now = current_time_millis();
         let expires = self.pause_until[Self::idx(exchange_id)].load(Ordering::Relaxed);
@@ -203,12 +204,12 @@ impl ExchangeHealthTracker {
         let count = self.failure_counts[idx].fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         if count >= threshold {
             let now = current_time_millis();
-            self.pause_until[idx].store(now + pause_duration_ms, Ordering::Relaxed);
+            self.pause_until[idx].store(now.saturating_add(pause_duration_ms), Ordering::Relaxed);
         }
     }
 
     /// Reset the failure counter for a successful interaction.
-    #[inline]
+    #[inline(always)]
     fn record_success(&self, exchange_id: u16) {
         self.failure_counts[Self::idx(exchange_id)].store(0, Ordering::Relaxed);
     }
@@ -524,13 +525,13 @@ impl RiskManager {
     // -----------------------------------------------------------------------
 
     /// Current session PnL in **cents**.
-    #[inline]
+    #[inline(always)]
     pub fn get_session_pnl(&self) -> i64 {
         self.session_pnl.load(Ordering::Relaxed)
     }
 
     /// Current drawdown in **basis points** (10 000 = 100 %).
-    #[inline]
+    #[inline(always)]
     pub fn get_current_drawdown_pct(&self) -> u64 {
         self.drawdown.drawdown_bps()
     }
@@ -591,12 +592,13 @@ impl RiskManager {
         const MAX_CAS_ITERATIONS: u32 = 100;
         for _ in 0..MAX_CAS_ITERATIONS {
             let current = self.total_exposure.load(Ordering::Acquire);
-            if current.saturating_add(size_fp) > max_exp_fp {
+            let new_total = current.saturating_add(size_fp);
+            if new_total > max_exp_fp {
                 return Err("exposure limit breached".into());
             }
             match self.total_exposure.compare_exchange_weak(
                 current,
-                current + size_fp,
+                new_total,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
@@ -618,7 +620,7 @@ impl RiskManager {
 // ---------------------------------------------------------------------------
 
 /// Current Unix timestamp in milliseconds.
-#[inline]
+#[inline(always)]
 fn current_time_millis() -> i64 {
     Utc::now().timestamp_millis()
 }
@@ -649,10 +651,10 @@ fn dollars_to_cents(dollars: Decimal) -> i64 {
     if neg { -val } else { val }
 }
 
-/// `(bps_u128 × capital_fp_u128) / 10_000`  →  fixed-point dollars.
+/// `(bps_u128 × capital_fp_u128) / 10_000` → fixed-point dollars.
 ///
 /// Returns 0 when `capital_fp` is 0.
-#[inline]
+#[inline(always)]
 fn bps_of_capital_fp(bps: u64, capital_fp: u64) -> u64 {
     if capital_fp == 0 {
         return 0;
@@ -660,12 +662,12 @@ fn bps_of_capital_fp(bps: u64, capital_fp: u64) -> u64 {
     ((bps as u128) * (capital_fp as u128) / (BPS_SCALE as u128)) as u64
 }
 
-/// `(bps_u128 × capital_fp_u128) / 100_000_000`  →  cents.
+/// `(bps_u128 × capital_fp_u128) / 100_000_000` → cents.
 ///
 /// Derivation: bps_fraction × capital_dollars × 100
 ///           = (bps / 10_000) × (capital_fp / 1_000_000) × 100
 ///           = bps × capital_fp / 100_000_000
-#[inline]
+#[inline(always)]
 fn bps_of_capital_cents(bps: u64, capital_fp: u64) -> i64 {
     if capital_fp == 0 {
         return 0;

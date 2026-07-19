@@ -47,6 +47,7 @@ impl AtomicLevel {
     /// NOTE: This goes through String allocation, which is slow (~100ns).
     /// For hot-path use, consider a pure-integer approach: extract the
     /// mantissa/coefficient directly from the Decimal's internal representation.
+    #[inline]
     fn decimal_to_fp(d: Decimal) -> u64 {
         match d * Decimal::from(FP_SCALE_U64) {
             scaled if scaled >= Decimal::ZERO => {
@@ -66,6 +67,7 @@ impl AtomicLevel {
     }
 
     /// Converts a fixed-point u64 back to Decimal.
+    #[inline]
     fn fp_to_decimal(fp: u64) -> Decimal {
         Decimal::from(fp) / Decimal::from(FP_SCALE_U64)
     }

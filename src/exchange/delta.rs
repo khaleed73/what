@@ -28,7 +28,7 @@ pub struct DeltaExchange {
 
 impl DeltaExchange {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
@@ -125,9 +125,10 @@ impl DeltaExchange {
         Ok(json)
     }
 
-    /// Attempt to parse a symbol string as a numeric product_id.
-    /// Falls back to the symbol itself if it's not a number.
-    fn resolve_product_id(symbol: &str) -> String {
+/// Attempt to parse a symbol string as a numeric product_id.
+/// Falls back to the symbol itself if it's not a number.
+#[inline]
+fn resolve_product_id(symbol: &str) -> String {
         // If the symbol looks like "SYMBOL:12345", extract the numeric part
         if let Some(idx) = symbol.rfind(':') {
             let id_part = &symbol[idx + 1..];
@@ -143,16 +144,18 @@ impl DeltaExchange {
         symbol.to_string()
     }
 
-    /// Map an internal OrderSide to the Delta API string.
-    fn side_str(side: OrderSide) -> &'static str {
+/// Map an internal OrderSide to the Delta API string.
+#[inline]
+fn side_str(side: OrderSide) -> &'static str {
         match side {
             OrderSide::Buy => "buy",
             OrderSide::Sell => "sell",
         }
     }
 
-    /// Build a standard `now_ms` timestamp for `OrderResponse`.
-    fn now_ms() -> u64 {
+/// Build a standard `now_ms` timestamp for `OrderResponse`.
+#[inline]
+fn now_ms() -> u64 {
         chrono::Utc::now().timestamp_millis() as u64
     }
 }

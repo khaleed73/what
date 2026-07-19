@@ -10,6 +10,13 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
+/// Default maximum allowed single-jump drift in milliseconds.
+const DEFAULT_MAX_DRIFT_MS: i64 = 5000;
+/// Number of initial samples required before trusting the median.
+const DEFAULT_SAMPLES_REQUIRED: usize = 3;
+/// Sample buffer capacity for median-based first estimate.
+const SAMPLE_BUFFER_CAPACITY: usize = 5;
+
 /// Manages clock offset between local machine and a single exchange server.
 pub struct TimestampSynchronizer {
     /// Clock offset in milliseconds. Positive = server is ahead, Negative = server is behind.
@@ -51,16 +58,16 @@ impl TimestampSynchronizer {
             max_drift_fatal_ms,
             last_sync: std::sync::Mutex::new(Instant::now()),
             sync_interval,
-            max_drift_ms: 5000,
-            sample_buffer: std::sync::Mutex::new(Vec::with_capacity(5)),
-            samples_required: 3,
+            max_drift_ms: DEFAULT_MAX_DRIFT_MS,
+            sample_buffer: std::sync::Mutex::new(Vec::with_capacity(SAMPLE_BUFFER_CAPACITY)),
+            samples_required: DEFAULT_SAMPLES_REQUIRED,
             last_returned_ms: AtomicI64::new(i64::MIN),
         }
     }
 
     /// Creates a synchronizer with sensible defaults.
     pub fn with_defaults(exchange_name: &str) -> Self {
-        Self::new(exchange_name, 500, 5000, Duration::from_secs(300))
+        Self::new(exchange_name, 500, DEFAULT_MAX_DRIFT_MS, Duration::from_secs(300))
     }
 
     /// Update the clock offset based on a server time response.
@@ -95,7 +102,7 @@ impl TimestampSynchronizer {
 
         // Guard against non-linear drift: reject if the jump from the
         // currently stored offset exceeds `max_drift_ms`.
-        let current = self.offset_ms.load(Ordering::SeqCst);
+        let current = self.offset_ms.load(Ordering::Acquire);
         if (offset - current).abs() > self.max_drift_ms {
             tracing::warn!(
                 exchange = %self.exchange_name,
@@ -122,7 +129,7 @@ impl TimestampSynchronizer {
         }
 
         // Store the offset.
-        self.offset_ms.store(offset, Ordering::SeqCst);
+        self.offset_ms.store(offset, Ordering::Release);
         *self.last_sync.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
 
         if abs_offset > self.max_drift_warn_ms {
@@ -152,12 +159,12 @@ impl TimestampSynchronizer {
     #[inline]
     pub fn adjusted_timestamp_ms(&self) -> i64 {
         let local_ms = chrono::Utc::now().timestamp_millis();
-        let adjusted = local_ms + self.offset_ms.load(Ordering::SeqCst);
+        let adjusted = local_ms + self.offset_ms.load(Ordering::Acquire);
         // Enforce monotonicity: never return a value less than the previous one.
         loop {
-            let prev = self.last_returned_ms.load(Ordering::SeqCst);
+            let prev = self.last_returned_ms.load(Ordering::Acquire);
             let result = adjusted.max(prev);
-            if result == prev || self.last_returned_ms.compare_exchange_weak(prev, result, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            if result == prev || self.last_returned_ms.compare_exchange_weak(prev, result, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 return result;
             }
         }
@@ -166,13 +173,13 @@ impl TimestampSynchronizer {
     /// Returns the current offset in milliseconds.
     #[inline]
     pub fn offset_ms(&self) -> i64 {
-        self.offset_ms.load(Ordering::SeqCst)
+        self.offset_ms.load(Ordering::Acquire)
     }
 
     /// Returns `true` if the clock drift is within acceptable bounds.
     #[inline]
     pub fn is_within_bounds(&self) -> bool {
-        self.offset_ms.load(Ordering::SeqCst).abs() <= self.max_drift_fatal_ms
+        self.offset_ms.load(Ordering::Acquire).abs() <= self.max_drift_fatal_ms
     }
 
     /// Returns `true` if sync is stale and needs re-syncing.

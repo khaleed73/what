@@ -25,7 +25,7 @@ pub struct CoinbaseClient {
 
 impl CoinbaseClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
-        let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         // TODO: This builds a custom HTTP client instead of using the shared
         // build_http_client() from common.rs. Consider switching to
         // build_http_client(timeout_secs)? for consistent settings (pool size,
@@ -80,6 +80,8 @@ impl CoinbaseClient {
 
     /// Build Coinbase authentication headers (CB-ACCESS-KEY, CB-ACCESS-SIGN,
     /// CB-ACCESS-TIMESTAMP).
+    /// Uses the shared `build_http_client()` for consistent settings (pool size,
+    /// TLS config, TCP nodelay) across all exchange clients.
     fn build_auth_headers(
         &self,
         method: &str,

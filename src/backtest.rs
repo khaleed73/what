@@ -514,10 +514,10 @@ impl BacktestEngine {
         let max_drawdown = compute_max_drawdown(&equity_curve);
 
         // Sharpe ratio (annualized).
-        // M-8 fix: Bars are 1-second intervals, so annual_steps = 86400 * 365.
-        let bar_interval_secs: u64 = 1;
-        let annual_steps = (86_400u64 / bar_interval_secs) * 365;
-        let sharpe_ratio = compute_sharpe_ratio(&equity_curve, annual_steps);
+        /// M-8 fix: Bars are 1-second intervals, so annual_steps = 86400 * 365.
+        const BAR_INTERVAL_SECS: u64 = 1;
+        const ANNUAL_MULTIPLIER: u64 = (86_400u64 / BAR_INTERVAL_SECS) * 365;
+        let sharpe_ratio = compute_sharpe_ratio(&equity_curve, ANNUAL_MULTIPLIER);
 
         info!(
             total_pnl = %total_pnl,
@@ -561,9 +561,22 @@ impl BacktestEngine {
             "timestamp,exchange_id,symbol,bid_price,ask_price,volume_24h"
         );
 
-        let base_ts = 1_700_000_000_000i64; // Nov 2023
-        let exchanges = [0u16, 1u16, 2u16]; // Binance, Bybit, OKX
-        let symbols = ["BTCUSDT", "ETHUSDT"];
+/// LCG seed for deterministic pseudo-random data generation.
+const LCG_SEED: u64 = 42;
+
+/// Timestamp interval in milliseconds for generated bars.
+const BAR_TIMESTAMP_INTERVAL_MS: i64 = 1000;
+
+/// Probability (0.0–1.0) that a bar gets an injected arb-eligible spread.
+const SPREAD_INJECT_PROBABILITY: f64 = 0.05;
+
+/// Default exchange IDs used for sample CSV generation.
+const SAMPLE_EXCHANGE_IDS: [u16; 3] = [0u16, 1u16, 2u16];
+
+/// Default symbols used for sample CSV generation.
+const SAMPLE_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
+        // Starting timestamp for generated bars (2023-11-15T00:00:00Z in ms).
+        let base_ts: i64 = 1700000000000;
         // L-5 fix: Use realistic ETH base price ($2200, not $2280).
         let base_prices: HashMap<&str, Decimal> =
             [("BTCUSDT", dec(43000.0)), ("ETHUSDT", dec(2200.0))]
@@ -572,21 +585,21 @@ impl BacktestEngine {
                 .collect();
 
         // Simple pseudo-random using a linear congruential generator.
-        let mut seed: u64 = 42;
+        let mut seed: u64 = LCG_SEED;
         let mut next_rand = move || -> f64 {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             (seed >> 33) as f64 / (1u64 << 31) as f64
         };
 
-        // Spread injection probability (5% of bars get an arb spread).
-        let spread_inject_prob = 0.05;
+        // Spread injection probability.
+        let spread_inject_prob = SPREAD_INJECT_PROBABILITY;
 
         for i in 0..num_bars {
-            let ts = base_ts + (i as i64 * 1000); // 1-second intervals
-            let ex_idx = i % exchanges.len();
-            let sym_idx = i % symbols.len();
-            let exchange_id = exchanges[ex_idx];
-            let symbol = symbols[sym_idx];
+            let ts = base_ts + (i as i64 * BAR_TIMESTAMP_INTERVAL_MS);
+            let ex_idx = i % SAMPLE_EXCHANGE_IDS.len();
+            let sym_idx = i % SAMPLE_SYMBOLS.len();
+            let exchange_id = SAMPLE_EXCHANGE_IDS[ex_idx];
+            let symbol = SAMPLE_SYMBOLS[sym_idx];
 
             let base = base_prices[symbol];
 
@@ -740,6 +753,7 @@ fn parse_csv_bars(content: &str) -> Result<Vec<PriceBar>, String> {
 ///
 /// Drawdown is defined as `(peak - trough) / peak` and the function
 /// returns the maximum observed drawdown across the entire curve.
+#[inline]
 fn compute_max_drawdown(equity_curve: &[Decimal]) -> Decimal {
     if equity_curve.is_empty() {
         return Decimal::ZERO;
@@ -762,6 +776,9 @@ fn compute_max_drawdown(equity_curve: &[Decimal]) -> Decimal {
 
     max_dd
 }
+
+/// Newton's method iteration count for square root precision.
+const SQRT_ITERATIONS: usize = 20;
 
 /// Compute annualized Sharpe ratio from an equity curve.
 ///
@@ -792,7 +809,7 @@ fn compute_sharpe_ratio(equity_curve: &[Decimal], annual_steps: u64) -> Decimal 
     let mean = sum / n;
 
     // M-8 fix: Use sample variance (n-1 denominator) for unbiased estimate.
-        let variance: Decimal = returns
+    let variance: Decimal = returns
         .iter()
         .map(|r| {
             let diff = *r - mean;
@@ -802,7 +819,7 @@ fn compute_sharpe_ratio(equity_curve: &[Decimal], annual_steps: u64) -> Decimal 
         / (n - Decimal::ONE);
 
     let std_dev = if variance >= Decimal::ZERO {
-        decimal_sqrt(variance, 20)
+        decimal_sqrt(variance, SQRT_ITERATIONS)
     } else {
         Decimal::ZERO
     };
@@ -815,7 +832,7 @@ fn compute_sharpe_ratio(equity_curve: &[Decimal], annual_steps: u64) -> Decimal 
     let raw_sharpe = mean / std_dev;
 
     // sqrt(annual_steps) approximation using Newton's method.
-    let annual_factor = decimal_sqrt(Decimal::from(annual_steps), 20);
+    let annual_factor = decimal_sqrt(Decimal::from(annual_steps), SQRT_ITERATIONS);
 
     raw_sharpe * annual_factor
 }
@@ -823,7 +840,8 @@ fn compute_sharpe_ratio(equity_curve: &[Decimal], annual_steps: u64) -> Decimal 
 /// Compute square root of a `Decimal` using Newton's method.
 ///
 /// `iterations` controls precision.  20 iterations is sufficient for
-/// financial calculations.
+/// financial calculations. Returns `Decimal::ZERO` for non-positive inputs.
+#[inline]
 fn decimal_sqrt(value: Decimal, iterations: usize) -> Decimal {
     if value <= Decimal::ZERO {
         return Decimal::ZERO;
