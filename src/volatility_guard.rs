@@ -117,6 +117,12 @@ impl VolatilityGuard {
         let spread = best_ask - best_bid;
         let current_spread_bps = spread * Decimal::from(10_000u64) / mid;
 
+        // Guard against unreasonable spreads that would poison the EMA.
+        // 1 trillion bps (= 10 billion %) is clearly nonsensical for any real spread.
+        if current_spread_bps <= Decimal::ZERO || current_spread_bps > Decimal::from(1_000_000_000_000u64) {
+            return false;
+        }
+
         // Update EMA: ema = α * new + (1 - α) * ema
         // α = 2 / (period + 1)
         let period = self.ema_period.load(Ordering::SeqCst);
@@ -181,6 +187,11 @@ impl VolatilityGuard {
         }
         let mid = (best_bid + best_ask) / Decimal::TWO;
         let current_spread_bps = (best_ask - best_bid) * Decimal::from(10_000u64) / mid;
+
+        // Guard against unreasonable spreads that would poison the EMA.
+        if current_spread_bps <= Decimal::ZERO || current_spread_bps > Decimal::from(1_000_000_000_000u64) {
+            return;
+        }
 
         let period = self.ema_period.load(Ordering::SeqCst);
         let alpha = Decimal::from(2u64) / Decimal::from(period + 1);

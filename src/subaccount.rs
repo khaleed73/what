@@ -416,7 +416,7 @@ impl SubAccountManager {
                         .unwrap_or(false)
                 })
             })
-            .unwrap_or(true); // Assume trade if we can read the account
+            .unwrap_or(false);
 
         let can_withdraw = v
             .get("permissions")
@@ -489,10 +489,15 @@ impl SubAccountManager {
             .and_then(|r| r.get("accountType"))
             .is_some(); // If we can read the account, we can likely trade
 
+        warn!(
+            "Bybit V5 API does not expose withdrawal permission in balance response; \
+             assuming can_withdraw=true (unsafe) — verify key permissions manually"
+        );
+
         Ok(ApiKeyPermission {
             can_read: true,
             can_trade,
-            can_withdraw: false, // Bybit V5 doesn't expose this in balance response
+            can_withdraw: true, // unsafe default — Bybit V5 doesn't expose this in balance response
             can_deposit: false,
             ip_restricted: false,
             allowed_ips: Vec::new(),

@@ -197,12 +197,20 @@ impl WithdrawalExecutor {
             })
             .collect();
 
-        Self {
+        let executor = Self {
             http_client,
             execution_pool,
             rest_urls,
             credentials,
+        };
+
+        for (ex_id, url) in &executor.rest_urls {
+            if !url.starts_with("https://") {
+                tracing::error!(exchange = ex_id, url = %url, "CRITICAL: withdrawal URL must use HTTPS");
+            }
         }
+
+        executor
     }
 
     // -------------------------------------------------------------------
@@ -230,6 +238,10 @@ impl WithdrawalExecutor {
         }
 
         let exchange_name = exchange_name_by_id(req.exchange_id);
+        if req.amount <= Decimal::ZERO {
+            return Err("withdrawal amount must be positive".into());
+        }
+
         info!(
             exchange = exchange_name,
             currency = %req.currency,

@@ -114,7 +114,8 @@ impl PayloadBuffer {
         unsafe {
             let ptr = (*self.data.get()).as_ptr() as *const u8;
             let slice = std::slice::from_raw_parts(ptr, self.len());
-            std::str::from_utf8_unchecked(slice)
+            std::str::from_utf8(slice)
+                .expect("PayloadArena data is guaranteed ASCII by construction")
         }
     }
 
@@ -175,6 +176,7 @@ impl PreSignedPayloadArena {
         let idx = self.next_index.get();
         let buf = &self.buffers[idx % self.buffers.len()];
         self.next_index.set(idx + 1);
+        buf.clear();
         buf
     }
 

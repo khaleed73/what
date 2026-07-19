@@ -204,8 +204,7 @@ impl Exchange for BitstampExchange {
             .await?;
         self.check_bitstamp_errors(&json)?;
 
-        let order_id = extract_order_id(&json["id"])
-            .unwrap_or_else(|_| "unknown".to_string());
+        let order_id = extract_order_id(&json["id"])?;
 
         // Try to fetch order status for fill info
         let (filled_qty, avg_price) = match self.fetch_order_status(&order.symbol, &order_id).await {
@@ -420,8 +419,7 @@ impl Exchange for BitstampExchange {
             .await?;
         self.check_bitstamp_errors(&json)?;
 
-        let order_id = extract_order_id(&json["id"])
-            .unwrap_or_else(|_| "unknown".to_string());
+        let order_id = extract_order_id(&json["id"])?;
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         Ok(OrderResponse {

@@ -160,6 +160,8 @@ impl AsyncPersistenceWorker {
             if let Err(e) = fs::rename(&tmp_path, &path) {
                 if e.raw_os_error() == Some(18) {
                     // EXDEV: cross-device link — copy + delete instead.
+                    // NOTE: 18 is libc::EXDEV on Linux/macOS (POSIX).
+                    // On Windows this branch will never match.
                     std::fs::copy(&tmp_path, &path).map_err(|e| format!("EXDEV copy failed: {}", e))?;
                     std::fs::remove_file(&tmp_path).map_err(|e| format!("EXDEV cleanup failed: {}", e))?;
                 } else {

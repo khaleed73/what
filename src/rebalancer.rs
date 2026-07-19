@@ -63,6 +63,9 @@ use serde_json;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+/// Default withdrawal network used when no per-request network is specified.
+const DEFAULT_WITHDRAWAL_NETWORK: &str = "ARBITRUM";
+
 use crate::balance_allocator::LocalCapitalAllocator;
 use crate::signer::PrivateApiSigner;
 
@@ -849,7 +852,7 @@ impl AutoCapitalRebalancer {
                             if amt > Decimal::ZERO {
                                 // C-1 FIX: Reject stale deposits whose amount doesn't match
                                 // the expected withdrawal amount (within $1 tolerance).
-                                if (amt - expected_amount).abs() > Decimal::from(1_000_000) {
+                                if (amt - expected_amount).abs() > Decimal::ONE {
                                     continue;
                                 }
                                 return DepositVerifyResult::Confirmed(amt);
@@ -973,6 +976,8 @@ impl AutoCapitalRebalancer {
         target_address: &str,
         network: &str,
         signer: &PrivateApiSigner,
+        // _endpoint is accepted for API compatibility but each exchange branch
+        // constructs its own path internally based on from_exchange_id.
         _endpoint: &str,
     ) -> Result<(String, reqwest::header::HeaderMap), String> {
         use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
@@ -1097,7 +1102,7 @@ impl AutoCapitalRebalancer {
                     "currency": req.token_symbol.to_uppercase(),
                     "amount": req.amount.to_string(),
                     "address": target_address,
-                    "chain": format!("ARB"), // Gate.io uses short chain codes
+                    "chain": network.to_uppercase(),
                 });
                 let body_str = body_map.to_string();
 
@@ -1123,7 +1128,7 @@ impl AutoCapitalRebalancer {
                     "currency": req.token_symbol.to_uppercase(),
                     "amount": req.amount.to_string(),
                     "address": target_address,
-                    "chain": "ARB".to_string(),
+                    "chain": network.to_uppercase(),
                     "memo": "",
                 });
                 let body_str = body_map.to_string();

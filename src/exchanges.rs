@@ -669,8 +669,8 @@ pub mod gateio {
                 Ok(OrderResult {
                     success: order_id.is_some(),
                     order_id,
-                    filled_qty: order.quantity,
-                    avg_price: order.price.unwrap_or(Decimal::ZERO),
+                    filled_qty: Decimal::ZERO,
+                    avg_price: Decimal::ZERO,
                     error: None,
                 })
             } else {
@@ -1125,8 +1125,8 @@ pub mod coinbase {
             Ok(OrderResult {
                 success: order_id.is_some(),
                 order_id,
-                filled_qty: order.quantity,
-                avg_price: order.price.unwrap_or(Decimal::ZERO),
+                filled_qty: Decimal::ZERO,
+                avg_price: Decimal::ZERO,
                 error: None,
             })
         }
@@ -1442,8 +1442,8 @@ pub mod bitmex {
             Ok(OrderResult {
                 success: order_id.is_some(),
                 order_id,
-                filled_qty: order.quantity,
-                avg_price: order.price.unwrap_or(Decimal::ZERO),
+                filled_qty: Decimal::ZERO,
+                avg_price: Decimal::ZERO,
                 error: None,
             })
         }
@@ -1816,8 +1816,8 @@ pub mod bitget {
             Ok(OrderResult {
                 success: order_id.is_some(),
                 order_id,
-                filled_qty: order.quantity,
-                avg_price: order.price.unwrap_or(Decimal::ZERO),
+                filled_qty: Decimal::ZERO,
+                avg_price: Decimal::ZERO,
                 error: None,
             })
         }

@@ -80,6 +80,7 @@ where
         // unpinned latency is unacceptable, replace the fallback with `panic!`.
         .unwrap_or_else(|e| {
             tracing::error!(error = %e, "Failed to spawn pinned trading thread, running unpinned");
+            tracing::warn!("Failed to pin thread to core {}, running unpinned (latency degradation)", core_id);
             std::thread::spawn(f)
         })
 }

@@ -119,7 +119,9 @@ impl ApiNonceManager {
             .map(|n| n.peek())
     }
 
-    /// Force-set the nonce for an exchange (e.g. after server sync).
+    /// Set the nonce for an exchange, only increasing it (never moving backwards).
+    /// Uses the same `ensure_min` CAS loop as `sync_with_server` to prevent
+    /// a stale or lower nonce from clobbering a higher local value.
     pub fn set_nonce(&self, exchange_id: &str, value: u64) {
         if let Some(nonce) = self
             .nonces

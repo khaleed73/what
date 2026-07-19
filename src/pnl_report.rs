@@ -424,7 +424,7 @@ impl TradeLog {
                         Err(e) => {
                             parse_errors += 1;
                             if parse_errors <= 5 {
-                                error!(line_preview = &line[..line.len().min(120)], error = %e,
+                                error!(line_preview = line.get(..120).unwrap_or(line), error = %e,
                                     "Failed to parse trade line from JSONL");
                             }
                         }
@@ -518,18 +518,18 @@ impl TradeLog {
 
             csv_lines.push(format!(
                 "{},{},{},\"{}\",\"{}\",\"{}\",{},{},{},{},\"{}\",\"{}\"",
-                trade.trade_id,
+                trade.trade_id.replace('"', "\"\""),
                 trade.timestamp,
                 trade.exchange_id,
-                trade.exchange_name,
-                trade.symbol,
-                trade.side,
+                trade.exchange_name.replace('"', "\"\""),
+                trade.symbol.replace('"', "\"\""),
+                trade.side.replace('"', "\"\""),
                 trade.quantity,
                 trade.price,
                 trade.fee,
-                pnl_str,
-                trade.strategy,
-                pair_str,
+                pnl_str.replace('"', "\"\""),
+                trade.strategy.replace('"', "\"\""),
+                pair_str.replace('"', "\"\""),
             ));
         }
 
@@ -619,14 +619,15 @@ pub struct TriangularLegs {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Spawn a background tokio task that prints a P&L summary every 60 seconds.
-pub fn start_daily_pnl_printer(trade_log: Arc<TradeLog>) {
+/// Returns a `JoinHandle` so the caller can abort or await the task on shutdown.
+pub fn start_daily_pnl_printer(trade_log: Arc<TradeLog>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
             trade_log.print_summary().await;
         }
-    });
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

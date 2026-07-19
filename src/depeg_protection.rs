@@ -105,6 +105,10 @@ impl StablecoinProtectionCircuit {
         // Setting `false` is intentionally a no-op — use attempt_recovery() instead.
     }
 
+    /// ⚠️ Manual override that immediately clears depeg state without waiting
+    /// for the recovery tick counter. Should only be called by operator
+    /// action, NOT automated code.
+    ///
     /// Attempts to recover from a depegged state by verifying the current
     /// price is within the effective threshold. Returns `true` if recovery
     /// succeeded (circuit cleared), `false` if still depegged.

@@ -153,6 +153,9 @@ pub struct MarketArena {
     /// Dynamically-discovered tokens that have passed all filters.
     /// Written by the coin finder's cold path (1-second intervals).
     /// Read by the signal loop via try_lock() for lock-free iteration.
+    // NOTE: std::sync::Mutex used because get_active_token_ids() is called
+    // from non-async test contexts. If this is ever called from an async
+    // context, switch to tokio::sync::Mutex.
     pub active_tokens: std::sync::Mutex<Vec<u16>>,
 
     /// Hot-path toggles.
@@ -583,6 +586,12 @@ impl MarketArena {
                     let step1 = bid_a.saturating_mul(BPS_SCALE) / ask_a;
                     let step2 = step1.saturating_mul(bid_b) / ask_b;
                     let step3 = step2.saturating_mul(bid_c) / ask_c;
+
+                    // Guard: reject if any step produced an unreasonable ratio (>100x),
+                    // which indicates a data anomaly (e.g., near-zero ask price).
+                    if step1 > BPS_SCALE * 100 || step3 > BPS_SCALE * 100 {
+                        continue;
+                    }
 
                     if step3 > BPS_SCALE {
                         let raw_profit_bps = step3 - BPS_SCALE;

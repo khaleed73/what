@@ -203,15 +203,24 @@ impl Exchange for IbankExchange {
 
         let order_guid = json["OrderGuid"]
             .as_str()
-            .unwrap_or("unknown")
+            .ok_or_else(|| anyhow::anyhow!("Ibank place_order: missing OrderGuid in response"))?
             .to_string();
+
+        // Query actual fill status after placement
+        let (filled_qty, avg_price, status) = match self.fetch_order_status(&order.symbol, &order_guid).await {
+            Ok(s) => (s.filled_qty, s.avg_price, s.status),
+            Err(e) => {
+                tracing::warn!("Ibank: failed to fetch order status after place: {}", e);
+                (Decimal::ZERO, Decimal::ZERO, "NEW".to_string())
+            }
+        };
 
         Ok(OrderResponse {
             order_id: order_guid,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: "NEW".to_string(),
-            filled_qty: Decimal::ZERO,
-            avg_price: Decimal::ZERO,
+            status,
+            filled_qty,
+            avg_price,
             exchange: self.name.clone(),
             fee: None,
             fee_currency: None,
@@ -224,19 +233,28 @@ impl Exchange for IbankExchange {
 
     // ── Cancel order ────────────────────────────────────────────────────
 
-    async fn cancel_order(&self, _symbol: &str, order_id: &str) -> Result<OrderResponse> {
+    async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<OrderResponse> {
         let body = serde_json::json!({
             "OrderGuid": order_id,
         });
 
         self.send_signed_post("/Private/CancelOrder", &body).await?;
 
+        // Query actual fill status after cancel to capture partial fills
+        let (filled_qty, avg_price) = match self.fetch_order_status(symbol, order_id).await {
+            Ok(s) => (s.filled_qty, s.avg_price),
+            Err(e) => {
+                tracing::warn!("Ibank: failed to fetch order status after cancel: {}", e);
+                (Decimal::ZERO, Decimal::ZERO)
+            }
+        };
+
         Ok(OrderResponse {
             order_id: order_id.to_string(),
             client_order_id: String::new(),
             status: "CANCELED".to_string(),
-            filled_qty: Decimal::ZERO,
-            avg_price: Decimal::ZERO,
+            filled_qty,
+            avg_price,
             exchange: self.name.clone(),
             fee: None,
             fee_currency: None,
@@ -526,7 +544,7 @@ impl Exchange for IbankExchange {
 
         let order_guid = json["OrderGuid"]
             .as_str()
-            .unwrap_or("unknown")
+            .ok_or_else(|| anyhow::anyhow!("Ibank place_limit_order: missing OrderGuid in response"))?
             .to_string();
 
         Ok(OrderResponse {

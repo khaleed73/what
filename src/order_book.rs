@@ -87,6 +87,7 @@ impl OrderBook {
                     "sequence gap detected in orderbook delta — possible stale data"
                 );
                 // A fresh snapshot should be requested by the caller.
+                return;
             }
         }
 
@@ -2209,6 +2210,10 @@ impl L2OrderBookListener {
                             consecutive_failures,
                             "L2 WS connect failed {} times — giving up, feed worker exiting",
                             MAX_CONSECUTIVE_FAILURES
+                        );
+                        tracing::error!(
+                            exchange = %self.exchange_name,
+                            "WebSocket listener died after 50 consecutive failures — manual intervention required"
                         );
                         return;
                     }

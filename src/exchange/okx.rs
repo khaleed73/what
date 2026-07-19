@@ -55,8 +55,8 @@ impl OkxClient {
 
     /// Handle exchange response with rate limit detection and backoff.
     async fn handle_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
-        match parse_exchange_response(resp, self.name()).await {
-            Ok(json) => Ok(json),
+        let json = match parse_exchange_response(resp, self.name()).await {
+            Ok(json) => json,
             Err(ExchangeError::ApiError {
                 is_rate_limited: true,
                 message,
@@ -66,8 +66,17 @@ impl OkxClient {
                 jittered_rate_limit_sleep().await;
                 anyhow::bail!("Rate limited by {}: {}", self.name(), message);
             }
-            Err(e) => Err(into_anyhow(e)),
+            Err(e) => return Err(into_anyhow(e)),
+        };
+
+        // OKX returns HTTP 200 with business-level error codes in the body
+        let code = json["code"].as_str().unwrap_or("");
+        if !code.is_empty() && code != "0" {
+            let msg = json["msg"].as_str().unwrap_or("unknown error");
+            return Err(anyhow::anyhow!("OKX error code {}: {}", code, msg));
         }
+
+        Ok(json)
     }
 
     /// Common OKX order-signing and sending logic.

@@ -223,9 +223,13 @@ impl Drop for RingBufferLogger {
                     event.delta_profit,
                     event.strategy,
                 );
-                let _ = file.write_all(line.as_bytes());
+                if let Err(e) = file.write_all(line.as_bytes()) {
+                    tracing::error!("CRITICAL: Failed to write trade log: {}", e);
+                }
             }
-            let _ = file.flush();
+            if let Err(e) = file.flush() {
+                tracing::error!("CRITICAL: Failed to flush trade log: {}", e);
+            }
         }
     }
 }

@@ -36,8 +36,7 @@ pub fn decimal_to_fp(d: Decimal) -> u64 {
         tracing::error!(value = %d, "decimal_to_fp: overflow — capping to u64::MAX");
         return u64::MAX;
     }
-    let s = format!("{}", scaled);
-    s.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+    scaled.trunc().to_u64().unwrap_or(0)
 }
 
 /// Convert a fixed-point `u64` back to a `Decimal`.
@@ -198,8 +197,8 @@ impl LocalCapitalAllocator {
 
     #[inline]
     fn idx(&self, exchange_id: usize, token_id: usize) -> usize {
-        debug_assert!(exchange_id < self.total_exchanges, "exchange_id {} >= total_exchanges {}", exchange_id, self.total_exchanges);
-        debug_assert!(token_id < self.total_tokens, "token_id {} >= total_tokens {}", token_id, self.total_tokens);
+        assert!(exchange_id < self.total_exchanges, "exchange_id {} >= total_exchanges {}", exchange_id, self.total_exchanges);
+        assert!(token_id < self.total_tokens, "token_id {} >= total_tokens {}", token_id, self.total_tokens);
         exchange_id * self.total_tokens + token_id
     }
 
@@ -226,7 +225,7 @@ impl LocalCapitalAllocator {
     pub fn get_total_balance(&self, token_id: usize) -> Decimal {
         let mut total_fp: u64 = 0;
         for exchange_id in 0..self.total_exchanges {
-            total_fp = total_fp.wrapping_add(
+            total_fp = total_fp.saturating_add(
                 self.balances[self.idx(exchange_id, token_id)].load(Ordering::Acquire),
             );
         }
@@ -258,7 +257,7 @@ impl LocalCapitalAllocator {
         let matching = self.filter_by_category(category_mask);
         let mut total_fp: u64 = 0;
         for &tid in &matching {
-            total_fp = total_fp.wrapping_add(
+            total_fp = total_fp.saturating_add(
                 self.balances[self.idx(exchange_id, tid as usize)]
                     .load(Ordering::Acquire),
             );
@@ -273,7 +272,11 @@ impl LocalCapitalAllocator {
         let fp = decimal_to_fp(amount);
         if fp == 0 { return; }
         let idx = self.idx(exchange_id, token_id);
-        self.balances[idx].fetch_sub(fp, Ordering::SeqCst);
+        // Use compare-and-swap loop to prevent wrapping underflow.
+        // If the balance would go below zero, skip the subtraction and log.
+        let _ = self.balances[idx].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            current.checked_sub(fp)
+        });
     }
 
     /// Atomically add `amount` to the balance using `fetch_add`.

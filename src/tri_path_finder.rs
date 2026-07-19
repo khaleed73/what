@@ -106,12 +106,16 @@ impl TriPathFinder {
             None => return,
         };
 
+        // TODO: f64 introduces precision loss in fee calculations.
+        // Consider using Decimal arithmetic.
         let log_fee = ((Decimal::ONE - fee).to_f64().unwrap_or(0.99)).ln();
         let price_f = price.to_f64().unwrap_or(1.0);
 
         // Edge: sell base → get quote (rate = price)
         // In log-space: weight = -ln(price * (1-fee))
         let log_rate_sell = -(price_f * (1.0 - fee.to_f64().unwrap_or(0.001))).ln();
+        // TODO: f64 introduces precision loss in fee calculations.
+        // Consider using Decimal arithmetic.
         self.edges[base_idx].push(GraphEdge {
             to: quote_idx,
             log_rate: log_rate_sell,
@@ -122,6 +126,8 @@ impl TriPathFinder {
         // Edge: buy base with quote (rate = 1/price)
         // In log-space: weight = -ln((1/price) * (1-fee))
         let log_rate_buy = -((1.0 / price_f) * (1.0 - fee.to_f64().unwrap_or(0.001))).ln();
+        // TODO: f64 introduces precision loss in fee calculations.
+        // Consider using Decimal arithmetic.
         self.edges[quote_idx].push(GraphEdge {
             to: base_idx,
             log_rate: log_rate_buy,

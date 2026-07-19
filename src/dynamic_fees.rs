@@ -417,10 +417,10 @@ impl DynamicFeeManager {
                         return Some((bps_from_fraction_str(m), bps_from_fraction_str(t)));
                     }
                 }
-                // Coinbase standard: 0.40% taker, 0.40% maker (40 bps)
-                Some((40, 60))
+                // Coinbase parse failed — let config/default fallback handle it.
+                None
             }
-            None => Some((40, 60)),
+            None => None,
         }
     }
 
@@ -464,6 +464,9 @@ impl DynamicFeeManager {
     /// `fees_maker` and `fees` (taker) arrays. Since this is complex to
     /// sign without the signer, we attempt a simple GET and fall back to
     /// known defaults (0.25% maker, 0.40% taker).
+        // NOTE: This fetcher always falls back to defaults because Kraken's
+        // /0/private/TradeVolume requires HMAC auth which is not implemented
+        // here. Remove this fetcher and rely on config defaults.
     async fn fetch_kraken_fees(&self, exchange_id: u16) -> Option<(u64, u64)> {
         let url = self.rest_url(exchange_id, "/0/private/TradeVolume");
 
@@ -531,10 +534,10 @@ impl DynamicFeeManager {
                         return Some((bps_from_fraction_f64(m), bps_from_fraction_f64(t)));
                     }
                 }
-                // Known MEXC default: 0% maker, 0.1% taker.
-                Some((0, 10))
+                // MEXC parse failed — let config/default fallback handle it.
+                None
             }
-            None => Some((0, 10)),
+            None => None,
         }
     }
 
@@ -626,5 +629,6 @@ fn bps_from_fraction_str(s: &str) -> u64 {
 
 /// Convert a fee fraction f64 (e.g. 0.001) to basis points.
 fn bps_from_fraction_f64(f: f64) -> u64 {
+    if !f.is_finite() || f < 0.0 { return 0; }
     (f * 10_000.0).round().max(0.0) as u64
 }

@@ -312,7 +312,9 @@ pub async fn parse_exchange_response(
 // parse_json_decimal — extract Decimal from a JSON Value
 // ---------------------------------------------------------------------------
 
-/// Extract a `Decimal` from a JSON `Value`.
+/// ⚠️ Returns Decimal::ZERO on parse failure. Use `parse_json_decimal_verbose` for
+/// critical financial fields (executedQty, avgPrice, fee) where silent zero
+/// can corrupt P&L calculations.
 ///
 /// Tries, in order: string → i64 → f64. Returns `Decimal::ZERO` on any
 /// failure. For balance/price paths where silent zero is dangerous, prefer

@@ -24,6 +24,7 @@ pub struct ExecutionReport {
     /// Trade side.
     pub side: String,
     /// Filled quantity.
+    // TODO: These should be Decimal for exact financial arithmetic.
     pub filled_quantity: f64,
     /// Average fill price.
     pub avg_price: f64,

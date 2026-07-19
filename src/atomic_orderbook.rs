@@ -44,6 +44,9 @@ impl AtomicLevel {
     }
 
     /// Converts a Decimal to fixed-point u64 (9 decimal places).
+    /// NOTE: This goes through String allocation, which is slow (~100ns).
+    /// For hot-path use, consider a pure-integer approach: extract the
+    /// mantissa/coefficient directly from the Decimal's internal representation.
     fn decimal_to_fp(d: Decimal) -> u64 {
         match d * Decimal::from(FP_SCALE_U64) {
             scaled if scaled >= Decimal::ZERO => {

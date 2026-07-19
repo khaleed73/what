@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, RwLock, Semaphore};
 
 use crate::health::HealthMonitor;
 use crate::protections::RiskManager;
@@ -91,6 +91,7 @@ pub fn spawn_metrics_server(
 ) -> (tokio::task::JoinHandle<()>, oneshot::Sender<()>) {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let sampling = Arc::new(MetricsSampling::new(DEFAULT_SAMPLE_RATE));
+    let semaphore = Arc::new(Semaphore::new(64));
 
     let handle = tokio::spawn(async move {
         let listener = match tokio::net::TcpListener::bind(&config.bind_addr).await {
@@ -111,7 +112,9 @@ pub fn spawn_metrics_server(
                         Ok((stream, _addr)) => {
                             let state = Arc::clone(&state);
                             let sampling = Arc::clone(&sampling);
+                            let permit = semaphore.clone().acquire_owned().await;
                             tokio::spawn(async move {
+                                let _permit = permit;
                                 handle_connection(stream, &state, &sampling).await;
                             });
                         }

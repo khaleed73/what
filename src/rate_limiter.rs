@@ -149,6 +149,8 @@ impl ExchangeRateState {
     fn reset_window(&self) {
         self.used_weight.store(0, Ordering::SeqCst);
         self.consecutive_violations.store(0, Ordering::SeqCst);
+        self.is_paused.store(false, Ordering::Release);
+        *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
 

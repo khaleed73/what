@@ -181,7 +181,8 @@ impl Exchange for DeltaExchange {
 
         let json = self.send_signed("POST", "/v2/orders", Some(&body)).await?;
 
-        let order_id = extract_order_id(&json["id"]).unwrap_or_else(|_| "unknown".to_string());
+        let order_id = extract_order_id(&json["id"])
+            .map_err(|e| anyhow::anyhow!("Delta: missing order ID: {}", e))?;
         let filled_qty = parse_json_decimal(&json["filled_quantity"]);
         let avg_price = parse_json_decimal(&json["avg_fill_price"]);
 
@@ -345,7 +346,13 @@ impl Exchange for DeltaExchange {
 
     // ── Cancel all orders ───────────────────────────────────────────────
 
-    async fn cancel_all_orders(&self, _symbols: &[String]) -> Vec<Result<OrderResponse>> {
+    async fn cancel_all_orders(&self, symbols: &[String]) -> Vec<Result<OrderResponse>> {
+        if !symbols.is_empty() {
+            tracing::warn!(
+                count = symbols.len(),
+                "Delta cancel_all_orders: symbol filter not supported — cancelling ALL open orders"
+            );
+        }
         let mut results = Vec::new();
         match self
             .send_signed("DELETE", "/v2/orders", None)
@@ -392,7 +399,8 @@ impl Exchange for DeltaExchange {
 
         let json = self.send_signed("POST", "/v2/orders", Some(&body)).await?;
 
-        let order_id = extract_order_id(&json["id"]).unwrap_or_else(|_| "unknown".to_string());
+        let order_id = extract_order_id(&json["id"])
+            .map_err(|e| anyhow::anyhow!("Delta: missing order ID: {}", e))?;
 
         Ok(OrderResponse {
             order_id,

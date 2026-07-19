@@ -64,14 +64,14 @@ impl HealthMonitor {
     #[inline]
     pub fn record_signal(&self) {
         self.total_signals_generated.fetch_add(1, Ordering::Relaxed);
-        self.last_signal_time_ms.store(Self::now_ms(), Ordering::Relaxed);
+        self.last_signal_time_ms.store(Self::now_ms(), Ordering::Release);
     }
 
     /// Increment the successful-trade counter and update the last-trade timestamp.
     #[inline]
     pub fn record_trade_success(&self) {
         self.total_trades_executed.fetch_add(1, Ordering::Relaxed);
-        self.last_trade_time_ms.store(Self::now_ms(), Ordering::Relaxed);
+        self.last_trade_time_ms.store(Self::now_ms(), Ordering::Release);
     }
 
     /// Increment the trade-error counter.
@@ -143,7 +143,7 @@ impl HealthMonitor {
             return self.all_feeds_healthy();
         }
         let now = Self::now_ms();
-        let last = self.last_signal_time_ms.load(Ordering::Relaxed);
+        let last = self.last_signal_time_ms.load(Ordering::Acquire);
         let signal_ok = now.saturating_sub(last) < 30_000;
         signal_ok && self.all_feeds_healthy()
     }
@@ -156,8 +156,8 @@ impl HealthMonitor {
     /// Take a consistent snapshot of all counters.
     pub fn get_stats(&self) -> HealthStats {
         let now = Self::now_ms();
-        let last_signal = self.last_signal_time_ms.load(Ordering::Relaxed);
-        let last_trade = self.last_trade_time_ms.load(Ordering::Relaxed);
+        let last_signal = self.last_signal_time_ms.load(Ordering::Acquire);
+        let last_trade = self.last_trade_time_ms.load(Ordering::Acquire);
 
         let healthy = self.is_healthy();
         self.is_healthy.store(healthy, Ordering::Relaxed);
@@ -193,7 +193,10 @@ impl HealthMonitor {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                tracing::error!("System clock before UNIX epoch — NTP misconfiguration?");
+                0
+            })
     }
 }
 

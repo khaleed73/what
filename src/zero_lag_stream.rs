@@ -240,7 +240,7 @@ fn extract_number_field(json: &str, key: &str) -> Option<u64> {
     let value_start = start + pattern.len();
     let num_str: String = json[value_start..]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || c == '.')
         .collect();
     num_str.parse().ok()
 }

@@ -275,7 +275,9 @@ impl Exchange for HtxClient {
         self.rate_limiter.throttle().await;
         let url =
             self.htx_signed_url("POST", &format!("/v1/order/orders/{}/submitcancel", order_id), &[])?;
-        let resp = self.http.post(&url).send().await?;
+        let resp = self.http.post(&url)
+            .header("X-HB-APIKEY", self.config.api_key.expose())
+            .send().await?;
         self.handle_response(resp).await?;
 
         // Fetch actual fill state after cancel — cancelled orders may have partial fills
@@ -371,7 +373,7 @@ impl Exchange for HtxClient {
         self.rate_limiter.throttle().await;
         let url = self.htx_signed_url("GET", &format!("/v1/order/orders/{}", order_id), &[])?;
         let resp = self.http.get(&url).send().await?;
-        let json: serde_json::Value = resp.json().await?;
+        let json: serde_json::Value = self.handle_response(resp).await?;
         let o = &json["data"];
         let status_raw = o["state"].as_str().unwrap_or("");
         if status_raw.is_empty() {

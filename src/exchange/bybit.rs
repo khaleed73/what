@@ -28,12 +28,18 @@ impl BybitClient {
         // If BYBIT_BASE_URL is set, it takes precedence over the compile-time
         // (or config-provided) URL, allowing testnet↔mainnet switches without
         // recompilation.
-        if let Ok(env_url) = std::env::var("BYBIT_BASE_URL") {
-            let trimmed = env_url.trim_end_matches('/');
-            if !trimmed.is_empty() {
-                config.base_url = trimmed.to_string();
+        let base_url = if let Ok(env_url) = std::env::var("BYBIT_BASE_URL") {
+            if env_url.starts_with("https://") {
+                tracing::warn!("BYBIT_BASE_URL env override active — ensure this is intentional");
+                env_url
+            } else {
+                tracing::error!("BYBIT_BASE_URL must use HTTPS, ignoring");
+                config.base_url.clone()
             }
-        }
+        } else {
+            config.base_url.clone()
+        };
+        config.base_url = base_url;
         let timeout_secs = config.http_timeout_secs.unwrap_or(30);
         let http = build_http_client(timeout_secs)?;
         Ok(Self {
@@ -216,6 +222,9 @@ impl Exchange for BybitClient {
 
         let json = parse_exchange_response(resp, "Bybit").await?;
 
+        // Note: filled_qty/avg_price from cancel response may reflect
+        // partial fills. Caller should use fetch_order_status for
+        // authoritative final state.
         let filled_qty = parse_json_decimal(&json["result"]["cumExecQty"]);
         let avg_price = parse_json_decimal(&json["result"]["avgPrice"]);
         let fee = parse_json_decimal(&json["result"]["cumExecFee"]);

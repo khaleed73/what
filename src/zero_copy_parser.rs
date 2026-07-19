@@ -24,6 +24,7 @@ pub struct FastParsedOrderBook {
     /// Token/pair symbol.
     pub symbol: String,
     /// Best bid price.
+    // TODO: Should be Decimal. f64 has ~15 significant digits.
     pub bid: f64,
     /// Best ask price.
     pub ask: f64,

@@ -272,9 +272,13 @@ impl LowLatencyWsListener {
                     // Uses the latest symbols from the coin finder (via watch channel).
                     let current_symbols = self.symbol_watch.borrow().clone();
                     if let Some(sub_msg) = build_subscribe_message(self.exchange_id, &current_symbols) {
-                        if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(sub_msg)).await {
-                            error!(exchange_id = ex, error = %e, "failed to send WS subscribe message");
-                            break;
+                        for msg in sub_msg.split('\n') {
+                            if !msg.is_empty() {
+                                if let Err(e) = write.send(tokio_tungstenite::tungstenite::Message::Text(msg.to_string())).await {
+                                    error!(exchange_id = ex, error = %e, "failed to send WS subscribe message");
+                                    break;
+                                }
+                            }
                         }
                     }
 
@@ -558,8 +562,9 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
                 };
                 serde_json::json!({"event": "subscribe", "channel": "ticker", "symbol": sym})
             }).collect();
-            // Bitfinex subscribes to multiple symbols in a single message array
-            Some(serde_json::to_string(&subs).unwrap_or_default())
+            // Bitfinex requires each subscription as a separate JSON object
+            let msgs: Vec<String> = subs.iter().map(|s| serde_json::to_string(s).unwrap_or_default()).collect();
+            Some(msgs.join("\n"))
         }
         // Exchange 6 → Bitget: tickers channel
         6 => {

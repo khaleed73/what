@@ -6,13 +6,14 @@
 
 use std::io::Write;
 use rust_decimal::Decimal;
+use secrecy::ExposeSecret;
 
 /// Maximum payload length supported (4 KB — sufficient for any exchange query string).
 const MAX_PAYLOAD_LEN: usize = 4096;
 
 /// Pre-allocated HMAC signer that reuses stack buffers.
 pub struct ZeroAllocationSigner {
-    secret_key: String,
+    secret_key: secrecy::SecretString,
 }
 
 impl ZeroAllocationSigner {
@@ -28,7 +29,7 @@ impl ZeroAllocationSigner {
         Self::validate_key(secret)
             .unwrap_or_else(|e| panic!("L-9: Invalid API key: {}", e));
         Self {
-            secret_key: secret.to_string(),
+            secret_key: secrecy::SecretString::new(secret.into()),
         }
     }
 
@@ -94,7 +95,7 @@ impl ZeroAllocationSigner {
 
         // Compute HMAC-SHA256
         use ring::hmac;
-        let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret_key.as_bytes());
+        let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret_key.expose_secret().as_bytes());
         let tag = hmac::sign(&key, preimage.as_bytes());
 
         // Build final output
@@ -112,7 +113,7 @@ impl ZeroAllocationSigner {
     /// Returns the 64-character hex-encoded signature.
     pub fn sign_raw(&self, message: &str) -> String {
         use ring::hmac;
-        let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret_key.as_bytes());
+        let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret_key.expose_secret().as_bytes());
         let tag = hmac::sign(&key, message.as_bytes());
         hex::encode(tag.as_ref())
     }

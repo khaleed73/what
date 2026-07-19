@@ -451,9 +451,13 @@ impl PaperTradingPipeline {
 /// conversion for large decimal values.
 fn decimal_to_cents(value: Decimal) -> i64 {
     let cents = (value * Decimal::from(100u32)).round();
-    cents.to_string()
-        .parse::<i64>()
-        .unwrap_or(0)
+    match cents.to_string().parse::<i64>() {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!(%value, "PnL overflow in decimal_to_cents, clamping");
+            if value > Decimal::ZERO { i64::MAX } else { i64::MIN }
+        }
+    }
 }
 
 // ===========================================================================

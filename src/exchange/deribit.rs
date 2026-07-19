@@ -288,8 +288,7 @@ impl Exchange for DeribitExchange {
 
         let json = self.call_private(rpc_method, params).await?;
         let order_result = &json["result"]["order"];
-        let order_id = extract_order_id(&order_result["order_id"])
-            .unwrap_or_else(|_| "unknown".to_string());
+        let order_id = extract_order_id(&order_result["order_id"])?;
 
         let filled_qty = parse_json_decimal(&order_result["filled_amount"]);
         let avg_price = parse_json_decimal(&order_result["average_price"]);
@@ -570,8 +569,7 @@ impl Exchange for DeribitExchange {
 
         let json = self.call_private(rpc_method, params).await?;
         let order_result = &json["result"]["order"];
-        let order_id = extract_order_id(&order_result["order_id"])
-            .unwrap_or_else(|_| "unknown".to_string());
+        let order_id = extract_order_id(&order_result["order_id"])?;
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         Ok(OrderResponse {

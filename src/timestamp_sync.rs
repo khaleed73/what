@@ -79,12 +79,6 @@ impl TimestampSynchronizer {
             let mut buf = self.sample_buffer.lock().unwrap_or_else(|e| e.into_inner());
             buf.push(offset);
             if buf.len() < self.samples_required {
-                // Not enough samples yet — compute median of what we have
-                // and store it tentatively.
-                let mut sorted = buf.clone();
-                sorted.sort();
-                let median = sorted[sorted.len() / 2];
-                self.offset_ms.store(median, Ordering::SeqCst);
                 return;
             }
             true
