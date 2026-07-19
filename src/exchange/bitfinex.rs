@@ -96,7 +96,7 @@ impl BitfinexClient {
         order: &OrderRequest,
         order_type: &str,
         price: Option<Decimal>,
-    ) -> serde_json::Value {
+    ) -> Result<serde_json::Value> {
         let amount = if order.side == OrderSide::Buy {
             order.quantity
         } else {
@@ -108,7 +108,8 @@ impl BitfinexClient {
             "amount": amount,
         });
         if let Some(p) = price {
-            order_obj["price"] = serde_json::to_value(p).unwrap_or(serde_json::Value::Null);
+            order_obj["price"] = serde_json::to_value(p)
+                .map_err(|e| anyhow::anyhow!("failed to serialize price: {}", e))?;
         }
         // Bitfinex uses "cid" (client ID) for idempotency
         if let Some(ref client_oid) = order.client_order_id {
@@ -164,7 +165,7 @@ impl Exchange for BitfinexClient {
     }
 
     async fn place_order(&self, order: &OrderRequest) -> Result<OrderResponse> {
-        let body = Self::build_order_body(order, "MARKET", None);
+        let body = Self::build_order_body(order, "MARKET", None)?;
         let json = self.auth_post("/auth/w/order/submit", body).await?;
         let mut resp = self.parse_order_response(&json)?;
         if resp.filled_qty == Decimal::ZERO {
@@ -195,7 +196,7 @@ impl Exchange for BitfinexClient {
             }
             TimeInForce::GTC | TimeInForce::Day => "LIMIT",
         };
-        let mut body = Self::build_order_body(order, order_type, Some(price));
+        let mut body = Self::build_order_body(order, order_type, Some(price))?;
         // Add time-in-force flags for IOC
         if matches!(order.time_in_force, TimeInForce::IOC) {
             // Bitfinex uses flags bitmask: 4096 = IOC

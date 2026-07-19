@@ -62,7 +62,7 @@ impl ExchangeConstraints {
             return price;
         }
         let ticks = (price / self.price_tick_size).floor();
-        ticks * self.price_tick_size
+        (ticks * self.price_tick_size).max(self.price_tick_size)
     }
 
     /// Rounds a price UP to the nearest valid tick for SELL orders.
@@ -72,7 +72,7 @@ impl ExchangeConstraints {
             return price;
         }
         let ticks = (price / self.price_tick_size).ceil();
-        ticks * self.price_tick_size
+        (ticks * self.price_tick_size).max(self.price_tick_size)
     }
 
     /// Rounds a quantity DOWN to the nearest valid step.

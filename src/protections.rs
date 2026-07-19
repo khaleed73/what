@@ -588,7 +588,8 @@ impl RiskManager {
     /// On success the exposure is atomically increased by `size_fp`.
     /// On failure (would exceed `max_exp_fp`) no mutation occurs.
     fn try_reserve_exposure(&self, size_fp: u64, max_exp_fp: u64) -> Result<(), String> {
-        loop {
+        const MAX_CAS_ITERATIONS: u32 = 100;
+        for _ in 0..MAX_CAS_ITERATIONS {
             let current = self.total_exposure.load(Ordering::Acquire);
             if current.saturating_add(size_fp) > max_exp_fp {
                 return Err("exposure limit breached".into());
@@ -603,6 +604,7 @@ impl RiskManager {
                 Err(_) => continue,
             }
         }
+        Err("exposure reservation CAS loop exceeded max iterations".into())
     }
 
     /// Overwrite total open exposure in fixed-point dollars (layer 7 bookkeeping).
@@ -623,7 +625,7 @@ fn current_time_millis() -> i64 {
 
 /// Convert a `Decimal` percentage (e.g. `0.05` for 5 %) to basis points.
 ///
-/// Uses string round-trip to avoid edge-case overflow in Decimal→u64.
+/// Converts percentage to basis points, returning a u64.
 fn pct_to_bps(pct: Decimal) -> u64 {
     if pct < Decimal::ZERO {
         tracing::error!(%pct, "pct_to_bps: negative percentage passed — clamping to 0");
@@ -632,9 +634,7 @@ fn pct_to_bps(pct: Decimal) -> u64 {
     let bps = pct * Decimal::from(BPS_SCALE);
     let neg = bps < Decimal::ZERO;
     let abs = if neg { -bps } else { bps };
-    let s = abs.to_string();
-    let truncated = if let Some(dot) = s.find('.') { &s[..dot] } else { &s };
-    let val: u64 = truncated.parse().unwrap_or(0);
+    let val: u64 = abs.to_u64().unwrap_or(0);
     if neg { val.wrapping_neg() } else { val }
 }
 
@@ -645,7 +645,7 @@ fn dollars_to_cents(dollars: Decimal) -> i64 {
     let abs = if neg { -cents } else { cents };
     let s = abs.to_string();
     let truncated = if let Some(dot) = s.find('.') { &s[..dot] } else { &s };
-    let val: i64 = truncated.parse().unwrap_or(i64::MAX);
+    let val: i64 = truncated.parse().unwrap_or(10_000_000_000); // Cap at $100M cents
     if neg { -val } else { val }
 }
 

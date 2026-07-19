@@ -42,11 +42,14 @@ impl SecretBytes {
 
 impl Drop for SecretBytes {
     fn drop(&mut self) {
-        // Zeroise the key material before deallocating.
+        // Zeroise the key material before deallocating using volatile writes
+        // to prevent the compiler from optimizing away the zeroing.
         for byte in self.0.iter_mut() {
-            *byte = 0;
+            unsafe { std::ptr::write_volatile(byte, 0); }
         }
-        // Don't need to shrink — Vec will deallocate the zeroed buffer.
+        // Compiler fence to ensure volatile writes are not reordered past
+        // the deallocation point.
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     }
 }
 

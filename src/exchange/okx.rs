@@ -114,7 +114,7 @@ impl OkxClient {
     /// Normalize OKX order state to uppercase standard form.
     fn normalize_okx_state(state: &str) -> String {
         match state.to_lowercase().as_str() {
-            "live" => "LIVE".to_string(),
+            "live" => "NEW".to_string(),
             "partially_filled" => "PARTIALLY_FILLED".to_string(),
             "filled" => "FILLED".to_string(),
             "canceled" | "cancelled" => "CANCELED".to_string(),
@@ -398,7 +398,7 @@ impl Exchange for OkxClient {
             let timestamp = chrono::Utc::now()
                 .format("%Y-%m-%dT%H:%M:%S%.3fZ")
                 .to_string();
-            let body = serde_json::json!({ "instId": inst_id });
+            let body = serde_json::json!({ "instType": "SPOT", "instId": inst_id });
             let body_str = match serde_json::to_string(&body) {
                 Ok(s) => s,
                 Err(e) => {

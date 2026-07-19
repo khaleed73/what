@@ -96,7 +96,7 @@ impl BitmexClient {
     /// Send a signed POST order request to BitMEX.
     async fn send_bitmex_order(&self, body: serde_json::Value) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 60;
+        let expires = chrono::Utc::now().timestamp() as u64 + 300;
         let body_str = body.to_string();
         let (api_key, expires_str, sign) =
             self.build_signed_headers("POST", "/api/v1/order", expires, &body_str)?;
@@ -241,7 +241,7 @@ impl Exchange for BitmexClient {
 
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 60;
+        let expires = chrono::Utc::now().timestamp() as u64 + 300;
         let body = serde_json::json!({ "orderID": order_id });
         let body_str = body.to_string();
         let (api_key, expires_str, sign) =
@@ -289,7 +289,7 @@ impl Exchange for BitmexClient {
 
     async fn fetch_balance(&self) -> Result<HashMap<String, Decimal>> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 60;
+        let expires = chrono::Utc::now().timestamp() as u64 + 300;
         let sign = sign_bitmex(
             self.config.api_secret.expose(),
             "GET",
@@ -309,10 +309,7 @@ impl Exchange for BitmexClient {
             .header("api-signature", &sign)
             .send()
             .await?;
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("BitMEX balance parse error: {}", e))?;
+        let json = self.handle_response(resp).await?;
         let mut balances = HashMap::new();
         // B9 FIX: BitMEX /api/v1/user/wallet returns amount in satoshis (1 BTC = 100,000,000 satoshis)
         // Must convert to BTC to avoid balance being off by 10^8
@@ -342,7 +339,7 @@ impl Exchange for BitmexClient {
 
     async fn fetch_order_status(&self, _symbol: &str, order_id: &str) -> Result<OrderResponse> {
         self.rate_limiter.throttle().await;
-        let expires = chrono::Utc::now().timestamp() as u64 + 60;
+        let expires = chrono::Utc::now().timestamp() as u64 + 300;
         let path = format!("/api/v1/order?filter={{\"orderID\":\"{}\"}}", order_id);
         let sign = sign_bitmex(self.config.api_secret.expose(), "GET", &path, expires, "")?;
         let url = format!(
@@ -358,10 +355,7 @@ impl Exchange for BitmexClient {
             .header("api-signature", &sign)
             .send()
             .await?;
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("BitMEX order status parse error: {}", e))?;
+        let json = self.handle_response(resp).await?;
         let o = json
             .as_array()
             .and_then(|a| a.first())
@@ -414,7 +408,7 @@ impl Exchange for BitmexClient {
         let mut results = Vec::new();
         for symbol in symbols {
             let bitmex_symbol = symbol.replace('/', "").to_uppercase();
-            let expires = chrono::Utc::now().timestamp() as u64 + 60;
+            let expires = chrono::Utc::now().timestamp() as u64 + 300;
             let query = format!("symbol={}", bitmex_symbol);
             let path = format!("/api/v1/order/all?{}", query);
             let (api_key, expires_str, sign) =
@@ -491,10 +485,7 @@ impl Exchange for BitmexClient {
             depth
         );
         let resp = self.http.get(&url).send().await?;
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("BitMEX order book parse error: {}", e))?;
+        let json = self.handle_response(resp).await?;
 
         let bids = json
             .as_array()

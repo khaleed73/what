@@ -79,13 +79,14 @@ impl RateLimiter {
                 .unwrap_or_default()
                 .as_micros() as u64;
             let last = self.last_call.load(Ordering::Acquire);
-            if last == 0 || now_us >= last + self.min_interval_us {
+            let next_allowed = last.saturating_add(self.min_interval_us);
+            if last == 0 || now_us >= next_allowed {
                 if self.last_call.compare_exchange(last, now_us, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                     break;
                 }
                 // CAS failed, retry
             } else {
-                let sleep_us = last + self.min_interval_us - now_us;
+                let sleep_us = next_allowed - now_us;
                 tokio::time::sleep(Duration::from_micros(sleep_us)).await;
             }
         }
@@ -174,6 +175,7 @@ pub fn build_http_client(timeout_secs: u64) -> anyhow::Result<reqwest::Client> {
         .pool_max_idle_per_host(4)
         .pool_idle_timeout(Duration::from_secs(90)) // evict idle connections
         .tcp_keepalive(Duration::from_secs(30))
+        .user_agent("rust-hft-arb/1.0")
         .build()
         .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))?;
     Ok(client)

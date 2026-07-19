@@ -399,9 +399,20 @@ impl PrivateExchangeClient for BinanceClient {
         let oid = v.get("orderId").and_then(|x| x.as_i64()).map(|id| id.to_string())
             .or_else(|| v.get("orderId").and_then(|x| x.as_str()).map(String::from));
         let filled = v.get("executedQty").or_else(|| v.get("filled"))
-            .and_then(|x| x.as_str()).and_then(|s| s.parse::<Decimal>().ok()).unwrap_or(Decimal::ZERO);
-        let avg = v.get("avgPrice").and_then(|x| x.as_str()).and_then(|s| s.parse::<Decimal>().ok())
-            .unwrap_or(Decimal::ZERO);
+            .and_then(|x| x.as_str()).and_then(|s| {
+                let r = s.parse::<Decimal>().ok();
+                if r.is_none() {
+                    tracing::warn!(field = "executedQty", raw = %s, "signer: failed to parse filled quantity");
+                }
+                r
+            }).unwrap_or(Decimal::ZERO);
+        let avg = v.get("avgPrice").and_then(|x| x.as_str()).and_then(|s| {
+            let r = s.parse::<Decimal>().ok();
+            if r.is_none() {
+                tracing::warn!(field = "avgPrice", raw = %s, "signer: failed to parse average price");
+            }
+            r
+        }).unwrap_or(Decimal::ZERO);
         let status_str = v.get("status").and_then(|x| x.as_str()).unwrap_or("UNKNOWN");
         let success = status_str == "FILLED" || status_str == "PARTIALLY_FILLED";
 

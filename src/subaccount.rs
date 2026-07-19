@@ -166,7 +166,10 @@ impl SubAccountManager {
     /// Create a new `SubAccountManager`.
     pub fn new(exchange_configs: HashMap<u16, ExchangeCreds>) -> Self {
         Self {
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("failed to build subaccount HTTP client"),
             exchange_configs,
         }
     }

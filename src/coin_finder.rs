@@ -1,5 +1,11 @@
 // coin_finder.rs — Live Coin Inventory Scanner & Strategy Allocator
 //
+// STALENESS WINDOW: The scanner clears all per-exchange pair data at the start
+// of every cycle, then re-populates via parallel HTTP requests. Between the
+// clear and the completion of all HTTP responses (~200–800 ms), the pair data
+// is stale. Consumers must tolerate this ~1-second staleness window or gate
+// on a "scan complete" signal.
+//
 // Queries every configured exchange's **public REST API** every ~1 second
 // to discover which trading pairs are currently listed.  Each discovered
 // pair passes through a multi-stage filter before being registered into the

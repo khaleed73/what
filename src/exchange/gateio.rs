@@ -48,7 +48,7 @@ impl GateioClient {
             name,
             config,
             http,
-            rate_limiter: RateLimiter::new(900),
+            rate_limiter: RateLimiter::new(15),
         })
     }
 
@@ -114,10 +114,18 @@ impl GateioClient {
     }
 
     /// Normalize Gate.io order status to our standard uppercase form.
-    fn normalize_status(status: &str) -> String {
+    /// "closed" can mean either filled or cancelled on Gate.io; check filled_total
+    /// to disambiguate when the raw status is "closed".
+    fn normalize_status(status: &str, filled_total: Decimal) -> String {
         match status.to_lowercase().as_str() {
             "open" => "NEW".to_string(),
-            "closed" => "FILLED".to_string(),
+            "closed" => {
+                if filled_total > Decimal::ZERO {
+                    "FILLED".to_string()
+                } else {
+                    "CANCELED".to_string()
+                }
+            }
             "cancelled" | "canceled" => "CANCELED".to_string(),
             _ => status.to_uppercase(),
         }
@@ -341,7 +349,7 @@ impl Exchange for GateioClient {
         Ok(OrderResponse {
             order_id: order_id.to_string(),
             client_order_id: extract_client_order_id(&json["text"], "text", "GateIO"),
-            status: Self::normalize_status(json["status"].as_str().unwrap_or("unknown")),
+            status: Self::normalize_status(json["status"].as_str().unwrap_or("unknown"), filled_qty),
             filled_qty,
             avg_price,
             exchange: self.name.clone(),

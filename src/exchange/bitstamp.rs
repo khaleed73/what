@@ -75,8 +75,8 @@ impl BitstampExchange {
             "{}{}POST/api/v2/{}{}{}",
             nonce_str,
             self.config.api_key.expose(),
-            url_path,
             content_type,
+            url_path,
             body
         );
         let key = ring::hmac::Key::new(

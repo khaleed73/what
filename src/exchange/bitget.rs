@@ -128,6 +128,8 @@ impl BitgetClient {
             "orderType": order_type,
             "force": force,
             "quantity": order.quantity.to_string(),
+            // TODO: UUID generation on the hot path — consider pre-generating
+            // a pool of UUIDs at construction time to reduce per-order overhead.
             "clientOid": if client_oid.is_empty() {
                 uuid::Uuid::new_v4().to_string()
             } else {

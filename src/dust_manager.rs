@@ -82,7 +82,10 @@ impl DustManager {
     ///
     /// Example: Binance → "BNB", OKX → "OKB", Bybit → "MNT"
     pub fn set_target_token(&self, exchange_id: u16, token: &str) {
-        self.target_tokens.write().unwrap_or_else(|e| e.into_inner()).insert(exchange_id, token.to_uppercase());
+        self.target_tokens.write().unwrap_or_else(|e| {
+            tracing::warn!(exchange_id, "RwLock poisoned in DustManager::set_target_token — recovering");
+            e.into_inner()
+        }).insert(exchange_id, token.to_uppercase());
     }
 
     /// Ingest a balance update. If the balance is below dust threshold,

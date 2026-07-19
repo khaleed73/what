@@ -2064,8 +2064,8 @@ async fn run_integration_test(
         timestamp: chrono::Utc::now().timestamp_millis(),
         exchange_health: HashMap::new(),
     };
-    if state_tx.send(state).await.is_err() {
-        tracing::error!("state_tx receiver dropped -- state snapshots are no longer being persisted to disk!");
+    if state_tx.try_send(state).is_err() {
+        tracing::error!("persistence channel full — state snapshot dropped (data loss possible)");
     }
     println!("  Persistence: State snapshot queued for disk write");
 

@@ -544,7 +544,7 @@ impl Exchange for MexcExchange {
         // Stop price for stop orders
         if order_type == OrderType::StopLimit || order_type == OrderType::StopMarket {
             let sp = order.stop_price.ok_or_else(|| {
-                anyhow::anyhow!("MEXC stop order requires a stop_price")
+                anyhow::anyhow!("MEXC stop order requires a stop_price for {}", order.symbol)
             })?;
             body["stopPrice"] = serde_json::Value::String(sp.to_string());
         }

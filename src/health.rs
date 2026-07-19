@@ -97,6 +97,9 @@ impl HealthMonitor {
     /// * `exchange_id` — Numeric exchange identifier (e.g. 1 = Binance, 2 = Bybit).
     pub fn record_feed_update(&self, exchange_id: u16) {
         let now_ms = Self::now_ms() as i64;
+        // TODO: Consider migrating to DashMap to avoid the write lock on every
+        // feed update. The lock is only needed for the first registration of a
+        // new exchange_id; subsequent updates could be lock-free.
         let mut map = self.last_feed_update.write().unwrap_or_else(|e| e.into_inner());
         map.entry(exchange_id)
             .or_insert_with(|| AtomicI64::new(now_ms))
@@ -121,8 +124,8 @@ impl HealthMonitor {
     fn all_feeds_healthy(&self) -> bool {
         let map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
         if map.is_empty() {
-            // H-3 fix: return false when no feeds registered past 60s grace
-            return self.started_at.elapsed().as_secs() < 60;
+            // Return false when no feeds registered past 10s grace period.
+            return self.started_at.elapsed().as_secs() < 10;
         }
         let now_ms = Self::now_ms() as i64;
         map.values().all(|ts| {
@@ -136,7 +139,8 @@ impl HealthMonitor {
     /// - less than 60 seconds have elapsed since startup, **or**
     ///   a signal was recorded within the last 30 seconds.
     /// - every registered data feed has delivered data within the last
-    ///   10 seconds (if any feeds are registered at all).
+    ///   10 seconds (if any feeds are registered at all; a 10-second
+    ///   grace period applies when no feeds are registered yet).
     pub fn is_healthy(&self) -> bool {
         let uptime = self.started_at.elapsed().as_secs();
         if uptime < 60 {
@@ -160,7 +164,6 @@ impl HealthMonitor {
         let last_trade = self.last_trade_time_ms.load(Ordering::Acquire);
 
         let healthy = self.is_healthy();
-        self.is_healthy.store(healthy, Ordering::Relaxed);
 
         // Build per-exchange feed liveness map.
         let feed_map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
@@ -214,7 +217,7 @@ mod tests {
     #[test]
     fn test_new_monitor_is_healthy_within_grace_period() {
         let hm = HealthMonitor::new();
-        // Freshly created — must be healthy (within 60 s grace).
+        // Freshly created — must be healthy (within 10 s grace).
         assert!(hm.is_healthy());
     }
 

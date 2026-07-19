@@ -96,7 +96,7 @@ pub async fn boot_sync(
         }
     }
 
-    info!(total_usdt = %total, exchanges = clients.len(), "boot balance sync complete");
+    info!(total_synced_usdt = %total, exchanges = clients.len(), "boot balance sync complete");
     total
 }
 
@@ -142,7 +142,7 @@ pub async fn run_periodic_sync(
         if cycle % 10 == 0 {
             info!(
                 cycle,
-                total_usdt = %total,
+                total_synced_usdt = %total,
                 "periodic balance sync"
             );
         }

@@ -2,7 +2,7 @@
 //
 // Provides:
 // * A full-featured `Exchange` trait (order books, cancels, health, etc.)
-// * 10 production exchange client implementations
+// * 17 production exchange client implementations
 // * Shared signing utilities, rate limiting, error types
 //
 // This sits alongside the simpler `crate::exchanges` module which

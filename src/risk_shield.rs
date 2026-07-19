@@ -234,7 +234,10 @@ impl CrossExchangeRiskShield {
         let spread = bid_x - ask_y;
         let spread_pct = spread / ask_y;
 
-        // Deduct fees from both legs
+        // Deduct fees from both legs.
+        // NOTE: This is a first-order approximation that assumes fees are a simple
+        // additive rate on each leg. It does not account for maker/taker fee tiers,
+        // volume-based discounts, or fee rebates that may apply at execution time.
         let total_fee_rate = self.exchange_x_fee + self.exchange_y_fee;
         let net_spread_pct = spread_pct - total_fee_rate;
 

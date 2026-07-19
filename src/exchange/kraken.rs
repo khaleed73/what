@@ -193,10 +193,16 @@ impl Exchange for KrakenClient {
         }
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        // Market orders fill immediately — default to FILLED if we have fill data.
+        let status = if filled_qty > Decimal::ZERO {
+            "FILLED".to_string()
+        } else {
+            "NEW".to_string()
+        };
         Ok(OrderResponse {
             order_id: txid,
             client_order_id,
-            status: "NEW".to_string(),
+            status,
             filled_qty,
             avg_price,
             exchange: self.name.clone(),

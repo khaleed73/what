@@ -39,6 +39,12 @@ pub struct PriceLevel {
 /// `bids` is ordered descending (best bid = highest price = last entry).
 /// `asks` is ordered ascending (best ask = lowest price = first entry).
 /// Both use `BTreeMap<Decimal, Decimal>` keyed by price, valued by quantity.
+///
+/// IMPORTANT: Prices inserted into the BTreeMaps must be sanitized before
+/// insertion — reject NaN/infinity values and normalize negative zero to
+/// positive zero. `Decimal` does not represent NaN, but if raw f64 prices
+/// are used as keys, they must be validated first to prevent silent
+/// BTreeMap corruption.
 #[derive(Debug, Clone, Default)]
 pub struct OrderBook {
     /// Price → quantity, sorted descending via `Reverse` wrapper at query

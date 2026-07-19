@@ -141,6 +141,18 @@ fn extract_string_value(text: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\"", key);
     let start = text.find(&pattern)?;
 
+    // Backward boundary check: the byte before the pattern must be a
+    // JSON structural character (start of object, comma, whitespace)
+    // to prevent matching a suffix of a longer key (e.g. "t" in "last").
+    if start > 0 {
+        let prev_byte = text.as_bytes()[start - 1];
+        if prev_byte != b',' && prev_byte != b'{' && prev_byte != b'['
+            && prev_byte != b':' && !prev_byte.is_ascii_whitespace()
+        {
+            return None;
+        }
+    }
+
     // Boundary check: the match must be a whole key, not a substring
     // of a longer key. The byte after the pattern must be a colon or
     // whitespace followed by a colon.
@@ -184,6 +196,17 @@ fn extract_number_value(text: &str, key: &str) -> Option<f64> {
         return None;
     }
 
+    // Backward boundary check: the byte before the pattern must be a
+    // JSON structural character to prevent matching a suffix of a longer key.
+    if start > 0 {
+        let prev_byte = text.as_bytes()[start - 1];
+        if prev_byte != b',' && prev_byte != b'{' && prev_byte != b'['
+            && prev_byte != b':' && !prev_byte.is_ascii_whitespace()
+        {
+            return None;
+        }
+    }
+
     let after_key = &text[start + pattern.len()..];
 
     // Skip whitespace, colon, whitespace.
@@ -196,11 +219,18 @@ fn extract_number_value(text: &str, key: &str) -> Option<f64> {
         .skip_while(|c| c.is_ascii_whitespace())
         .collect();
 
-    // Parse the number — handle negative sign and decimal point.
-    let num_str: String = after_ws
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == 'e' || *c == 'E' || *c == '+')
-        .collect();
+    // Parse the number — handle leading negative sign, decimal point, and
+    // scientific notation. The '-' sign is only accepted at the first position.
+    let mut num_str = String::new();
+    for (i, c) in after_ws.chars().enumerate() {
+        if i == 0 && c == '-' {
+            num_str.push(c);
+        } else if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' {
+            num_str.push(c);
+        } else {
+            break;
+        }
+    }
 
     num_str.parse::<f64>().ok()
 }

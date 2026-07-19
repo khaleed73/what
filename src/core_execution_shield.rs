@@ -103,10 +103,16 @@ impl CoreExecutionShield {
             });
         }
 
-        // Calculate VWAP (actual average price paid)
+        // Calculate VWAP (actual average price paid).
+        // NOTE: This uses allocated_capital as the cost numerator, which is the
+        // capital budget, not the actual amount spent. If the depth walk only
+        // consumed a fraction of allocated_capital, this VWAP will be too high.
         let vwap = allocated_capital / acquired;
 
         // Step 3: Calculate fee
+        // NOTE: Fee is calculated on allocated_capital (the budget), not on the
+        // actual spend (allocated_capital minus unspent remainder). This
+        // overestimates the fee, making the shield slightly more conservative.
         let fee_cost = allocated_capital * self.fee_rate;
         let total_cost = allocated_capital + fee_cost;
 

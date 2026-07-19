@@ -171,6 +171,14 @@ impl Exchange for BinanceClient {
 
         let json = parse_exchange_response(resp, "Binance").await?;
 
+        // Binance can return HTTP 200 with an error code in the body
+        if let Some(code) = json["code"].as_i64() {
+            if code != 0 {
+                let msg = json["msg"].as_str().unwrap_or("unknown Binance error");
+                anyhow::bail!("Binance API error (code {}): {}", code, msg);
+            }
+        }
+
         let executed_qty = parse_json_decimal(&json["executedQty"]);
         let cummulative_quote = parse_json_decimal(&json["cummulativeQuoteQty"]);
         let avg_price = if executed_qty > Decimal::ZERO {
@@ -364,7 +372,15 @@ impl Exchange for BinanceClient {
 
         let filled_qty = parse_json_decimal(&json["executedQty"]);
         let avg_price = if filled_qty > Decimal::ZERO {
-            parse_json_decimal(&json["cummulativeQuoteQty"]) / filled_qty
+            let cummulative_quote = parse_json_decimal(&json["cummulativeQuoteQty"]);
+            if cummulative_quote == Decimal::ZERO {
+                tracing::warn!(
+                    order_id,
+                    filled_qty = %filled_qty,
+                    "Binance fetch_order_status: cummulativeQuoteQty parsed to zero despite filled_qty > 0"
+                );
+            }
+            cummulative_quote / filled_qty
         } else {
             Decimal::ZERO
         };

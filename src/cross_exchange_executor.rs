@@ -278,7 +278,11 @@ impl CrossExchangeExecutor {
         // breakeven_sell = buy * (1+fb) / (1-fs)
         // spread = (breakeven_sell - buy) / buy = (1+fb)/(1-fs) - 1 = (fb+fs) / (1-fs)
         // In bps: ((fb+fs) / (1-fs)) * 10000
-        let combined = (fee_buy + fee_sell) / (Decimal::ONE - fee_sell);
+        let divisor = Decimal::ONE - fee_sell;
+        if divisor <= Decimal::ZERO {
+            return Decimal::MAX; // fee_sell >= 100% → infinite spread required
+        }
+        let combined = (fee_buy + fee_sell) / divisor;
         combined * dec!(10000.0)
     }
 }

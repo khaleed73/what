@@ -235,7 +235,7 @@ impl RebalanceMatrixEngine {
         if h == prev_hash {
             return self.last_compute_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
         }
-        if (now - last_time) < self.min_rebalance_interval_secs {
+        if now.saturating_sub(last_time) < self.min_rebalance_interval_secs {
             return self.last_compute_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
         }
 
@@ -264,7 +264,11 @@ impl RebalanceMatrixEngine {
         let ratio_x = inventory.ratio_x();
         let ratio_y = inventory.ratio_y();
 
-        // Determine source (over-weighted) and destination (under-weighted)
+        // Determine source (over-weighted) and destination (under-weighted).
+        // NOTE: When ratio_x == ratio_y (perfectly balanced), the else branch
+        // is taken, which swaps from_id/to_id relative to the caller's
+        // parameters. This is intentional — the caller passes the "preferred"
+        // direction, but equal ratios mean either direction is equivalent.
         let (source_balance, dest_balance, from_id, to_id) = if ratio_x > ratio_y {
             (inventory.stable_balance_x, inventory.stable_balance_y, from_exchange_id, to_exchange_id)
         } else {

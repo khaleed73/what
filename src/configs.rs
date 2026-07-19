@@ -243,7 +243,7 @@ pub struct ValidatedTriangularConfig {
     pub exchanges: Option<Vec<u16>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ValidatedExchangeConfig {
     pub id: u16,
     pub name: String,
@@ -252,6 +252,20 @@ pub struct ValidatedExchangeConfig {
     pub passphrase: Option<String>,
     pub wss_url: String,
     pub rest_url: String,
+}
+
+impl std::fmt::Debug for ValidatedExchangeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedExchangeConfig")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("api_key", &"[REDACTED]")
+            .field("api_secret", &"[REDACTED]")
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
+            .field("wss_url", &self.wss_url)
+            .field("rest_url", &self.rest_url)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]

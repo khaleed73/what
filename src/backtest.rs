@@ -347,7 +347,7 @@ impl BacktestEngine {
                             let spread = (bid_b - ask_a) / mid;
                             let spread_bps = (spread * Decimal::from(10_000u64))
                                 .to_u64()
-                                .unwrap_or(0);
+                                .unwrap_or(u64::MAX); // Treat overflow as massive spread → reject
 
                             if spread_bps >= self.config.min_spread_bps {
                                 let buy_price = ask_a;
@@ -386,8 +386,8 @@ impl BacktestEngine {
                                 let gross_pnl = sell_proceeds - buy_cost;
                                 let net_pnl = gross_pnl - total_fees;
 
-                                // Only execute if net P&L is positive.
-                                if net_pnl > Decimal::ZERO && buy_cost <= bal_a {
+                                // Only execute if net P&L is positive and both sides have sufficient balance.
+                                if net_pnl > Decimal::ZERO && buy_cost <= bal_a && sell_fee <= bal_b {
                                     let trade = BacktestTrade {
                                         entry_time: ts,
                                         exit_time: ts,
@@ -410,7 +410,7 @@ impl BacktestEngine {
                                         .exchange_balances
                                         .values()
                                         .copied()
-                                        .sum();
+                                        .fold(Decimal::ZERO, |acc, v| acc.checked_add(v).unwrap_or(Decimal::MAX));
 
                                     self.trades.push(trade);
                                     equity_curve.push(self.capital);
@@ -424,7 +424,7 @@ impl BacktestEngine {
                             let spread = (bid_a - ask_b) / mid;
                             let spread_bps = (spread * Decimal::from(10_000u64))
                                 .to_u64()
-                                .unwrap_or(0);
+                                .unwrap_or(u64::MAX);
 
                             if spread_bps >= self.config.min_spread_bps {
                                 let buy_price = ask_b;
@@ -460,7 +460,7 @@ impl BacktestEngine {
                                 let gross_pnl = sell_proceeds - buy_cost;
                                 let net_pnl = gross_pnl - total_fees;
 
-                                if net_pnl > Decimal::ZERO && buy_cost <= bal_b {
+                                if net_pnl > Decimal::ZERO && buy_cost <= bal_b && sell_fee <= bal_a {
                                     let trade = BacktestTrade {
                                         entry_time: ts,
                                         exit_time: ts,
@@ -482,7 +482,7 @@ impl BacktestEngine {
                                         .exchange_balances
                                         .values()
                                         .copied()
-                                        .sum();
+                                        .fold(Decimal::ZERO, |acc, v| acc.checked_add(v).unwrap_or(Decimal::MAX));
 
                                     self.trades.push(trade);
                                     equity_curve.push(self.capital);

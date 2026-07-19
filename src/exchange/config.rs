@@ -125,6 +125,10 @@ impl SecretString {
 
 impl Clone for SecretString {
     fn clone(&self) -> Self {
+        // NOTE: The intermediate String allocation (self.0.expose_secret().clone())
+        // is not zeroed on drop. Only the final SecretBox zeroes its content.
+        // This is an acceptable trade-off for Clone; secrets that must never
+        // touch unzeroed heap memory should not be cloned.
         Self(secrecy::SecretBox::new(self.0.expose_secret().clone()))
     }
 }

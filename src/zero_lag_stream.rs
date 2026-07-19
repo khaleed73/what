@@ -228,6 +228,19 @@ impl StaticBookParser {
 fn extract_string_field(json: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\":\"", key);
     let start = json.find(&pattern)?;
+
+    // Backward boundary check: the byte before the pattern must be a
+    // JSON structural character to prevent matching a suffix of a longer key
+    // (e.g. "s" in "status" or "last").
+    if start > 0 {
+        let prev_byte = json.as_bytes()[start - 1];
+        if prev_byte != b',' && prev_byte != b'{' && prev_byte != b'['
+            && prev_byte != b':' && !prev_byte.is_ascii_whitespace()
+        {
+            return None;
+        }
+    }
+
     let value_start = start + pattern.len();
     let end = json[value_start..].find('"')?;
     Some(json[value_start..value_start + end].to_string())

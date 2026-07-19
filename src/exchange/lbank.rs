@@ -78,6 +78,9 @@ impl LbankClient {
         };
         let custom_id = order.client_order_id.as_deref().unwrap_or("");
 
+        // NOTE: api_key is included in the request body for signing purposes.
+        // HTTP body logging (if any) MUST redact or omit the api_key parameter
+        // to prevent credential leakage in log files.
         let mut params: Vec<(&str, String)> = vec![
             ("amount", order.quantity.to_string()),
             ("api_key", self.config.api_key.expose().to_string()),

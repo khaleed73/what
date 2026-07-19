@@ -64,12 +64,22 @@ where
         .spawn({
             let f = f.clone();
             move || {
-                let pinned = pin_current_thread(core_id);
+                // Retry pinning up to 3 times with a short sleep between
+                // attempts — the OS may temporarily fail affinity on first
+                // try under load.
+                let mut pinned = pin_current_thread(core_id);
+                if !pinned {
+                    for attempt in 1..=3 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        pinned = pin_current_thread(core_id);
+                        if pinned { break; }
+                    }
+                }
                 if !pinned {
                     tracing::warn!(
                         thread = %name_owned,
                         core_id,
-                        "Running on unpinned core — latency may be degraded"
+                        "Running on unpinned core after 4 attempts — latency may be degraded"
                     );
                 }
                 f()

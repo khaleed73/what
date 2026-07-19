@@ -181,7 +181,7 @@ impl DiscordWorker {
                             );
                             break;
                         }
-                        let base_ms = 100.0 * (1u32 << attempt) as f64;
+                        let base_ms = 100.0 * (1u32.checked_shl(attempt).unwrap_or(1u32 << 30)) as f64;
                         let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
                         let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(
@@ -202,7 +202,7 @@ impl DiscordWorker {
                             );
                             break;
                         }
-                        let base_ms = 100.0 * (1u32 << attempt) as f64;
+                        let base_ms = 100.0 * (1u32.checked_shl(attempt).unwrap_or(1u32 << 30)) as f64;
                         let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
                         let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(

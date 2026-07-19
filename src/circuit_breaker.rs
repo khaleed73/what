@@ -123,6 +123,10 @@ impl EngineCircuitBreaker {
                 .unwrap_or(0);
 
             // Auto-recover transient issues after 60s cooldown.
+            // IMPORTANT: After auto-recovery from a network partition, a full
+            // state reconciliation should be triggered (re-fetch balances,
+            // open orders, and positions from all exchanges) before resuming
+            // trading. The local order book and position state may be stale.
             const TRANSIENT_COOLDOWN_MS: u64 = 60_000;
             if matches!(reason, REASON_NETWORK_PARTITION | REASON_CLOCK_DRIFT)
                 && now.saturating_sub(ts) > TRANSIENT_COOLDOWN_MS

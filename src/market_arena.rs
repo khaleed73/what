@@ -176,6 +176,11 @@ impl MarketArena {
             state.ask_price = ask_fp;
             state.timestamp_ms = chrono::Utc::now().timestamp_millis() as u64;
             state.sequence = state.sequence.wrapping_add(1);
+        } else {
+            tracing::warn!(
+                exchange_id, token_id, idx,
+                "MarketArena::update: index out of bounds, write dropped"
+            );
         }
     }
 

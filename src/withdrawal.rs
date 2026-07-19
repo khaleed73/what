@@ -76,6 +76,16 @@ impl fmt::Display for ExchangeCredentials {
     }
 }
 
+impl Drop for ExchangeCredentials {
+    fn drop(&mut self) {
+        // Overwrite secret bytes to reduce the window of exposure in memory.
+        self.api_secret.clear();
+        if let Some(ref mut passphrase) = self.passphrase {
+            passphrase.clear();
+        }
+    }
+}
+
 impl ExchangeCredentials {
     pub fn new(api_key: &str, api_secret: &str) -> Self {
         Self {
@@ -249,6 +259,19 @@ impl WithdrawalExecutor {
             network = %req.network,
             "Executing withdrawal"
         );
+
+        // Validate withdrawal amount.
+        if req.amount <= Decimal::ZERO {
+            let msg = format!(
+                "withdrawal amount must be positive, got {} for {} on exchange {}",
+                req.amount, req.currency, exchange_name
+            );
+            warn!(%msg);
+            return Err(msg);
+        }
+        // TODO: Add balance-aware validation: warn/reject if amount > 90% of
+        // estimated balance. This requires passing balance state into the
+        // executor or querying it from the exchange before dispatching.
 
         let result = match req.exchange_id {
             0 => self.withdraw_binance(req).await,
@@ -1785,10 +1808,16 @@ fn hmac_base64(secret: &str, message: &str) -> String {
 
 /// Current UNIX epoch in milliseconds.
 fn epoch_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-        .as_millis() as u64
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as u64,
+        Err(e) => {
+            tracing::critical!(
+                error = %e,
+                "epoch_millis: system clock error — timestamps will be wrong"
+            );
+            0
+        }
+    }
 }
 
 /// Current UNIX epoch in seconds.

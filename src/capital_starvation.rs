@@ -103,6 +103,12 @@ impl CapitalStarvationDetector {
             );
 
             // M-8: Only fire callback on state transition (non-starved → starved).
+            //
+            // WARNING: The callback `cb(exchange_id)` is invoked while the internal
+            // state lock may still be held (depending on the caller's locking context).
+            // The callback MUST NOT attempt to acquire any lock that could lead to a
+            // deadlock (e.g. do not call back into this module or any shared state
+            // that might be held by the caller on the same thread).
             if !was_starved {
                 if let Some(ref cb) = self.starvation_callback {
                     cb(exchange_id);

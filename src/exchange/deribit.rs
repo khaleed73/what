@@ -76,7 +76,12 @@ impl DeribitExchange {
     async fn ensure_auth(&self) -> Result<String> {
         // Check cached token — re-auth if missing or expiring within 30s
         {
-            let guard = self.access_token.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self.access_token.lock().unwrap_or_else(|e| {
+                tracing::error!("Deribit auth mutex poisoned, clearing token");
+                let g = e.into_inner();
+                *g = None;
+                g
+            });
             if let Some((ref token, expires_at_us)) = *guard {
                 let now_us = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -160,7 +165,10 @@ impl DeribitExchange {
 
         // Cache it with expiry
         {
-            let mut guard = self.access_token.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self.access_token.lock().unwrap_or_else(|e| {
+                tracing::error!("Deribit auth mutex poisoned, clearing token");
+                e.into_inner()
+            });
             *guard = Some((token.clone(), expires_at_us));
         }
 
@@ -250,7 +258,10 @@ impl DeribitExchange {
             let code = error["code"].as_i64().unwrap_or(0);
             if code == -32602 || msg.contains("token") || msg.contains("auth") {
                 let mut guard =
-                    self.access_token.lock().unwrap_or_else(|e| e.into_inner());
+                    self.access_token.lock().unwrap_or_else(|e| {
+                        tracing::error!("Deribit auth mutex poisoned, clearing token");
+                        e.into_inner()
+                    });
                 *guard = None;
             }
             anyhow::bail!("Deribit RPC error ({}): {}", method, msg);

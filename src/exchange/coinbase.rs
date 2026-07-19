@@ -26,6 +26,10 @@ pub struct CoinbaseClient {
 impl CoinbaseClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
         let timeout_secs = config.http_timeout_secs.unwrap_or(30);
+        // TODO: This builds a custom HTTP client instead of using the shared
+        // build_http_client() from common.rs. Consider switching to
+        // build_http_client(timeout_secs)? for consistent settings (pool size,
+        // TLS config, TCP nodelay) across all exchange clients.
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(timeout_secs.min(10)))
@@ -209,34 +213,36 @@ impl Exchange for CoinbaseClient {
 
     async fn cancel_order(&self, symbol: &str, order_id: &str) -> Result<OrderResponse> {
         let _product_id = Self::coinbase_symbol(symbol);
-        let json = self
+        let _json = self
             .send_auth_request("DELETE", &format!("/orders/{}", order_id), "")
             .await?;
 
-        Ok(OrderResponse {
-            order_id: order_id.to_string(),
-            client_order_id: String::new(),
-            status: match json["status"].as_str() {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => {
-                    tracing::warn!(
-                        context = "cancel_order",
-                        raw = %json["status"],
-                        "Coinbase: cancel response status missing — cannot confirm cancellation"
-                    );
-                    "UNKNOWN".to_string()
+        // Fetch actual fill state instead of returning hardcoded zeros
+        let status_resp = match self.fetch_order_status(symbol, order_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    order_id,
+                    error = %e,
+                    "Coinbase: failed to fetch order status after cancel, returning zeros"
+                );
+                OrderResponse {
+                    order_id: order_id.to_string(),
+                    client_order_id: String::new(),
+                    status: "UNKNOWN".to_string(),
+                    filled_qty: Decimal::ZERO,
+                    avg_price: Decimal::ZERO,
+                    exchange: self.name.clone(),
+                    fee: None,
+                    fee_currency: None,
+                    slippage_bps: None,
+                    created_at_ms: None,
+                    updated_at_ms: Some(chrono::Utc::now().timestamp_millis() as u64),
+                    deadline_ms: None,
                 }
-            },
-            filled_qty: Decimal::ZERO,
-            avg_price: Decimal::ZERO,
-            exchange: self.name.clone(),
-            fee: None,
-            fee_currency: None,
-            slippage_bps: None,
-            created_at_ms: None,
-            updated_at_ms: Some(chrono::Utc::now().timestamp_millis() as u64),
-            deadline_ms: None,
-        })
+            }
+        };
+        Ok(status_resp)
     }
 
     async fn fetch_balance(&self) -> Result<HashMap<String, Decimal>> {

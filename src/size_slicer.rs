@@ -159,6 +159,8 @@ impl SizeSlicer {
         }
 
         // If all slices were merged below min, just create one slice.
+        // NOTE: This fallback slice may exceed max_slice_usd; this is intentional
+        // to avoid dropping the entire order when individual slices are too small.
         if slices.is_empty() {
             slices.push(OrderSlice {
                 index: 0,
