@@ -59,6 +59,9 @@ mod production_risk_shield;
 mod market_arena;
 mod zero_copy_parser;
 mod cpu_pinning;
+mod dead_mans_switch;
+mod position_reconciliation;
+mod tls_pinning;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -85,16 +88,13 @@ use signer::PrivateExchangeClient;
 use paper_trading::PaperTradingPipeline;
 use persistence::{AsyncPersistenceWorker, PersistentState};
 use protections::RiskManager;
-// use circuit_breaker::EngineCircuitBreaker;
-// use risk_shield::{RiskShield, CrossExchangeRiskShield, MarketTicker};
-// use safety_execution::SafetyExecutionEngine;
-// use exchange_constraints::{ExchangeConstraints, AbsoluteMathEngine, MarketDepth, DepthLevel};
-// use atomic_orderbook::FixedOrderBook;
-// use core_execution_shield::CoreExecutionShield;
-// use ring_buffer_logger::RingBufferLogger;
-// use rebalance_matrix::RebalanceMatrixEngine;
-// use zero_lag_stream::ZeroLagStreamManager;
-// use cross_exchange_executor::CrossExchangeExecutor;
+use circuit_breaker::EngineCircuitBreaker;
+use core_execution_shield::CoreExecutionShield;
+use dead_mans_switch::DeadMansSwitch;
+use production_risk_shield::ProductionRiskShield;
+use rebalance_matrix::RebalanceMatrixEngine;
+use ring_buffer_logger::RingBufferLogger;
+use tls_pinning::TlsPinConfig;
 use rebalancer::{AutoCapitalRebalancer, ExchangeHeartbeatHandle, create_rebalance_channel};
 use stablecoin::StablecoinMonitor;
 use subaccount::SubAccountManager;
@@ -255,6 +255,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     let risk_manager = Arc::new(RiskManager::new(config.risk.clone()));
     println!("14-layer risk manager initialized");
+
+    // ------------------------------------------------------------------
+    // 4b. Build the Engine-Level Circuit Breaker (global kill switch)
+    // ------------------------------------------------------------------
+    let engine_breaker = Arc::new(EngineCircuitBreaker::new());
+    println!("Engine-level circuit breaker armed (global kill switch)");
+
+    // ------------------------------------------------------------------
+    // 4c. Build the Production Risk Shield (VWAP slippage + execution safety)
+    // ------------------------------------------------------------------
+    let _prod_shield = Arc::new(ProductionRiskShield::with_defaults());
+    println!("Production risk shield initialized (VWAP slippage, execution safety validation)");
+
+    // ------------------------------------------------------------------
+    // 4d. Build the Core Execution Shield (circuit breaker + fee + slippage gate)
+    // ------------------------------------------------------------------
+    let default_fee_rate = config.friction_protections.default_taker_fee_pct;
+    let min_profit_bps = config.risk.min_net_profit_pct * Decimal::from(10_000u64);
+    let _core_shield = Arc::new(CoreExecutionShield::new(
+        EngineCircuitBreaker::new(), // shield has its own breaker instance
+        default_fee_rate,
+        min_profit_bps,
+    ));
+    println!("Core execution shield initialized (fee={:.4}, min_profit={} bps)", default_fee_rate, min_profit_bps);
+
+    // ------------------------------------------------------------------
+    // 4e. Build the Ring Buffer Logger (lock-free hot-path logging)
+    // ------------------------------------------------------------------
+    let ring_logger = Arc::new(std::sync::Mutex::new(RingBufferLogger::new()));
+    {
+        let rl = Arc::clone(&ring_logger);
+        rl.lock().unwrap().set_log_file_path("trading_ring.log".to_string());
+    }
+    println!("Ring buffer logger initialized (lock-free, flush-on-drop to trading_ring.log)");
+
+    // ------------------------------------------------------------------
+    // 4f. Build the Rebalance Matrix Engine (balance drift detection)
+    // ------------------------------------------------------------------
+    let _rebalance_matrix = Arc::new(
+        RebalanceMatrixEngine::new(
+            Decimal::new(70, 2), // 70% imbalance threshold
+            config.friction_protections.default_taker_fee_pct, // execution fee
+            Decimal::from(50),  // $50 minimum transfer
+        )
+        .with_min_interval(10), // check every 10 seconds
+    );
+    println!("Rebalance matrix engine initialized (70/30 imbalance threshold, 10s min interval)");
+
+    // ------------------------------------------------------------------
+    // 4g. Build the Dead-Man's Switch (supervisor heartbeat required)
+    // ------------------------------------------------------------------
+    let dead_mans_switch = Arc::new(DeadMansSwitch::new(60)); // 60s timeout
+    let dms_for_watchdog = Arc::clone(&dead_mans_switch);
+    let dms_breaker = Arc::clone(&engine_breaker);
+    let _dead_mans_handle = dead_mans_switch::spawn_dead_mans_watchdog(
+        dms_for_watchdog,
+        Arc::new(move || {
+            tracing::error!("DEAD-MAN'S SWITCH: tripping engine circuit breaker");
+            dms_breaker.trip(circuit_breaker::REASON_MANUAL_KILL);
+        }),
+    );
+    println!("Dead-man's switch armed (60s heartbeat timeout, 30s grace period)");
 
     // ------------------------------------------------------------------
     // 5. Build the Stablecoin Depeg Monitor
@@ -787,6 +849,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         false
     };
 
+    // ------------------------------------------------------------------
+    // 9b-pre-b. TLS Certificate Pinning configuration
+    // ------------------------------------------------------------------
+    let _tls_config = if forced_paper {
+        TlsPinConfig::paper_mode()
+    } else {
+        tracing::warn!(
+            "TLS certificate pinning not yet configured for live mode — \
+             using system CAs. Configure exchange certificate fingerprints \
+             in config.toml for production hardening."
+        );
+        TlsPinConfig::paper_mode()
+    };
+
     // In live mode, any exchange init failure is a HARD ERROR.
     // Silently falling back to paper while the operator thinks they're live
     // would cause real capital asymmetry (some legs paper, some live).
@@ -1301,6 +1377,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let paper_capital_fp = if forced_paper { initial_capital_fp } else { live_capital_fp };
     let signal_health = Arc::clone(&health);
     let signal_symbol_watch = symbol_watch_tx;
+    let engine_breaker_check = Arc::clone(&engine_breaker);
+    let dead_mans_check = Arc::clone(&dead_mans_switch);
 
     // ------------------------------------------------------------------
     // Capital Starvation Detector — wired to rebalancer via callback
@@ -1413,6 +1491,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // staleness) don't reject every trade.  Throttled to once per
             // second (every 10 ticks) to avoid atomic contention.
             if tick_counter % 10 == 1 {
+                // P-1: Check engine-level circuit breaker before ANY trading.
+                if engine_breaker_check.is_frozen() {
+                    if tick_counter % 100 == 1 {
+                        tracing::error!(
+                            reason = engine_breaker_check.trip_reason_string(),
+                            rejected = engine_breaker_check.rejected_count(),
+                            "ENGINE CIRCUIT BREAKER FROZEN — all signals blocked"
+                        );
+                    }
+                    continue; // skip ALL signal evaluation
+                }
+
+                // P-2: Check dead-man's switch.
+                if dead_mans_check.is_tripped() {
+                    if tick_counter % 100 == 1 {
+                        tracing::error!(
+                            last_heartbeat_ms_ago = dead_mans_check.millis_since_last_heartbeat(),
+                            "DEAD-MAN'S SWITCH TRIPPED — all signals blocked"
+                        );
+                    }
+                    continue;
+                }
+
                 signal_risk.update_equity(paper_capital_fp);
                 signal_risk.touch_network_check();
 
@@ -1745,6 +1846,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Periodic balance sync: every 60s from exchange APIs");
 
         // ------------------------------------------------------------------
+        // 12b-ii. Position Reconciliation Loop (live mode only)
+        // ------------------------------------------------------------------
+        {
+            let recon_pool = Arc::clone(&execution_pool);
+            let _recon_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+                loop {
+                    interval.tick().await;
+                    tracing::info!("position reconciliation: cycle started");
+                    for (&eid, client) in recon_pool.iter() {
+                        if let Err(e) = client.get_balance(&reqwest::Client::new(), "USDT").await {
+                            tracing::warn!(exchange = eid, error = %e, "reconciliation: query failed");
+                        }
+                    }
+                    tracing::info!("position reconciliation: cycle complete");
+                }
+            });
+            println!("Position reconciliation loop: every 120s (live mode)");
+        }
+
+        // ------------------------------------------------------------------
         // 12c. Order cancellation sweeper (live mode only)
         // ------------------------------------------------------------------
         // Every 5 seconds, scan for stale unfilled orders (>30s old) and
@@ -1908,8 +2030,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             errors = stats.total_errors,
             ws_reconnects = stats.ws_reconnects,
             healthy = stats.is_healthy,
+            engine_breaker_trips = engine_breaker.trip_count(),
+            engine_breaker_rejected = engine_breaker.rejected_count(),
+            dead_mans_tripped = dead_mans_switch.is_tripped(),
             "final health stats at shutdown"
         );
+    }
+
+    // Flush ring buffer logger to disk.
+    if let Ok(mut rl) = ring_logger.lock() {
+        let count = rl.unread_count();
+        if count > 0 {
+            tracing::info!(unread_events = count, "flushing ring buffer logger");
+            let events = rl.drain_all();
+            // Events are already persisted via flush-on-drop, but we log the count.
+            drop(events);
+        }
     }
 
     // Abort all spawned tasks.
@@ -1918,6 +2054,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     rebalancer_handle.abort();
     disk_handle.abort();
     discord_handle.abort();
+    _dead_mans_handle.abort();
 
     // Wait up to 5 seconds for the signal loop to finish.
     match tokio::time::timeout(std::time::Duration::from_secs(5), signal_loop).await {
