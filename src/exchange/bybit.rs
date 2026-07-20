@@ -94,7 +94,7 @@ impl Exchange for BybitClient {
 
         let order_link_id = order.client_order_id.as_deref().unwrap_or("");
 
-        let (order_type, body) = if price > Decimal::ZERO {
+        let (_order_type, body) = if price > Decimal::ZERO {
             // Limit order
             let mut b = serde_json::json!({
                 "category": "spot",

@@ -503,13 +503,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let sigs = arena.evaluate_tick(eb, TOKEN_BTC, 0, 0);
                 for sig in sigs {
-                    match &sig {
-                        ArbitrageSignal::CrossExchange { buy_exchange, sell_exchange, token_id, spread_bps } => {
-                            println!("  CROSS-EXCH (synthetic): Buy {} on {}, Sell on {} | {} bps",
-                                tok_name(*token_id), exch_name(*buy_exchange), exch_name(*sell_exchange), spread_bps);
-                            cross_signals += 1;
-                        }
-                        _ => {}
+                    if let ArbitrageSignal::CrossExchange { buy_exchange, sell_exchange, token_id, spread_bps } = &sig {
+                        println!("  CROSS-EXCH (synthetic): Buy {} on {}, Sell on {} | {} bps",
+                            tok_name(*token_id), exch_name(*buy_exchange), exch_name(*sell_exchange), spread_bps);
+                        cross_signals += 1;
                     }
                     health.record_signal();
                     all_signals.push(sig);
@@ -536,15 +533,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let sigs = arena.evaluate_tick(ei as usize, TOKEN_BTC, 0, 0);
                 for sig in sigs {
-                    match &sig {
-                        ArbitrageSignal::Triangular { exchange_id, token_a, token_b, token_c, profit_bps } => {
-                            println!("  TRIANGULAR (synthetic) [{}]: {}->{}->{}->{} | {} bps",
-                                exch_name(*exchange_id),
-                                tok_name(*token_a), tok_name(*token_b), tok_name(*token_c), tok_name(*token_a),
-                                profit_bps);
-                            tri_signals += 1;
-                        }
-                        _ => {}
+                    if let ArbitrageSignal::Triangular { exchange_id, token_a, token_b, token_c, profit_bps } = &sig {
+                        println!("  TRIANGULAR (synthetic) [{}]: {}->{}->{}->{} | {} bps",
+                            exch_name(*exchange_id),
+                            tok_name(*token_a), tok_name(*token_b), tok_name(*token_c), tok_name(*token_a),
+                            profit_bps);
+                        tri_signals += 1;
                     }
                     health.record_signal();
                     all_signals.push(sig);

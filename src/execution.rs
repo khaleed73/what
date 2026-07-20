@@ -1343,7 +1343,7 @@ impl HighFrequencyExecutionEngine {
                 });
             let fee_bps = Decimal::from(fee_bps_per_leg);
             let mut total_fee = Decimal::ZERO;
-            for (i, result) in total_result.iter().enumerate() {
+            for result in total_result.iter() {
                 if result.success && result.filled_qty > Decimal::ZERO {
                     let notional = result.filled_qty * result.avg_price;
                     total_fee += notional * fee_bps / Decimal::from(10_000u64);

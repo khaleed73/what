@@ -204,7 +204,6 @@ impl ProductionRiskShield {
             let qty = layer.quantity();
             if qty >= remaining_qty {
                 exact_cost += remaining_qty * price;
-                remaining_qty = Decimal::ZERO;
                 break;
             } else {
                 exact_cost += qty * price;

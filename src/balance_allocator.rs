@@ -1,38 +1,26 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 // ---------------------------------------------------------------------------
 // Token category bitmask constants
 // ---------------------------------------------------------------------------
 
-/// Token category bitmask: no category assigned.
 pub const CAT_NONE: u16 = 0b0000_0000;
-/// Token category bitmask: major coins (BTC, ETH, BNB, XRP).
-pub const CAT_MAJOR: u16 = 0b0000_0001;
-/// Token category bitmask: established altcoins (SOL, ADA, DOT, etc.).
-pub const CAT_ALTCOIN: u16 = 0b0000_0010;
-/// Token category bitmask: memecoins (DOGE, PEPE, SHIB, etc.).
-pub const CAT_MEMECOIN: u16 = 0b0000_0100;
-/// Token category bitmask: stablecoins (USDT, USDC, etc.).
-pub const CAT_STABLE: u16 = 0b0000_1000;
-/// Token category bitmask: layer-1 protocols (AVAX, NEAR, etc.).
-pub const CAT_LAYER1: u16 = 0b0001_0000;
+pub const CAT_MAJOR: u16 = 0b0000_0001; // BTC, ETH
+pub const CAT_ALTCOIN: u16 = 0b0000_0010; // SOL, ADA, DOT
+pub const CAT_MEMECOIN: u16 = 0b0000_0100; // DOGE, PEPE
+pub const CAT_STABLE: u16 = 0b0000_1000; // USDT, USDC
+pub const CAT_LAYER1: u16 = 0b0001_0000; // AVAX, NEAR
 
 // ---------------------------------------------------------------------------
 // Fixed-point conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Multiplier for converting `Decimal` to fixed-point `u64`.
 const FP_SCALE: u64 = 1_000_000;
-
-/// Minimum allocation in USD. Allocations below this are rejected to avoid
-/// orders that exchanges will reject for being too small ($10 notional).
-/// L-11: Extracted from magic number in `calculate_trade_allocation`.
-const MIN_ALLOCATION_USD: Decimal = dec!(10);
 
 /// Convert a `Decimal` to a fixed-point `u64` (truncated).
 /// Value = d * 1_000_000
@@ -63,7 +51,6 @@ fn fp_to_decimal(fp: u64) -> Decimal {
 // TokenAsset
 // ---------------------------------------------------------------------------
 
-/// A token asset with its registry ID, display symbol, and category mask.
 #[derive(Debug, Clone)]
 pub struct TokenAsset {
     pub id: u16,
@@ -75,10 +62,6 @@ pub struct TokenAsset {
 // CategorizedInventory
 // ---------------------------------------------------------------------------
 
-/// Inventory of known tokens grouped by category.
-///
-/// Maintains a token registry, symbol-to-ID mapping, and per-category
-/// index lists for fast category-based queries.
 pub struct CategorizedInventory {
     pub token_registry: HashMap<u16, TokenAsset>,
     pub symbol_to_id: HashMap<String, u16>,
@@ -95,7 +78,6 @@ impl Default for CategorizedInventory {
 }
 
 impl CategorizedInventory {
-    /// Create an empty inventory with no registered tokens.
     pub fn new() -> Self {
         Self {
             token_registry: HashMap::new(),
@@ -107,10 +89,6 @@ impl CategorizedInventory {
         }
     }
 
-    /// Register a token with the given ID, symbol, and category mask.
-    ///
-    /// The symbol is stored in uppercase. The token is added to the
-    /// appropriate category index list based on the bits set in `mask`.
     pub fn register_token(&mut self, id: u16, symbol: &str, mask: u16) {
         self.symbol_to_id.insert(symbol.to_uppercase(), id);
         self.token_registry.insert(
@@ -141,12 +119,6 @@ impl CategorizedInventory {
 // LocalCapitalAllocator
 // ---------------------------------------------------------------------------
 
-/// Per-exchange, per-token atomic balance matrix.
-///
-/// Stores fixed-point (`Decimal * 1_000_000`) balances in flat `AtomicU64` arrays
-/// indexed as `[exchange_id * total_tokens + token_id]`.  All balance
-/// reads and writes go through atomic operations, making this safe for
-/// concurrent access from the hot-path strategy loop.
 pub struct LocalCapitalAllocator {
     /// Flat array indexed as `[exchange_id * total_tokens + token_id]`.
     /// Each slot stores a fixed-point representation of the balance
@@ -161,10 +133,10 @@ pub struct LocalCapitalAllocator {
 }
 
 impl LocalCapitalAllocator {
-    /// Create a new allocator with the given number of exchanges and tokens.
+    /// Creates a new allocator with the given number of exchanges and tokens.
     /// All balances are initialised to zero.
     pub fn new(total_exchanges: usize, total_tokens: usize) -> Self {
-        let len = total_exchanges.saturating_mul(total_tokens);
+        let len = total_exchanges * total_tokens;
         let balances = (0..len).map(|_| AtomicU64::new(0)).collect();
         Self {
             balances,
@@ -174,7 +146,6 @@ impl LocalCapitalAllocator {
         }
     }
 
-    /// Register a token in the inventory for category-based lookups.
     pub fn register_token(&self, id: u16, symbol: &str, mask: u16) {
         if let Ok(mut inv) = self.inventory.lock() {
             inv.register_token(id, symbol, mask);
@@ -182,9 +153,6 @@ impl LocalCapitalAllocator {
     }
 
     /// Delegated inventory lookups (acquire the Mutex briefly).
-    /// Returns the category bitmask for a registered token, or [`CAT_NONE`] if
-    /// the token is unknown or the inventory lock is poisoned.
-    #[inline]
     pub fn get_category(&self, token_id: u16) -> u16 {
         self.inventory
             .lock()
@@ -193,7 +161,6 @@ impl LocalCapitalAllocator {
             .unwrap_or(CAT_NONE)
     }
 
-    /// Look up the token ID for an uppercase symbol.
     pub fn get_id(&self, symbol: &str) -> Option<u16> {
         self.inventory
             .lock()
@@ -309,7 +276,7 @@ impl LocalCapitalAllocator {
         let idx = self.idx(exchange_id, token_id);
         // Use compare-and-swap loop to prevent wrapping underflow.
         // If the balance would go below zero, skip the subtraction and log.
-        let _ = self.balances[idx].fetch_update(Ordering::Acquire, Ordering::Acquire, |current| {
+        let _ = self.balances[idx].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             current.checked_sub(fp)
         });
     }
@@ -321,12 +288,11 @@ impl LocalCapitalAllocator {
         let fp = decimal_to_fp(amount);
         if fp == 0 { return; }
         let idx = self.idx(exchange_id, token_id);
-        self.balances[idx].fetch_add(fp, Ordering::Release);
+        self.balances[idx].fetch_add(fp, Ordering::SeqCst);
     }
 
     /// Returns the available balance of a specific token on a specific exchange.
     /// This is an alias for `get_balance_atomic` with clearer naming for strategy use.
-    #[inline]
     pub fn get_available_balance(&self, exchange_id: usize, token_id: usize) -> Decimal {
         self.get_balance_atomic(exchange_id, token_id)
     }
@@ -380,9 +346,9 @@ impl LocalCapitalAllocator {
             position_cap
         };
 
-        // L-11: Reject allocations below exchange minimums.
+        // L-11: Reject allocations below exchange minimums ($10).
         // Most exchanges reject orders below ~$10 notional.
-        if result < MIN_ALLOCATION_USD {
+        if result < dec!(10.0) {
             return Decimal::ZERO;
         }
 

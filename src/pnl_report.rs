@@ -279,7 +279,7 @@ impl TradeLog {
         // Split P&L evenly across the three legs for per-leg reporting.
         // M-12: Guard against division by zero (constant 3, but following the
         // zero-division safety pattern for all profit calculations).
-        let per_leg_pnl = if legs.leg1_quantity > Decimal::ZERO {
+        let _per_leg_pnl = if legs.leg1_quantity > Decimal::ZERO {
             loop_pnl / Decimal::from(3)
         } else {
             Decimal::ZERO
@@ -499,7 +499,11 @@ impl TradeLog {
 
     /// Export all trades to a CSV file at the given path.
     pub async fn export_csv(&self, path: &str) {
-        let records = self.records.lock().unwrap_or_else(|e| e.into_inner());
+        let (records, trade_count) = {
+            let guard = self.records.lock().unwrap_or_else(|e| e.into_inner());
+            let count = guard.len();
+            (guard.clone(), count)
+        };
 
         let mut csv_lines: Vec<String> = Vec::with_capacity(records.len() + 1);
 
@@ -533,9 +537,8 @@ impl TradeLog {
             ));
         }
 
-        let trade_count = records.len();
         let content = csv_lines.join("\n") + "\n";
-        drop(records);
+        // Guard was already dropped (scope ended above).
 
         match tokio::fs::write(path, &content).await {
             Ok(_) => {
@@ -562,7 +565,7 @@ impl TradeLog {
 
         let mut file = std::fs::OpenOptions::new()
             .create(true)
-            .write(true)
+            
             .append(true)
             .open(&self.file_path)?;
 

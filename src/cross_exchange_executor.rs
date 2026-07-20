@@ -203,7 +203,7 @@ impl CrossExchangeExecutor {
             both_succeeded,
             total_profit,
             total_execution_time_us: total_start.elapsed().as_micros() as u64,
-            rollback_required: rollback_required,
+            rollback_required,
         }
     }
 

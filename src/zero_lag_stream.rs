@@ -135,7 +135,7 @@ impl ZeroLagStreamManager {
     pub fn record_message(&mut self) {
         if self.pending_count >= self.max_pending {
             self.dropped_count += 1;
-            if self.dropped_count == 1 || self.dropped_count % 1000 == 0 {
+            if self.dropped_count == 1 || self.dropped_count.is_multiple_of(1000) {
                 tracing::warn!(
                     pending = self.pending_count,
                     dropped = self.dropped_count,

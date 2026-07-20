@@ -76,7 +76,7 @@ impl DeribitExchange {
     async fn ensure_auth(&self) -> Result<String> {
         // Check cached token — re-auth if missing or expiring within 30s
         {
-            let mut guard = self.access_token.lock().unwrap_or_else(|e| {
+            let guard = self.access_token.lock().unwrap_or_else(|e| {
                 tracing::error!("Deribit auth mutex poisoned, clearing token");
                 let mut g = e.into_inner();
                 *g = None;

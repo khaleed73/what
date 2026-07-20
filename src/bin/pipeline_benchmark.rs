@@ -465,8 +465,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cross_fired = 0u32;
     let mut tri_fired = 0u32;
 
-    for sig in passed.iter().cloned() {
-        match &sig {
+    for sig in passed.iter() {
+        match sig {
             ArbitrageSignal::CrossExchange { buy_exchange, sell_exchange, token_id, spread_bps } => {
                 if cross_fired >= 3 { continue; }
                 cross_fired += 1;
@@ -648,7 +648,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if throughput_ok { "PASS" } else { "WARN" },
         if fp_total > 0 { full_pipeline_us.len() as f64 / (fp_total as f64 / 1_000_000.0) } else { 0.0 });
     println!("  {:>30}  {}", "Orderbook P95 < 500 ms:", if ob_ok { "PASS" } else { "WARN (network-dependent)" });
-    println!("  {:>30}  {}", "Exchanges reachable:", format!("{}/12", h_pass));
+    println!("  {:>30}  {}/12", "Exchanges reachable:", h_pass);
     println!("\n{}", "═".repeat(78));
 
     Ok(())

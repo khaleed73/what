@@ -13,11 +13,9 @@
 //! secret bytes in a [`SecretBytes`] wrapper that zeroes on drop.
 
 use async_trait::async_trait;
-use reqwest;
 use rust_decimal::Decimal;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::exchange::config::SecretString;
 use crate::signer::{
     OrderRequest, OrderResult, OrderSide, PrivateExchangeClient,
 };
@@ -476,7 +474,7 @@ pub mod okx {
 
 pub mod gateio {
     use async_trait::async_trait;
-    use base64::Engine;
+    
     use ring::digest;
     use ring::hmac;
     use rust_decimal::Decimal;
@@ -580,7 +578,7 @@ pub mod gateio {
             let signature = self.sign(&timestamp, "GET", &path, &query, "");
 
             // FIX: Include the query string in the URL (was missing entirely).
-            let resp = http_client.get(&format!("{}{}?{}", self.rest_url, path, query))
+            let resp = http_client.get(format!("{}{}?{}", self.rest_url, path, query))
                 .header("KEY", self.api_key.expose())
                 .header("SIGN", &signature)
                 .header("Timestamp", &timestamp.to_string())
@@ -995,7 +993,7 @@ pub mod coinbase {
 
     use crate::exchange::config::SecretString;
     use crate::signer::{
-        OrderRequest, OrderResult, OrderSide, OrderType, PrivateExchangeClient,
+        OrderRequest, OrderResult, OrderSide, PrivateExchangeClient,
     };
 
     const DEFAULT_REST_URL: &str = "https://api.exchange.coinbase.com";
@@ -1304,7 +1302,7 @@ pub mod bitmex {
     use ring::hmac;
     use rust_decimal::Decimal;
     use serde_json::{json, Value};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    
 
     use crate::exchange::config::SecretString;
     use crate::signer::{
@@ -3448,7 +3446,7 @@ pub mod lbank {
                     "order status missing — treating as UNKNOWN to prevent phantom order");
                 99 // 99 is not in 0|1|2, so success=false
             });
-            let success = matches!(status_code, 0 | 1 | 2); // 0=NEW, 1=PARTIAL, 2=FILLED
+            let success = matches!(status_code, 0..=2); // 0=NEW, 1=PARTIAL, 2=FILLED
 
             Ok(OrderResult {
                 success,
@@ -3798,7 +3796,7 @@ pub mod deribit {
 
     use crate::exchange::config::SecretString;
     use crate::signer::{
-        OrderRequest, OrderResult, OrderSide, OrderType, PrivateExchangeClient,
+        OrderRequest, OrderResult, OrderSide, PrivateExchangeClient,
     };
 
     const DEFAULT_REST_URL: &str = "https://www.deribit.com";

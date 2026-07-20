@@ -9,17 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
-
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::balance_allocator::LocalCapitalAllocator;
 use crate::signer::PrivateExchangeClient;
-
-/// Maximum balance drift ratio before logging a warning.
-/// 5% drift indicates the tracked and exchange-reported balances
-/// have diverged significantly and may need investigation.
-const DRIFT_WARN_RATIO: Decimal = dec!(0.05);
 
 /// Query a single exchange's balance for the given token symbol and update the allocator.
 ///
@@ -52,7 +45,7 @@ async fn sync_exchange_balance(
     if tracked > Decimal::ZERO {
         let abs_diff = (balance - tracked).abs();
         let drift_pct = abs_diff / tracked;
-        if drift_pct > DRIFT_WARN_RATIO {
+        if drift_pct > Decimal::new(5, 2) {
             tracing::error!(
                 exchange_id,
                 token_id,
@@ -103,7 +96,7 @@ pub async fn boot_sync(
         }
     }
 
-    info!(total_synced_usdt = %total, exchanges = clients.len(), "boot balance sync complete");
+    info!(total_usdt = %total, exchanges = clients.len(), "boot balance sync complete");
     total
 }
 
@@ -121,7 +114,7 @@ pub async fn run_periodic_sync(
 
     loop {
         ticker.tick().await;
-        cycle = cycle.saturating_add(1);
+        cycle += 1;
 
         let mut total = Decimal::ZERO;
         for (&exchange_id, client) in clients.iter() {
@@ -146,10 +139,10 @@ pub async fn run_periodic_sync(
             }
         }
 
-        if cycle % 10 == 0 {
+        if cycle.is_multiple_of(10) {
             info!(
                 cycle,
-                total_synced_usdt = %total,
+                total_usdt = %total,
                 "periodic balance sync"
             );
         }

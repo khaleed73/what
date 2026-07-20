@@ -85,16 +85,16 @@ use signer::PrivateExchangeClient;
 use paper_trading::PaperTradingPipeline;
 use persistence::{AsyncPersistenceWorker, PersistentState};
 use protections::RiskManager;
-use circuit_breaker::EngineCircuitBreaker;
-use risk_shield::{RiskShield, CrossExchangeRiskShield, MarketTicker};
-use safety_execution::SafetyExecutionEngine;
-use exchange_constraints::{ExchangeConstraints, AbsoluteMathEngine, MarketDepth, DepthLevel};
-use atomic_orderbook::FixedOrderBook;
-use core_execution_shield::CoreExecutionShield;
-use ring_buffer_logger::RingBufferLogger;
-use rebalance_matrix::RebalanceMatrixEngine;
-use zero_lag_stream::ZeroLagStreamManager;
-use cross_exchange_executor::CrossExchangeExecutor;
+// use circuit_breaker::EngineCircuitBreaker;
+// use risk_shield::{RiskShield, CrossExchangeRiskShield, MarketTicker};
+// use safety_execution::SafetyExecutionEngine;
+// use exchange_constraints::{ExchangeConstraints, AbsoluteMathEngine, MarketDepth, DepthLevel};
+// use atomic_orderbook::FixedOrderBook;
+// use core_execution_shield::CoreExecutionShield;
+// use ring_buffer_logger::RingBufferLogger;
+// use rebalance_matrix::RebalanceMatrixEngine;
+// use zero_lag_stream::ZeroLagStreamManager;
+// use cross_exchange_executor::CrossExchangeExecutor;
 use rebalancer::{AutoCapitalRebalancer, ExchangeHeartbeatHandle, create_rebalance_channel};
 use stablecoin::StablecoinMonitor;
 use subaccount::SubAccountManager;
@@ -111,10 +111,6 @@ const DEFAULT_PAPER_CAPITAL: Decimal = dec!(100_000.0);
 
 /// Fixed-point scale used by risk manager and balance allocator.
 const FP_SCALE: u64 = 1_000_000;
-
-/// Fixed-point scale used by the MarketArena price matrix (8 decimal places).
-/// Arena prices are stored as `price * ARENA_FP_SCALE`.
-const ARENA_FP_SCALE: u64 = 100_000_000;
 
 /// Key patterns that indicate "no real API key configured".
 const PLACEHOLDER_PATTERNS: &[&str] = &[
@@ -268,7 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         usdt_max_pct: config.stablecoin.usdt_max_pct,
         usdc_min_pct: config.stablecoin.usdc_min_pct,
         monitored_symbols: config.stablecoin.monitored_symbols.clone(),
-        check_interval_ms: stablecoin::DEFAULT_CHECK_INTERVAL_MS,
+        check_interval_ms: 5000,
     };
     let depeg_circuit = Arc::new(StablecoinMonitor::new(stable_config));
     println!("Stablecoin depeg circuit active — monitoring {:?}", config.stablecoin.monitored_symbols);
@@ -1116,7 +1112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     let mut config_fee_map: HashMap<String, u64> = HashMap::new();
     for (name, bps) in &config.friction_protections.exchange_taker_fees {
-        config_fee_map.insert(name.to_lowercase(), *bps as u64);
+        config_fee_map.insert(name.to_lowercase(), *bps);
     }
     let fee_manager = Arc::new(DynamicFeeManager::new(
         config_fee_map,
@@ -1505,7 +1501,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let leg_a = OrderIntent {
                                     exchange_id: buy_exchange,
                                     token_id: tid,
-                                    qty: qty.clone(),
+                                    qty,
                                     price: buy_price,
                                     is_buy: true,
                                     symbol: symbol.clone(),
@@ -1608,10 +1604,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     OrderIntent {
                                         exchange_id: exch,
                                         token_id: token_a,
-                                        qty: tri_qty.clone(),
+                                        qty: tri_qty,
                                         price: Decimal::from(
                                             signal_arena.ask_prices[idx_a].load(Ordering::Relaxed),
-                                        ) / Decimal::from(ARENA_FP_SCALE),
+                                        ) / Decimal::from(100_000_000u64),
                                         is_buy: true,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_a)
@@ -1622,10 +1618,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     OrderIntent {
                                         exchange_id: exch,
                                         token_id: token_b,
-                                        qty: tri_qty.clone(),
+                                        qty: tri_qty,
                                         price: Decimal::from(
                                             signal_arena.bid_prices[idx_b].load(Ordering::Relaxed),
-                                        ) / Decimal::from(ARENA_FP_SCALE),
+                                        ) / Decimal::from(100_000_000u64),
                                         is_buy: leg2_is_buy,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_b)
@@ -1639,7 +1635,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         qty: tri_qty,
                                         price: Decimal::from(
                                             signal_arena.bid_prices[idx_c].load(Ordering::Relaxed),
-                                        ) / Decimal::from(ARENA_FP_SCALE),
+                                        ) / Decimal::from(100_000_000u64),
                                         is_buy: false,
                                         symbol: {
                                             let base = signal_allocator.get_symbol(token_c)
@@ -1676,7 +1672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Every 300 ticks (~30 seconds), push the latest discovered
             // symbols to the WS watch channel so feed workers re-subscribe
             // with the full list on their next reconnect.
-            if tick_counter % 300 == 0 {
+            if tick_counter.is_multiple_of(300) {
                 if let Ok(tokens) = signal_arena.active_tokens.try_lock() {
                     let syms: Vec<String> = tokens.iter()
                         .filter_map(|&tid| signal_allocator.get_symbol(tid))
@@ -1690,7 +1686,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Every 1000 ticks (~100 seconds), log health stats.
-            if tick_counter % 1000 == 0 {
+            if tick_counter.is_multiple_of(1000) {
                 let stats = signal_health.get_stats();
                 tracing::info!(
                     uptime_secs = stats.uptime_secs,
@@ -1708,7 +1704,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The detector's callback (wired above) automatically sends
             // a RebalanceRequest to the rebalancer channel, selecting the
             // best-funded source exchange dynamically.
-            if tick_counter % 500 == 0 {
+            if tick_counter.is_multiple_of(500) {
                 for exch_id in 0..num_exch {
                     let bal = signal_allocator.get_balance_atomic(exch_id, 0); // token 0 = USDT
                     if let Some(event) = signal_starvation_detector.check_balance(
@@ -1845,7 +1841,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 last_btc_price = btc_price;
 
                 // Every window_ticks, check if max deviation exceeded threshold.
-                if tick_count % window_ticks == 0 {
+                if tick_count.is_multiple_of(window_ticks) {
                     if max_deviation_bps >= threshold_bps {
                         tracing::error!(
                             max_deviation_bps = max_deviation_bps,
@@ -2069,8 +2065,8 @@ async fn run_integration_test(
         timestamp: chrono::Utc::now().timestamp_millis(),
         exchange_health: HashMap::new(),
     };
-    if state_tx.try_send(state).is_err() {
-        tracing::error!("persistence channel full — state snapshot dropped (data loss possible)");
+    if state_tx.send(state).await.is_err() {
+        tracing::error!("state_tx receiver dropped -- state snapshots are no longer being persisted to disk!");
     }
     println!("  Persistence: State snapshot queued for disk write");
 

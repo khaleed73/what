@@ -27,8 +27,6 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use hex;
-use reqwest;
 use ring::hmac;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};

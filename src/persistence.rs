@@ -5,7 +5,6 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing;
 
 /// Default flush interval in seconds between periodic auto-saves.
 const DEFAULT_FLUSH_INTERVAL_SECS: u64 = 30;

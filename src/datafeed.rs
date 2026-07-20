@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::connect_async;
-use serde_json;
 use rand::Rng;
 use tracing::{error, info, warn};
 

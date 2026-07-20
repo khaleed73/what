@@ -74,7 +74,7 @@ where
                 // try under load.
                 let mut pinned = pin_current_thread(core_id);
                 if !pinned {
-                    for attempt in 1..=PIN_RETRY_COUNT {
+                    for _attempt in 1..=PIN_RETRY_COUNT {
                         std::thread::sleep(std::time::Duration::from_millis(PIN_RETRY_DELAY_MS));
                         pinned = pin_current_thread(core_id);
                         if pinned { break; }
