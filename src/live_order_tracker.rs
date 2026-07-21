@@ -33,7 +33,7 @@ pub struct TrackedOrder {
 /// Supports automatic eviction of the oldest orders when capacity
 /// is reached, and periodic cleanup of stale entries.
 pub struct LiveOrderTracker {
-    pub orders: Mutex<HashMap<String, TrackedOrder>>,
+    pub(crate) orders: Mutex<HashMap<String, TrackedOrder>>,
     /// Maximum age (in seconds) before an order is considered stale.
     /// Stale orders are cleaned up periodically.
     pub max_age_secs: u64,

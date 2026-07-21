@@ -1,10 +1,11 @@
-//! Ring Buffer Logger — Lock-free single-producer single-consumer trade log.
+//! Ring Buffer Logger — Single-threaded ring buffer trade log.
 //!
-//! Uses a fixed-size circular buffer with atomic sequence numbers for
-//! zero-allocation, zero-lock logging on the hot path.
+//! NOTE: Despite the original name, push() and pop() both require &mut self,
+//! meaning external synchronization is needed for concurrent use.
+//! This is a single-threaded ring buffer, not a lock-free SPSC queue.
 //!
-//! The producer (trading thread) pushes log entries without blocking.
-//! A background worker drains entries asynchronously.
+//! Uses a fixed-size circular buffer for zero-allocation logging.
+//! The producer pushes log entries; a background worker drains entries.
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use rust_decimal::Decimal;

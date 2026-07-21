@@ -401,6 +401,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut execution_pool: HashMap<u16, Arc<dyn PrivateExchangeClient>> = HashMap::new();
     let mut live_init_failures: Vec<(u16, String, String)> = Vec::new();
 
+    // TODO: Refactor to data-driven factory pattern. Each exchange follows
+    // the same structure: check config → create client → store in pool.
+    // A macro or trait-object factory would reduce this from ~340 lines to ~30.
+
     // Exchange 0 → Binance
     if let Some(exch) = config.exchanges.get(&0u16) {
         if is_placeholder_key(&exch.api_key) || is_placeholder_key(&exch.api_secret) {
@@ -1526,6 +1530,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the WS feed callback with the exact (exchange, token) that
             // changed.  Here we sweep all exchanges periodically
             // using the coin finder's dynamically-discovered token list.
+            // NOTE: active_tokens_snapshot may be empty during coin_finder's ~1-second
+            // staleness window (see coin_finder.rs module docs). This is expected —
+            // the inner loop simply evaluates no signals and the cycle continues.
             let active_tokens_snapshot = signal_arena.active_tokens.try_lock()
                 .map(|g| g.clone())
                 .unwrap_or_default();

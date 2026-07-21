@@ -67,6 +67,9 @@ pub struct OrderRequest {
 pub struct OrderResponse {
     pub order_id: String,
     pub client_order_id: String,
+    /// Order status. Currently a free-form string for flexibility across
+    /// 17 exchanges with different status semantics.
+    /// TODO: Migrate to an enum with exchange-specific mapping.
     pub status: String,
     pub filled_qty: Decimal,
     pub avg_price: Decimal,

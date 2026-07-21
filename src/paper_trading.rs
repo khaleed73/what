@@ -359,6 +359,9 @@ impl PaperTradingPipeline {
         // Update the cached PnL in fixed-point cents.
         {
             let bals = self.balances.read().await;
+            // NOTE: This only counts USDT balance change. Non-USDT assets (BTC, ETH, etc.)
+            // held in the portfolio are not valued. A strategy that accumulates non-USDT
+            // assets will show misleading PnL. TODO: Mark all holdings to USDT.
             let usdt = bals.get(&0u16).copied().unwrap_or(Decimal::ZERO);
             let pnl_decimal = usdt - self.initial_capital;
             let pnl_cents = decimal_to_cents(pnl_decimal);

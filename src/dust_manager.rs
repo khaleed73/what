@@ -136,6 +136,9 @@ impl DustManager {
     /// Logs a warning when a dust sweep is about to be generated
     /// so operators can monitor automated conversion behaviour.
     pub fn evaluate_and_generate_requests(&self) -> Vec<DustConversionRequest> {
+        // LOCK ORDERING: dust_inventory → target_tokens
+        // This ordering MUST be maintained everywhere to prevent deadlock.
+        // If you need to acquire target_tokens first, restructure the code.
         let inventory = self.dust_inventory.lock().unwrap_or_else(|e| e.into_inner());
         let total_dust: Decimal = inventory.iter().map(|e| e.estimated_usd_value).sum();
 

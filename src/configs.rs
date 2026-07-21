@@ -179,8 +179,12 @@ pub struct RawRiskLimits {
 
 // ── Stablecoin depeg monitoring ─────────────────────────────────────────
 
-/// Raw stablecoin config with `f64` fields that are converted to `Decimal`
-/// during validation.
+/// Raw stablecoin config with `f64` fields.
+///
+/// Stored as f64 for TOML deserialization convenience.
+/// Converted to Decimal during validation (see validate_stablecoin).
+/// NOTE: f64 precision loss (~15 digits) is acceptable for threshold
+/// percentages (e.g., 0.005 = 0.5% depeg threshold).
 #[derive(Debug, Deserialize, Clone)]
 pub struct StablecoinConfig {
     pub depeg_threshold: f64,

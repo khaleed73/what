@@ -105,6 +105,17 @@ impl StablecoinProtectionCircuit {
         // Setting `false` is intentionally a no-op — use attempt_recovery() instead.
     }
 
+    /// Force-clear the depeg state regardless of price.
+    /// Use with caution — typically after verifying the price feed is healthy.
+    pub fn force_clear(&self) {
+        self.is_depegged.store(false, Ordering::Release);
+        self.recovery_tick_count.store(0, Ordering::Release);
+        tracing::info!(
+            symbol = %self.target_symbol,
+            "depeg protection force-cleared by operator"
+        );
+    }
+
     /// ⚠️ Manual override that immediately clears depeg state without waiting
     /// for the recovery tick counter. Should only be called by operator
     /// action, NOT automated code.

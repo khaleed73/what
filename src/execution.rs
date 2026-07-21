@@ -806,6 +806,10 @@ impl HighFrequencyExecutionEngine {
         capital_fp: u64,
     ) -> Result<(OrderResult, OrderResult), String> {
         // 0. Execution mutex — prevent overlapping multi-leg blasts.
+        // NOTE: Global execution mutex means only one blast can be in-flight at a time
+        // across ALL symbol pairs. This is a known throughput limitation.
+        // TODO: Per-pair execution mutexes would allow concurrent blasts on
+        // unrelated pairs (e.g., BTC-USDT and ETH-USDT simultaneously).
         // If another blast is in-flight, drop this signal immediately.
         let _lock = match self.execution_mutex.try_lock() {
             Ok(guard) => guard,

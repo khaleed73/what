@@ -317,7 +317,7 @@ impl RebalanceMatrixEngine {
         /// oscillating rebalance loops.
         const RATIO_TOLERANCE_PCT: Decimal = dec!(0.05);
         let new_ratio_source = new_source / (new_source + new_dest);
-        if (new_ratio_source - Decimal::from(5) / Decimal::from(10)).abs() > RATIO_TOLERANCE_PCT {
+        if (new_ratio_source - dec!(0.5)).abs() > RATIO_TOLERANCE_PCT {
             // If we'd be more than 5% off from 50/50, skip
             return None;
         }

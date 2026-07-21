@@ -81,13 +81,24 @@ impl OrderBook {
                 return;
             }
             if delta.last_update_id > self.last_update_id + 1 {
-                warn!(
-                    expected = self.last_update_id + 1,
-                    got = delta.last_update_id,
-                    "sequence gap detected in orderbook delta — possible stale data"
-                );
-                // A fresh snapshot should be requested by the caller.
-                return;
+                let gap = delta.last_update_id - self.last_update_id;
+                if gap > 100 {
+                    warn!(
+                        expected = self.last_update_id + 1,
+                        got = delta.last_update_id,
+                        gap,
+                        "large sequence gap — requesting resync"
+                    );
+                    // A fresh snapshot should be requested by the caller.
+                    return;
+                } else {
+                    tracing::debug!(
+                        expected = self.last_update_id + 1,
+                        got = delta.last_update_id,
+                        gap,
+                        "small sequence gap — accepting update"
+                    );
+                }
             }
         }
 
