@@ -1,155 +1,141 @@
-//! Dead-Man's Switch — Automatic kill switch if the operator goes unresponsive.
+//! Dead Man's Switch — Heartbeat-based watchdog.
 //!
-//! In production HFT, the bot must be continuously supervised. This module
-//! implements a "dead-man's switch" that requires periodic heartbeats from
-//! an external supervisor (e.g., a monitoring service, watchdog process, or
-//! human operator via a health-check endpoint). If no heartbeat is received
-//! within the configured timeout, the system trips the circuit breaker and
-//! cancels all outstanding orders.
-//!
-//! Heartbeat sources:
-//!   - HTTP health endpoint (GET /healthz returns 200 only if alive)
-//!   - External watchdog process touching a sentinel file
-//!   - Manual `hftctl heartbeat` CLI command
+//! If no heartbeat is received within the configured timeout, the watchdog
+//! trips and kills all trading activity.  This is a last-resort safety
+//! mechanism for unattended production deployments.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
 
-/// Default timeout: if no heartbeat for 60 seconds, trip the breaker.
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// Reason the dead man's switch was triggered.
+pub const REASON_MANUAL_KILL: &str = "MANUAL_KILL";
 
-/// Grace period after startup before the switch becomes active.
-/// Prevents false trips during slow boot sequences.
-const GRACE_PERIOD_SECS: u64 = 30;
-
+/// A heartbeat-based watchdog that will flip a kill flag if heartbeats stop.
+///
+/// Usage:
+///   1. Create with `DeadMansSwitch::new(grace_period, timeout)`.
+///   2. Spawn the watchdog task with `spawn_dead_mans_watchdog()`.
+///   3. Call `heartbeat()` from the main signal loop every tick.
+///   4. Check `is_tripped()` before every trade.
 pub struct DeadMansSwitch {
-    /// Timestamp (ms since epoch) of the last received heartbeat.
-    last_heartbeat_ms: AtomicU64,
-    /// Whether the switch has been tripped.
-    tripped: AtomicBool,
-    /// Timeout in milliseconds.
+    /// Monotonic counter — incremented on every heartbeat.
+    pub last_heartbeat_ms: AtomicU64,
+    /// Flipped to `true` when the watchdog trips.  All trading must stop.
+    pub tripped: AtomicBool,
+    /// Grace period after startup before the watchdog starts checking (ms).
+    grace_period_ms: u64,
+    /// Timeout with no heartbeat before tripping (ms).
     timeout_ms: u64,
-    /// Whether the grace period has elapsed.
-    grace_elapsed: AtomicBool,
-    /// Startup timestamp for grace period calculation.
-    startup_ms: u64,
 }
 
 impl DeadMansSwitch {
-    pub fn new(timeout_secs: u64) -> Self {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
+    /// Creates a new dead man's switch.
+    ///
+    /// # Arguments
+    /// * `grace_period_secs` — Seconds after startup before enforcement begins.
+    /// * `timeout_secs` — Seconds without a heartbeat before tripping.
+    pub fn new(grace_period_secs: u64, timeout_secs: u64) -> Self {
         Self {
-            last_heartbeat_ms: AtomicU64::new(now_ms),
+            last_heartbeat_ms: AtomicU64::new(now_ms()),
             tripped: AtomicBool::new(false),
+            grace_period_ms: grace_period_secs * 1000,
             timeout_ms: timeout_secs * 1000,
-            grace_elapsed: AtomicBool::new(false),
-            startup_ms: now_ms,
         }
     }
 
-    /// Creates a switch with the default 60-second timeout.
-    pub fn with_defaults() -> Self {
-        Self::new(DEFAULT_TIMEOUT_SECS)
-    }
-
-    /// Record a heartbeat from the supervisor.
+    /// Record a heartbeat.  Call this from the signal loop every tick.
     pub fn heartbeat(&self) {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        self.last_heartbeat_ms.store(now_ms, Ordering::SeqCst);
-        // If previously tripped, a heartbeat resets the switch (manual recovery).
-        if self.tripped.load(Ordering::SeqCst) {
-            tracing::info!("DEAD-MAN'S SWITCH: heartbeat received — resetting tripped state");
-            self.tripped.store(false, Ordering::SeqCst);
-        }
+        self.last_heartbeat_ms.store(now_ms(), Ordering::Release);
     }
 
-    /// Check if the switch has tripped due to heartbeat timeout.
-    /// Returns true if the system should halt all trading.
-    pub fn check(&self) -> bool {
-        // During grace period, don't trip.
-        if !self.grace_elapsed.load(Ordering::SeqCst) {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            if now_ms - self.startup_ms < GRACE_PERIOD_SECS * 1000 {
-                return false;
-            }
-            self.grace_elapsed.store(true, Ordering::SeqCst);
-        }
-
-        if self.tripped.load(Ordering::SeqCst) {
-            return true;
-        }
-
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let last = self.last_heartbeat_ms.load(Ordering::SeqCst);
-        let elapsed_ms = now_ms.saturating_sub(last);
-
-        if elapsed_ms > self.timeout_ms {
-            let was_tripped = self.tripped.swap(true, Ordering::SeqCst);
-            if !was_tripped {
-                tracing::error!(
-                    elapsed_secs = elapsed_ms / 1000,
-                    timeout_secs = self.timeout_ms / 1000,
-                    "DEAD-MAN'S SWITCH TRIPPED — no heartbeat for {}s (timeout: {}s). \
-                     All trading HALTED. Send a heartbeat to recover.",
-                    elapsed_ms / 1000,
-                    self.timeout_ms / 1000,
-                );
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Returns the number of milliseconds since the last heartbeat.
-    pub fn millis_since_last_heartbeat(&self) -> u64 {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let last = self.last_heartbeat_ms.load(Ordering::SeqCst);
-        now_ms.saturating_sub(last)
-    }
-
-    /// Whether the switch is currently tripped.
+    /// Check if the switch has been tripped.
+    #[inline(always)]
     pub fn is_tripped(&self) -> bool {
-        self.tripped.load(Ordering::SeqCst)
+        self.tripped.load(Ordering::Acquire)
     }
 
-    /// Manually trip the switch (equivalent to operator kill).
-    pub fn manual_trip(&self) {
-        self.tripped.store(true, Ordering::SeqCst);
-        tracing::error!("DEAD-MAN'S SWITCH: manually tripped by operator");
+    /// Manually trip the switch (e.g., from a SIGINT handler).
+    pub fn trip(&self, reason: &str) {
+        tracing::error!(reason = reason, "dead man's switch manually tripped");
+        self.tripped.store(true, Ordering::Release);
+    }
+
+    /// Returns the elapsed time since the last heartbeat, in milliseconds.
+    pub fn elapsed_since_heartbeat_ms(&self) -> u64 {
+        now_ms().saturating_sub(self.last_heartbeat_ms.load(Ordering::Acquire))
     }
 }
 
-/// Spawns a background task that checks the dead-man's switch every second.
-/// If tripped, it calls the provided `on_trip` callback.
-pub fn spawn_dead_mans_watchdog(
-    switch: Arc<DeadMansSwitch>,
-    on_trip: Arc<dyn Fn() + Send + Sync>,
-) -> tokio::task::JoinHandle<()> {
+/// Spawns the watchdog task.  This runs in the background and trips the
+/// switch if no heartbeat is received within the timeout.
+pub fn spawn_dead_mans_watchdog(switch: Arc<DeadMansSwitch>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        // Wait for the grace period before starting enforcement.
+        sleep(Duration::from_millis(switch.grace_period_ms)).await;
+        tracing::info!(
+            grace_s = switch.grace_period_ms / 1000,
+            timeout_s = switch.timeout_ms / 1000,
+            "dead man's switch watchdog active"
+        );
+
         loop {
-            interval.tick().await;
-            if switch.check() {
-                on_trip();
+            sleep(Duration::from_millis(1000)).await;
+            if switch.is_tripped() {
+                return; // Already tripped — exit the watcher.
+            }
+            let elapsed = switch.elapsed_since_heartbeat_ms();
+            if elapsed > switch.timeout_ms {
+                tracing::error!(
+                    elapsed_ms = elapsed,
+                    timeout_ms = switch.timeout_ms,
+                    "DEAD MAN'S SWITCH TRIPPED — no heartbeat for {}ms, killing all trading",
+                    elapsed
+                );
+                switch.tripped.store(true, Ordering::Release);
+                return;
             }
         }
     })
+}
+
+/// Returns the current time in milliseconds since UNIX epoch.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heartbeat_updates_timestamp() {
+        let dms = DeadMansSwitch::new(0, 60);
+        let before = dms.last_heartbeat_ms.load(Ordering::Acquire);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        dms.heartbeat();
+        let after = dms.last_heartbeat_ms.load(Ordering::Acquire);
+        assert!(after >= before);
+    }
+
+    #[test]
+    fn test_manual_trip() {
+        let dms = DeadMansSwitch::new(0, 60);
+        assert!(!dms.is_tripped());
+        dms.trip("test");
+        assert!(dms.is_tripped());
+    }
+
+    #[test]
+    fn test_elapsed_increases() {
+        let dms = DeadMansSwitch::new(0, 60);
+        dms.heartbeat();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let elapsed = dms.elapsed_since_heartbeat_ms();
+        assert!(elapsed >= 10);
+    }
 }

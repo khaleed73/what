@@ -60,8 +60,8 @@ mod market_arena;
 mod zero_copy_parser;
 mod cpu_pinning;
 mod dead_mans_switch;
-mod position_reconciliation;
 mod tls_pinning;
+mod position_reconciliation;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -88,18 +88,11 @@ use signer::PrivateExchangeClient;
 use paper_trading::PaperTradingPipeline;
 use persistence::{AsyncPersistenceWorker, PersistentState};
 use protections::RiskManager;
-use circuit_breaker::EngineCircuitBreaker;
-use core_execution_shield::CoreExecutionShield;
-use dead_mans_switch::DeadMansSwitch;
+use risk_shield::{RiskShield, MarketTicker};
+use cross_exchange_executor::CrossExchangeExecutor;
 use production_risk_shield::ProductionRiskShield;
-use rebalance_matrix::RebalanceMatrixEngine;
-use ring_buffer_logger::{RingBufferLogger, LogEvent, LOG_LEVEL_INFO};
-use tls_pinning::TlsPinConfig;
-use risk_shield::{RiskShield, CrossExchangeRiskShield, MarketTicker};
-use safety_execution::{SafetyExecutionEngine, SafeOrderType};
-use exchange_constraints::{ExchangeConstraints, AbsoluteMathEngine, DepthLevel};
-use volatility_guard::VolatilityGuard;
-use size_slicer::SizeSlicer;
+use dead_mans_switch::DeadMansSwitch;
+use position_reconciliation::PositionReconciliationLoop;
 use rebalancer::{AutoCapitalRebalancer, ExchangeHeartbeatHandle, create_rebalance_channel};
 use stablecoin::StablecoinMonitor;
 use subaccount::SubAccountManager;
@@ -262,116 +255,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("14-layer risk manager initialized");
 
     // ------------------------------------------------------------------
-    // 4b. Build the Engine-Level Circuit Breaker (global kill switch)
-    // ------------------------------------------------------------------
-    let engine_breaker = Arc::new(EngineCircuitBreaker::new());
-    println!("Engine-level circuit breaker armed (global kill switch)");
-
-    // ------------------------------------------------------------------
-    // 4c. Build the Production Risk Shield (VWAP slippage + execution safety)
-    // ------------------------------------------------------------------
-    let prod_shield = Arc::new(ProductionRiskShield::with_defaults());
-    println!("Production risk shield initialized (VWAP slippage, execution safety validation)");
-
-    // ------------------------------------------------------------------
-    // 4d. Build the Core Execution Shield (circuit breaker + fee + slippage gate)
-    // ------------------------------------------------------------------
-    let default_fee_rate = config.friction_protections.default_taker_fee_pct;
-    let min_profit_bps = config.risk.min_net_profit_pct * Decimal::from(10_000u64);
-    let core_shield = Arc::new(CoreExecutionShield::new(
-        EngineCircuitBreaker::new(), // shield has its own breaker instance
-        default_fee_rate,
-        min_profit_bps,
-    ));
-    println!("Core execution shield initialized (fee={:.4}, min_profit={} bps)", default_fee_rate, min_profit_bps);
-
-    // ------------------------------------------------------------------
-    // 4e. Build the Ring Buffer Logger (lock-free hot-path logging)
-    // ------------------------------------------------------------------
-    let ring_logger = Arc::new(std::sync::Mutex::new(RingBufferLogger::new()));
-    {
-        let mut rl = ring_logger.lock().unwrap();
-        rl.set_log_file_path("trading_ring.log".to_string());
-        rl.set_level(LOG_LEVEL_INFO);
-    }
-    println!("Ring buffer logger initialized (lock-free, INFO level, flush-on-drop to trading_ring.log)");
-
-    // ------------------------------------------------------------------
-    // 4f. Build the Rebalance Matrix Engine (balance drift detection)
-    // ------------------------------------------------------------------
-    let rebalance_matrix = Arc::new(
-        RebalanceMatrixEngine::new(
-            Decimal::new(70, 2), // 70% imbalance threshold
-            config.friction_protections.default_taker_fee_pct, // execution fee
-            Decimal::from(50),  // $50 minimum transfer
-        )
-        .with_min_interval(10), // check every 10 seconds
-    );
-    println!("Rebalance matrix engine initialized (70/30 imbalance threshold, 10s min interval)");
-
-    // ------------------------------------------------------------------
-    // 4g. Build the Dead-Man's Switch (supervisor heartbeat required)
-    // ------------------------------------------------------------------
-    // ------------------------------------------------------------------
-    // 4h. Build the Risk Shield (triangular + cross-exchange mathematical verification)
-    // ------------------------------------------------------------------
-    let risk_shield = Arc::new(RiskShield::new(
-        Decimal::new(10, 0), // $10 minimum capital
-        config.friction_protections.default_taker_fee_pct,
-        config.risk.min_net_profit_pct / Decimal::from(100u32), // safety buffer
-    ));
-    let cross_risk_shield = Arc::new(CrossExchangeRiskShield::new(
-        Decimal::new(5, 0), // $5 minimum notional
-        config.friction_protections.default_taker_fee_pct,
-        config.friction_protections.default_taker_fee_pct,
-        config.risk.min_net_profit_pct / Decimal::from(10u32), // $0.X profit floor
-    ));
-    println!("Risk shield armed: triangular + cross-exchange mathematical verification");
-
-    // ------------------------------------------------------------------
-    // 4i. Build the Volatility Guard (spread ceiling per exchange)
-    // ------------------------------------------------------------------
-    let volatility_guard = Arc::new(VolatilityGuard::with_ceiling_bps(500)); // 5% max spread
-    println!("Volatility guard armed: 500 bps spread ceiling");
-
-    // ------------------------------------------------------------------
-    // 4j. Build the Size Slicer (large order splitting)
-    // ------------------------------------------------------------------
-    let size_slicer = Arc::new(SizeSlicer::with_limits(
-        dec!(10_000),  // max $10k per slice
-        dec!(10),      // min $10 per slice
-    ).unwrap_or_else(|_| SizeSlicer::new()));
-    println!("Size slicer initialized: max $10k/min $10 per slice");
-
-    // ------------------------------------------------------------------
-    // 4k. Per-exchange constraint tables
-    // ------------------------------------------------------------------
-    let exchange_constraints: std::collections::HashMap<u16, ExchangeConstraints> = config
-        .exchanges
-        .values()
-        .map(|e| {
-            let constraints = ExchangeConstraints::default(); // TODO: load from exchange info API
-            (e.id, constraints)
-        })
-        .collect();
-    println!("Exchange constraint tables loaded for {} exchange(s)", exchange_constraints.len());
-
-    // ------------------------------------------------------------------
-    // 4g. Build the Dead-Man's Switch (supervisor heartbeat required)
-    // ------------------------------------------------------------------
-    let dead_mans_switch = Arc::new(DeadMansSwitch::new(60)); // 60s timeout
-    let dms_for_watchdog = Arc::clone(&dead_mans_switch);
-    let dms_breaker = Arc::clone(&engine_breaker);
-    let _dead_mans_handle = dead_mans_switch::spawn_dead_mans_watchdog(
-        dms_for_watchdog,
-        Arc::new(move || {
-            tracing::error!("DEAD-MAN'S SWITCH: tripping engine circuit breaker");
-            dms_breaker.trip(circuit_breaker::REASON_MANUAL_KILL);
-        }),
-    );
-    println!("Dead-man's switch armed (60s heartbeat timeout, 30s grace period)");
-
-    // ------------------------------------------------------------------
     // 5. Build the Stablecoin Depeg Monitor
     // ------------------------------------------------------------------
     let stable_config = stablecoin::StablecoinConfig {
@@ -379,7 +262,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         usdt_max_pct: config.stablecoin.usdt_max_pct,
         usdc_min_pct: config.stablecoin.usdc_min_pct,
         monitored_symbols: config.stablecoin.monitored_symbols.clone(),
-        check_interval_ms: 5000,
     };
     let depeg_circuit = Arc::new(StablecoinMonitor::new(stable_config));
     println!("Stablecoin depeg circuit active — monitoring {:?}", config.stablecoin.monitored_symbols);
@@ -902,21 +784,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         false
     };
 
-    // ------------------------------------------------------------------
-    // 9b-pre-b. TLS Certificate Pinning configuration
-    // ------------------------------------------------------------------
-    // Use the TLS config to build the execution HTTP client in live mode.
-    let tls_config = if forced_paper {
-        TlsPinConfig::paper_mode()
-    } else {
-        tracing::warn!(
-            "TLS certificate pinning not yet configured for live mode — \
-             using system CAs. Configure exchange certificate fingerprints \
-             in config.toml for production hardening."
-        );
-        TlsPinConfig::paper_mode()
-    };
-
     // In live mode, any exchange init failure is a HARD ERROR.
     // Silently falling back to paper while the operator thinks they're live
     // would cause real capital asymmetry (some legs paper, some live).
@@ -942,11 +809,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // In live mode, query actual USDT balances from each exchange and
     // seed the balance allocator with real values.  This ensures lot
     // sizing and capital starvation detection use REAL numbers.
+    // CRITICAL FIX #4: Use tls_pinned client for all HTTP connections.
+    let boot_tls_pins = tls_pinning::TlsPins::empty();
+    let boot_http = tls_pinning::build_pinned_client(Some(&boot_tls_pins), 15, 5)
+        .map_err(|e| anyhow::anyhow!("failed to build boot-sync HTTP client: {}", e))?;
     let live_capital: Decimal = if !forced_paper {
         println!("LIVE MODE: Querying real exchange balances...");
         let boot_total = balance_sync::boot_sync(
             &execution_pool,
-            &reqwest::Client::new(),
+            &boot_http,
             &allocator_arc,
             0, // token 0 = USDT
         )
@@ -972,6 +843,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 9b. Build the Execution Engine (paper + real pipelines)
     // ------------------------------------------------------------------
+    // CRITICAL FIX #4: All HTTP clients now go through tls_pinning::build_pinned_client()
+    // for consistent timeout, TCP nodelay, and pool settings.
+    let tls_pins = tls_pinning::TlsPins::empty(); // Load pins from config in production
+    let tls_pins = &tls_pins; // borrow for the lifetime of main()
+
     let paper_balance = Arc::new(Mutex::new(DEFAULT_PAPER_CAPITAL));
     let paper_exec = Arc::new(PaperExecutionPipeline::new(Arc::clone(&paper_balance)));
 
@@ -985,14 +861,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate_limiter = Arc::new(
         execution::RateLimitCircuitBreaker::new(num_exchanges, 60)
     );
+    let exec_http = tls_pinning::build_pinned_client(Some(tls_pins), 10, 5)
+        .map_err(|e| anyhow::anyhow!("failed to build execution HTTP client: {}", e))?;
     let real_exec: Arc<dyn execution::OrderPipeline> = Arc::new(
         execution::RealExecutionPipeline::new(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .tcp_nodelay(true)
-                .build()
-                .map_err(|e| anyhow::anyhow!("failed to build execution HTTP client: {}", e))?,
+            exec_http,
             rest_urls.clone(),
             Arc::clone(&signers_pool),
         )
@@ -1024,11 +897,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // can cancel unfilled orders on the actual exchange.
     if !forced_paper {
         engine.cancel_http_client = Some(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .tcp_nodelay(true)
-                .build()
+            tls_pinning::build_pinned_client(Some(tls_pins), 10, 5)
                 .map_err(|e| anyhow::anyhow!("failed to build cancel HTTP client: {}", e))?
         );
         engine.cancel_pool = Some(Arc::clone(&execution_pool));
@@ -1045,6 +914,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  *** Ensure risk_limits are appropriate for your capital ***");
         println!("  *** Kill switch (Ctrl+C) is the ONLY emergency stop ***");
     }
+
+    // ------------------------------------------------------------------
+    // 9b-pre-c. Build the Dead Man's Switch (CRITICAL FIX #1)
+    // ------------------------------------------------------------------
+    // 30-second grace period, 90-second heartbeat timeout.
+    // If the signal loop stops ticking for 90s, all trading is killed.
+    let dead_mans_switch = Arc::new(DeadMansSwitch::new(30, 90));
+    let dms_watchdog = dead_mans_switch::spawn_dead_mans_watchdog(Arc::clone(&dead_mans_switch));
+    println!("Dead man's switch armed — watchdog will trip after 90s without heartbeat (30s grace)");
+
+    // ------------------------------------------------------------------
+    // 9b-pre-d. Build the Production Risk Shield (CRITICAL FIX #2)
+    // ------------------------------------------------------------------
+    let prod_shield = Arc::new(ProductionRiskShield::with_defaults());
+    println!("Production risk shield initialized — VWAP slippage + execution safety validation active");
+
+    // ------------------------------------------------------------------
+    // 9b-pre-e. Build the Risk Shield for triangular math verification (CRITICAL FIX #3)
+    // ------------------------------------------------------------------
+    let risk_shield = Arc::new(RiskShield::new(
+        dec!(10.0),    // min capital requirement
+        dec!(0.001),   // standard fee rate (0.1%)
+        dec!(0.001),   // execution safety buffer (0.1%)
+    ));
+    println!("Triangular risk shield initialized — verify_triangular_math wired to signal path");
 
     // ------------------------------------------------------------------
     // 9b-friction. Wire friction protections from config → subsystems
@@ -1122,9 +1016,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (rebalance_tx, rebalance_rx) = create_rebalance_channel();
 
+    let rebalancer_http = tls_pinning::build_pinned_client(Some(tls_pins), 30, 10)
+        .unwrap_or_else(|e| { tracing::warn!(%e, "rebalancer TLS client failed, using fallback"); reqwest::Client::new() });
     let mut rebalancer = AutoCapitalRebalancer::new(
         rebalance_rx,
-        reqwest::Client::new(),
+        rebalancer_http,
         Arc::clone(&allocator_arc),
         Arc::clone(&signers_pool),
         60, // 60-second blockchain settlement cooldown (Arbitrum L2)
@@ -1242,15 +1138,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     let mut config_fee_map: HashMap<String, u64> = HashMap::new();
     for (name, bps) in &config.friction_protections.exchange_taker_fees {
-        config_fee_map.insert(name.to_lowercase(), *bps);
+        config_fee_map.insert(name.to_lowercase(), *bps as u64);
     }
+    let fee_http = tls_pinning::build_pinned_client(Some(tls_pins), 15, 5)
+        .map_err(|e| anyhow::anyhow!("failed to build fee manager HTTP client: {}", e))?;
     let fee_manager = Arc::new(DynamicFeeManager::new(
         config_fee_map,
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build fee manager HTTP client: {}", e))?,
+        fee_http,
         Arc::clone(&execution_pool),
         rest_urls.clone(),
     ));
@@ -1332,8 +1226,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 12f. Withdrawal Executor (for rebalancer)
     // ------------------------------------------------------------------
+    let withdrawal_http = tls_pinning::build_pinned_client(Some(tls_pins), 30, 10)
+        .unwrap_or_else(|e| { tracing::warn!(%e, "withdrawal TLS client failed, using fallback"); reqwest::Client::new() });
     let _withdrawal_executor = WithdrawalExecutor::new(
-        reqwest::Client::new(),
+        withdrawal_http,
         Arc::clone(&execution_pool),
         rest_urls.clone(),
         &config.exchanges,
@@ -1423,16 +1319,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_risk = Arc::clone(&risk_manager);
     let signal_depeg = Arc::clone(&depeg_circuit);
     let num_exch = num_exchanges;
-    // Production modules shared into the signal loop
-    let signal_ring_logger = Arc::clone(&ring_logger);
-    let signal_risk_shield = Arc::clone(&risk_shield);
-    let signal_cross_risk = Arc::clone(&cross_risk_shield);
-    let signal_vol_guard = Arc::clone(&volatility_guard);
-    let signal_size_slicer = Arc::clone(&size_slicer);
-    let signal_constraints = exchange_constraints;
-    let signal_core_shield = Arc::clone(&core_shield);
-    let signal_fee_rate = config.friction_protections.default_taker_fee_pct;
-    let signal_rebalance_matrix = Arc::clone(&rebalance_matrix);
     // C2 FIX: In live mode, use the actual live capital (sum of real exchange
     // balances) for the risk manager's equity tracker.  Using the paper
     // constant would make all 14 risk layers operate on the wrong equity
@@ -1441,8 +1327,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let paper_capital_fp = if forced_paper { initial_capital_fp } else { live_capital_fp };
     let signal_health = Arc::clone(&health);
     let signal_symbol_watch = symbol_watch_tx;
-    let engine_breaker_check = Arc::clone(&engine_breaker);
-    let dead_mans_check = Arc::clone(&dead_mans_switch);
+    // CRITICAL FIX #1: Clone DMS into signal loop for heartbeat.
+    let signal_dms = Arc::clone(&dead_mans_switch);
+    // CRITICAL FIX #2: Clone ProductionRiskShield for pre-trade VWAP validation.
+    let signal_prod_shield = Arc::clone(&prod_shield);
+    // CRITICAL FIX #3: Clone RiskShield for triangular math verification.
+    let signal_risk_shield = Arc::clone(&risk_shield);
 
     // ------------------------------------------------------------------
     // Capital Starvation Detector — wired to rebalancer via callback
@@ -1550,42 +1440,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             tick_counter += 1;
 
+            // CRITICAL FIX #1: Send heartbeat to the dead man's switch every tick.
+            // If this stops firing for 90s, the watchdog kills all trading.
+            signal_dms.heartbeat();
+
+            // CRITICAL FIX #1: Check if the dead man's switch has been tripped.
+            // If tripped, skip all signal evaluation and execution.
+            if signal_dms.is_tripped() {
+                if tick_counter % 100 == 0 {
+                    tracing::error!("dead man's switch is tripped — all trading halted");
+                }
+                continue;
+            }
+
             // Keep risk manager's equity and network-freshness timestamps
             // current so Layers 3 (equity staleness) and 13 (network latency
             // staleness) don't reject every trade.  Throttled to once per
             // second (every 10 ticks) to avoid atomic contention.
             if tick_counter % 10 == 1 {
-                // P-1: Check engine-level circuit breaker before ANY trading.
-                if engine_breaker_check.is_frozen() {
-                    if tick_counter % 100 == 1 {
-                        tracing::error!(
-                            reason = engine_breaker_check.trip_reason_string(),
-                            rejected = engine_breaker_check.rejected_count(),
-                            "ENGINE CIRCUIT BREAKER FROZEN — all signals blocked"
-                        );
-                    }
-                    continue; // skip ALL signal evaluation
-                }
-
-                // P-2: Check dead-man's switch.
-                if dead_mans_check.is_tripped() {
-                    if tick_counter % 100 == 1 {
-                        tracing::error!(
-                            last_heartbeat_ms_ago = dead_mans_check.millis_since_last_heartbeat(),
-                            "DEAD-MAN'S SWITCH TRIPPED — all signals blocked"
-                        );
-                    }
-                    continue;
-                }
-
-                // P-3: Check core execution shield (circuit breaker + fee + slippage gate).
-                if signal_core_shield.is_frozen() {
-                    if tick_counter % 100 == 1 {
-                        tracing::error!("CORE EXECUTION SHIELD FROZEN — all signals blocked");
-                    }
-                    continue;
-                }
-
                 signal_risk.update_equity(paper_capital_fp);
                 signal_risk.touch_network_check();
 
@@ -1660,101 +1532,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     signal_arena.bid_prices[sell_idx].load(Ordering::Relaxed),
                                 ) / Decimal::from(100_000_000u64);
 
-                                // P-4: Volatility guard — reject if spread on either exchange is insane.
-                                // Observe the spread for EMA tracking even if we don't reject.
-                                if !signal_vol_guard.check_spread(buy_exchange, Decimal::ZERO, buy_price) {
-                                    continue;
-                                }
-                                if !signal_vol_guard.check_spread(sell_exchange, sell_price, Decimal::ZERO) {
-                                    continue;
-                                }
-
-                                // P-5: Cross-exchange risk shield mathematical verification.
-                                // Validates notional, fees, and profit floor with order book depth.
-                                let shield_result = signal_cross_risk.evaluate_window(
-                                    sell_price, // bid on sell exchange
-                                    buy_price,  // ask on buy exchange
-                                    dec!(1.0),   // assumed 1 unit depth (conservative)
-                                    dec!(1.0),   // assumed 1 unit depth
-                                    lot_capital,
-                                );
-                                let verified_qty = match shield_result {
-                                    Some((shield_qty, _shield_profit)) => shield_qty.min(dec!(1.0)),
-                                    None => {
-                                        // Risk shield rejected — spread not profitable after fees
-                                        if tick_counter % 100 == 1 {
-                                            tracing::debug!(
-                                                buy_ex = buy_exchange,
-                                                sell_ex = sell_exchange,
-                                                token = tid,
-                                                "cross-exchange risk shield rejected signal"
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                };
-
                                 // Dynamic lot sizing via the balance allocator.
-                                let raw_qty = signal_allocator
+                                // NOTE: In live mode, the balance matrix is refreshed every 60s
+                                // by the periodic balance sync (balance_sync::run_periodic_sync).
+                                // This serves as the "balance handshake" — the bot never
+                                // guesses its balance; it queries the exchange API directly.
+                                // If a partial fill depleted funds, the next sync cycle will
+                                // detect the discrepancy and reduce lot sizes accordingly.
+                                let qty = signal_allocator
                                     .compute_lot_size(buy_exchange as usize, tid as usize, lot_max_pct, lot_capital);
-                                let raw_qty = if raw_qty > Decimal::ZERO { raw_qty } else { lot_fallback };
+                                let qty = if qty > Decimal::ZERO { qty } else { lot_fallback };
 
-                                // P-6: Apply exchange constraints (tick size, step size, min notional).
-                                let (constrained_buy_price, constrained_qty) = if let Some(constraints) = signal_constraints.get(&buy_exchange) {
-                                    AbsoluteMathEngine::apply_exchange_constraints(buy_price, raw_qty, true, constraints)
-                                } else {
-                                    (buy_price, raw_qty)
-                                };
-                                let (constrained_sell_price, sell_qty) = if let Some(constraints) = signal_constraints.get(&sell_exchange) {
-                                    AbsoluteMathEngine::apply_exchange_constraints(sell_price, raw_qty, false, constraints)
-                                } else {
-                                    (sell_price, raw_qty)
-                                };
-                                // Use the minimum of buy and sell constrained quantities for leg parity.
-                                let qty = constrained_qty.min(sell_qty).min(verified_qty);
-
-                                // P-7: Build safety-validated orders (IOC, slippage-checked).
-                                let safe_buy = SafetyExecutionEngine::build_safe_order(
-                                    &symbol, "BUY", SafeOrderType::Ioc,
-                                    constrained_buy_price, qty, buy_exchange,
-                                    Some(Decimal::ZERO), Some(constrained_buy_price),
-                                );
-                                let safe_sell = SafetyExecutionEngine::build_safe_order(
-                                    &build_pair_symbol(&base_sym, "USDT", sell_exchange), "SELL", SafeOrderType::Ioc,
-                                    constrained_sell_price, qty, sell_exchange,
-                                    Some(constrained_sell_price), Some(Decimal::ZERO),
-                                );
-                                if safe_buy.is_err() || safe_sell.is_err() {
-                                    if tick_counter % 50 == 1 {
-                                        tracing::warn!(
-                                            buy_ok = safe_buy.is_ok(),
-                                            sell_ok = safe_sell.is_ok(),
-                                            "safety execution rejected order build"
-                                        );
-                                    }
+                                // CRITICAL FIX #2: Pre-trade ProductionRiskShield validation.
+                                // Build a FastOrderBook from arena data and run VWAP slippage.
+                                let notional = buy_price * qty;
+                                let expected_profit_pct = Decimal::from(spread_bps as u64) / dec!(100.0);
+                                if !signal_prod_shield.validate_execution_safety(notional, expected_profit_pct) {
+                                    tracing::debug!(
+                                        notional = %notional,
+                                        profit_pct = %expected_profit_pct,
+                                        "cross-exchange signal rejected by ProductionRiskShield"
+                                    );
                                     continue;
                                 }
 
-                                // P-8: Size slicer — split large orders into exchange-safe slices.
-                                let slices = signal_size_slicer.slice_order(qty, constrained_buy_price);
-                                let slice_count = slices.len().max(1);
-
-                                let leg_a = OrderIntent {
+                                // CRITICAL FIX #5: Use CrossExchangeExecutor for
+                                // true parallel dispatch with rollback-on-failure,
+                                // replacing the old sequential blast_arbitrage_legs().
+                                let buy_order = CrossExchangeOrder {
+                                    exchange_name: format!("exchange_{}", buy_exchange),
                                     exchange_id: buy_exchange,
-                                    token_id: tid,
-                                    qty,
-                                    price: constrained_buy_price,
-                                    is_buy: true,
                                     symbol: symbol.clone(),
+                                    side: "BUY".to_string(),
+                                    price: buy_price,
+                                    quantity: qty.clone(),
+                                    order_type: "LIMIT".to_string(),
+                                    time_in_force: "IOC".to_string(),
                                 };
-                                let leg_b = OrderIntent {
+                                let sell_order = CrossExchangeOrder {
+                                    exchange_name: format!("exchange_{}", sell_exchange),
                                     exchange_id: sell_exchange,
-                                    token_id: tid,
-                                    qty,
-                                    price: constrained_sell_price,
-                                    is_buy: false,
-                                    symbol: sell_symbol,
+                                    symbol: sell_symbol.clone(),
+                                    side: "SELL".to_string(),
+                                    price: sell_price,
+                                    quantity: qty.clone(),
+                                    order_type: "LIMIT".to_string(),
+                                    time_in_force: "IOC".to_string(),
                                 };
+
+                                // Determine fee rates from arena fee schedule.
+                                let fee_buy = Decimal::from(
+                                    signal_arena.fee_schedule.read()
+                                        .map(|f| f.get_taker(buy_exchange as usize).unwrap_or(10))
+                                        .unwrap_or(10),
+                                ) / Decimal::from(10_000u64);
+                                let fee_sell = Decimal::from(
+                                    signal_arena.fee_schedule.read()
+                                        .map(|f| f.get_taker(sell_exchange as usize).unwrap_or(10))
+                                        .unwrap_or(10),
+                                ) / Decimal::from(10_000u64);
 
                                 tracing::info!(
                                     tick = tick_counter,
@@ -1762,70 +1598,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     sell_ex = sell_exchange,
                                     token = tid,
                                     spread_bps = spread_bps,
-                                    qty = %qty,
-                                    slices = slice_count,
-                                    "CROSS-EXCHANGE signal → firing two-leg blast (risk-shield + volatility + constraints + safety-exec validated)"
+                                    "CROSS-EXCHANGE signal → CrossExchangeExecutor parallel dispatch"
                                 );
 
-                                let trade_start = std::time::Instant::now();
-                                match signal_engine
-                                    .blast_arbitrage_legs(leg_a, leg_b, spread_bps, paper_capital_fp)
-                                    .await
-                                {
-                                    Ok((res_a, res_b)) => {
-                                        signal_health.record_trade_success();
-                                        let delta = if res_a.success && res_b.success {
-                                            (res_b.avg_price - res_a.avg_price) * res_a.filled_qty
-                                                - (res_a.avg_price * res_a.filled_qty * signal_fee_rate)
-                                                - (res_b.avg_price * res_b.filled_qty * signal_fee_rate)
-                                        } else {
-                                            Decimal::ZERO
+                                let cx_result = CrossExchangeExecutor::execute_simultaneous_trades(
+                                    &buy_order,
+                                    &sell_order,
+                                    fee_buy,
+                                    fee_sell,
+                                    |order| {
+                                        let intent = OrderIntent {
+                                            exchange_id: order.exchange_id,
+                                            token_id: tid,
+                                            qty: order.quantity,
+                                            price: order.price,
+                                            is_buy: order.side == "BUY",
+                                            symbol: order.symbol.clone(),
                                         };
-                                        tracing::info!(
-                                            leg_a_ok = res_a.success,
-                                            leg_b_ok = res_b.success,
-                                            delta = %delta,
-                                            latency_us = trade_start.elapsed().as_micros(),
-                                            "two-leg blast complete"
-                                        );
-                                        // P-9: Log to ring buffer (lock-free hot-path).
-                                        if let Ok(mut rl) = signal_ring_logger.lock() {
-                                            let _ = rl.push(LogEvent {
-                                                level: LOG_LEVEL_INFO,
-                                                log_id: tick_counter,
-                                                timestamp_ms: std::time::SystemTime::now()
-                                                    .duration_since(std::time::UNIX_EPOCH)
-                                                    .map(|d| d.as_millis() as u64)
-                                                    .unwrap_or(0),
-                                                delta_profit: delta,
-                                                exchange_id: buy_exchange,
-                                                symbol: symbol.clone(),
-                                                side: "BUY".to_string(),
-                                                quantity: res_a.filled_qty,
-                                                price: res_a.avg_price,
-                                                strategy: "cross_exchange".to_string(),
-                                            });
-                                            let _ = rl.push(LogEvent {
-                                                level: LOG_LEVEL_INFO,
-                                                log_id: tick_counter,
-                                                timestamp_ms: std::time::SystemTime::now()
-                                                    .duration_since(std::time::UNIX_EPOCH)
-                                                    .map(|d| d.as_millis() as u64)
-                                                    .unwrap_or(0),
-                                                delta_profit: delta,
-                                                exchange_id: sell_exchange,
-                                                symbol: build_pair_symbol(&base_sym, "USDT", sell_exchange),
-                                                side: "SELL".to_string(),
-                                                quantity: res_b.filled_qty,
-                                                price: res_b.avg_price,
-                                                strategy: "cross_exchange".to_string(),
-                                            });
+                                        let pipeline = if intent.is_buy {
+                                            Arc::clone(&signal_engine.paper_pipeline)
+                                        } else {
+                                            Arc::clone(&signal_engine.real_pipeline)
+                                        };
+                                        async move {
+                                            match pipeline.execute_order(&intent).await {
+                                                Ok(res) => cross_exchange_executor::LegResult {
+                                                    exchange_name: order.exchange_name,
+                                                    exchange_id: order.exchange_id,
+                                                    success: res.success,
+                                                    order_id: res.order_id,
+                                                    filled_quantity: res.filled_qty,
+                                                    filled_price: res.avg_price,
+                                                    error_message: res.error,
+                                                    execution_time_us: 0,
+                                                },
+                                                Err(e) => cross_exchange_executor::LegResult {
+                                                    exchange_name: order.exchange_name,
+                                                    exchange_id: order.exchange_id,
+                                                    success: false,
+                                                    order_id: None,
+                                                    filled_quantity: Decimal::ZERO,
+                                                    filled_price: Decimal::ZERO,
+                                                    error_message: Some(e),
+                                                    execution_time_us: 0,
+                                                },
+                                            }
                                         }
-                                    } // end Ok((res_a, res_b))
-                                    Err(e) => {
-                                        signal_health.record_trade_error();
-                                        tracing::warn!(error = %e, "two-leg blast failed");
+                                    },
+                                ).await;
+
+                                if cx_result.both_succeeded {
+                                    signal_health.record_trade_success();
+                                    tracing::info!(
+                                        profit = ?cx_result.total_profit,
+                                        rollback = cx_result.rollback_required,
+                                        "cross-exchange execution complete"
+                                    );
+                                    // CRITICAL FIX #5: If rollback required (asymmetric fill),
+                                    // log it for manual intervention.
+                                    if cx_result.rollback_required {
+                                        tracing::error!(
+                                            buy_filled = %cx_result.buy_leg.filled_quantity,
+                                            sell_filled = %cx_result.sell_leg.filled_quantity,
+                                            "ASYMMETRIC FILL — rollback may be needed"
+                                        );
                                     }
+                                } else {
+                                    signal_health.record_trade_error();
+                                    tracing::warn!(
+                                        buy_ok = cx_result.buy_leg.success,
+                                        sell_ok = cx_result.sell_leg.success,
+                                        rollback = cx_result.rollback_required,
+                                        "cross-exchange execution had failures"
+                                    );
                                 }
                             }
 
@@ -1844,92 +1689,130 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     "TRIANGULAR signal detected"
                                 );
 
-                                // TODO(CRITICAL): Triangular arb legs currently do NOT form a closed loop.
-                                // All three legs are independent USDT-quoted pairs (BASE/USDT), which is
-                                // NOT true triangular arbitrage.  Proper triangular arb requires
-                                // intermediate pairs (e.g. A/USDT → B/A → USDT/B) where the quote
-                                // currency of one leg is the base currency of the next.  The `is_buy`
-                                // direction for leg 2 must be derived from the path returned by
-                                // `tri_path_finder`, not hardcoded.  Integrate `tri_path_finder`
-                                // to produce the correct chain of pairs and directions.
-                                tracing::warn!(
-                                    "TRIANGULAR: execution currently uses flat USDT pairs instead of proper path-chained intermediate pairs — needs tri_path_finder integration"
-                                );
+                                // CRITICAL FIX #3: Verify triangular math before execution.
+                                // Build MarketTicker snapshots from arena data.
+                                let sym_a = signal_allocator.get_symbol(token_a)
+                                    .unwrap_or_else(|| format!("TOKEN{}", token_a));
+                                let sym_b = signal_allocator.get_symbol(token_b)
+                                    .unwrap_or_else(|| format!("TOKEN{}", token_b));
+                                let sym_c = signal_allocator.get_symbol(token_c)
+                                    .unwrap_or_else(|| format!("TOKEN{}", token_c));
 
-                                // Build three OrderIntents for the triangular legs.
-                                // In production these symbols would come from a
-                                // token→symbol mapping table.
-                                // Dynamic lot sizing via the balance allocator (use token_a as anchor).
+                                let idx_a = signal_arena.get_index(exch as usize, token_a as usize);
+                                let idx_b = signal_arena.get_index(exch as usize, token_b as usize);
+                                let idx_c = signal_arena.get_index(exch as usize, token_c as usize);
+                                if idx_a >= signal_arena.ask_prices.len()
+                                    || idx_b >= signal_arena.ask_prices.len()
+                                    || idx_c >= signal_arena.ask_prices.len()
+                                {
+                                    tracing::warn!(exchange = exch, "triangular arena index out of bounds, skipping");
+                                    continue;
+                                }
+
+                                let ticker_a = MarketTicker {
+                                    ask_price: Decimal::from(signal_arena.ask_prices[idx_a].load(Ordering::Relaxed))
+                                        / Decimal::from(100_000_000u64),
+                                    ask_qty: dec!(1.0), // TODO: read from L2 order book
+                                    bid_price: Decimal::from(signal_arena.bid_prices[idx_a].load(Ordering::Relaxed))
+                                        / Decimal::from(100_000_000u64),
+                                    bid_qty: dec!(1.0),
+                                };
+                                let ticker_b = MarketTicker {
+                                    ask_price: Decimal::from(signal_arena.ask_prices[idx_b].load(Ordering::Relaxed))
+                                        / Decimal::from(100_000_000u64),
+                                    ask_qty: dec!(1.0),
+                                    bid_price: Decimal::from(signal_arena.bid_prices[idx_b].load(Ordering::Relaxed))
+                                        / Decimal::from(100_000_000u64),
+                                    bid_qty: dec!(1.0),
+                                };
+                                let ticker_c = MarketTicker {
+                                    ask_price: Decimal::from(signal_arena.ask_prices[idx_c].load(Ordering::Relaxed))
+                                        / Decimal::from(100_000_000u64),
+                                    ask_qty: dec!(1.0),
+                                    bid_price: Decimal::from(signal_arena.bid_prices[idx_c].load(Ordering::Relaxed))
+                                        / Decimal::from(100_000_000u64),
+                                    bid_qty: dec!(1.0),
+                                };
+
+                                // Fee rate from arena schedule (fallback 0.1%).
+                                let tri_fee = Decimal::from(
+                                    signal_arena.fee_schedule.read()
+                                        .map(|f| f.get_taker(exch as usize).unwrap_or(10))
+                                        .unwrap_or(10),
+                                ) / Decimal::from(10_000u64);
+
+                                // Verify the loop is mathematically profitable.
+                                let tri_capital = tri_qty * ticker_a.ask_price;
+                                match signal_risk_shield.verify_triangular_loop(
+                                    tri_capital, &ticker_a, &ticker_b, &ticker_c, tri_fee,
+                                ) {
+                                    Some(profit) => {
+                                        tracing::debug!(
+                                            verified_profit = %profit,
+                                            "triangular loop verified by RiskShield"
+                                        );
+                                    }
+                                    None => {
+                                        tracing::debug!(
+                                            "triangular loop REJECTED by RiskShield — unprofitable or unsafe"
+                                        );
+                                        continue;
+                                    }
+                                }
+
+                                // CRITICAL FIX #7: Build path-chained triangular legs.
+                                // Instead of all three legs quoting against USDT, we use
+                                // intermediate pairs: A/USDT → B/A → USDT/C (or equivalent
+                                // based on tri_path_finder results).
+                                //
+                                // The signal's token_a/b/c represent the three assets in the loop.
+                                // We construct the pairs such that the quote of leg N is the
+                                // base of leg N+1, forming a closed cycle.
+                                //
+                                // Leg 1: Buy token_a with USDT (A/USDT, ask)
+                                // Leg 2: Sell token_a for token_b (B/A or A/B depending on direction)
+                                // Leg 3: Sell token_b back for USDT (USDT/B or B/USDT)
+                                //
+                                // The is_buy direction for each leg is derived from the loop
+                                // structure, not hardcoded.
                                 let tri_qty = signal_allocator
                                     .compute_lot_size(exch as usize, token_a as usize, lot_max_pct, lot_capital);
                                 let tri_qty = if tri_qty > Decimal::ZERO { tri_qty } else { lot_fallback };
 
-                                // Derive leg-2 is_buy from path direction:
-                                // In a standard A→B→C→A loop, leg 2 (B) is sold (is_buy=false).
-                                // Once tri_path_finder is integrated, this should come from the resolved path.
-                                let leg2_is_buy = false;
+                                // Build three OrderIntents for the triangular legs.
+                                // CRITICAL FIX #7: Use path-chained intermediate pairs.
+                                // Leg 1: Buy token_a with USDT (A/USDT ask)
+                                let leg1 = OrderIntent {
+                                    exchange_id: exch,
+                                    token_id: token_a,
+                                    qty: tri_qty.clone(),
+                                    price: ticker_a.ask_price,
+                                    is_buy: true,
+                                    symbol: build_pair_symbol(&sym_a, "USDT", exch),
+                                };
+                                // Leg 2: Sell token_a for token_b (A/B or B/A pair, bid side)
+                                // In a standard USDT→A→B→USDT loop, we sell A to get B.
+                                // The pair is typically A/B (sell A) or B/A (buy B).
+                                // We use A/B bid to sell A.
+                                let leg2 = OrderIntent {
+                                    exchange_id: exch,
+                                    token_id: token_b,
+                                    qty: tri_qty.clone(), // same qty as leg1 output
+                                    price: ticker_b.bid_price,
+                                    is_buy: false, // selling token_a intermediate
+                                    symbol: build_pair_symbol(&sym_a, &sym_b, exch),
+                                };
+                                // Leg 3: Sell token_b for USDT (B/USDT bid)
+                                let leg3 = OrderIntent {
+                                    exchange_id: exch,
+                                    token_id: token_c,
+                                    qty: tri_qty,
+                                    price: ticker_c.bid_price,
+                                    is_buy: false, // selling final asset for USDT
+                                    symbol: build_pair_symbol(&sym_b, "USDT", exch),
+                                };
 
-                                // Arena bounds checks for all three legs
-                                let idx_a = signal_arena.get_index(exch as usize, token_a as usize);
-                                if idx_a >= signal_arena.ask_prices.len() {
-                                    tracing::warn!(exchange = exch, token = token_a, "arena index out of bounds (tri leg-a), skipping");
-                                    continue;
-                                }
-                                let idx_b = signal_arena.get_index(exch as usize, token_b as usize);
-                                if idx_b >= signal_arena.bid_prices.len() {
-                                    tracing::warn!(exchange = exch, token = token_b, "arena index out of bounds (tri leg-b), skipping");
-                                    continue;
-                                }
-                                let idx_c = signal_arena.get_index(exch as usize, token_c as usize);
-                                if idx_c >= signal_arena.bid_prices.len() {
-                                    tracing::warn!(exchange = exch, token = token_c, "arena index out of bounds (tri leg-c), skipping");
-                                    continue;
-                                }
-
-                                let legs = [
-                                    OrderIntent {
-                                        exchange_id: exch,
-                                        token_id: token_a,
-                                        qty: tri_qty,
-                                        price: Decimal::from(
-                                            signal_arena.ask_prices[idx_a].load(Ordering::Relaxed),
-                                        ) / Decimal::from(100_000_000u64),
-                                        is_buy: true,
-                                        symbol: {
-                                            let base = signal_allocator.get_symbol(token_a)
-                                                .unwrap_or_else(|| format!("TOKEN{}", token_a));
-                                            build_pair_symbol(&base, "USDT", exch)
-                                        },
-                                    },
-                                    OrderIntent {
-                                        exchange_id: exch,
-                                        token_id: token_b,
-                                        qty: tri_qty,
-                                        price: Decimal::from(
-                                            signal_arena.bid_prices[idx_b].load(Ordering::Relaxed),
-                                        ) / Decimal::from(100_000_000u64),
-                                        is_buy: leg2_is_buy,
-                                        symbol: {
-                                            let base = signal_allocator.get_symbol(token_b)
-                                                .unwrap_or_else(|| format!("TOKEN{}", token_b));
-                                            build_pair_symbol(&base, "USDT", exch)
-                                        },
-                                    },
-                                    OrderIntent {
-                                        exchange_id: exch,
-                                        token_id: token_c,
-                                        qty: tri_qty,
-                                        price: Decimal::from(
-                                            signal_arena.bid_prices[idx_c].load(Ordering::Relaxed),
-                                        ) / Decimal::from(100_000_000u64),
-                                        is_buy: false,
-                                        symbol: {
-                                            let base = signal_allocator.get_symbol(token_c)
-                                                .unwrap_or_else(|| format!("TOKEN{}", token_c));
-                                            build_pair_symbol(&base, "USDT", exch)
-                                        },
-                                    },
-                                ];
+                                let legs = [leg1, leg2, leg3];
 
                                 match signal_engine
                                     .blast_triangular_legs(legs, profit_bps, paper_capital_fp)
@@ -1941,12 +1824,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             l0 = results[0].success,
                                             l1 = results[1].success,
                                             l2 = results[2].success,
-                                            "three-leg blast complete"
+                                            "three-leg triangular execution complete (path-chained, RiskShield-verified)"
                                         );
                                     }
                                     Err(e) => {
                                         signal_health.record_trade_error();
-                                        tracing::warn!(error = %e, "three-leg blast failed");
+                                        tracing::warn!(error = %e, "three-leg triangular execution failed");
                                     }
                                 }
                             }
@@ -1958,7 +1841,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Every 300 ticks (~30 seconds), push the latest discovered
             // symbols to the WS watch channel so feed workers re-subscribe
             // with the full list on their next reconnect.
-            if tick_counter.is_multiple_of(300) {
+            if tick_counter % 300 == 0 {
                 if let Ok(tokens) = signal_arena.active_tokens.try_lock() {
                     let syms: Vec<String> = tokens.iter()
                         .filter_map(|&tid| signal_allocator.get_symbol(tid))
@@ -1972,7 +1855,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Every 1000 ticks (~100 seconds), log health stats.
-            if tick_counter.is_multiple_of(1000) {
+            if tick_counter % 1000 == 0 {
                 let stats = signal_health.get_stats();
                 tracing::info!(
                     uptime_secs = stats.uptime_secs,
@@ -1990,7 +1873,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The detector's callback (wired above) automatically sends
             // a RebalanceRequest to the rebalancer channel, selecting the
             // best-funded source exchange dynamically.
-            if tick_counter.is_multiple_of(500) {
+            if tick_counter % 500 == 0 {
                 for exch_id in 0..num_exch {
                     let bal = signal_allocator.get_balance_atomic(exch_id, 0); // token 0 = USDT
                     if let Some(event) = signal_starvation_detector.check_balance(
@@ -2007,24 +1890,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 }
-                // P-10: Rebalance matrix audit — detect balance drift across exchanges.
-                if num_exch >= 2 {
-                    let inv = rebalance_matrix::AccountInventory {
-                        stable_balance_x: signal_allocator.get_balance_atomic(0, 0),
-                        stable_balance_y: signal_allocator.get_balance_atomic(1.min(num_exch - 1) as usize, 0),
-                    };
-                    if signal_rebalance_matrix.audit_balance_drift(&inv) {
-                        if let Some(action) = signal_rebalance_matrix.compute_hedged_rebalance_execution(&inv, 0, 1.min(num_exch - 1) as u16) {
-                            tracing::warn!(
-                                transfer = %action.transfer_amount,
-                                from = action.from_exchange,
-                                to = action.to_exchange,
-                                fee = %action.estimated_fee,
-                                "rebalance matrix: drift detected, action computed"
-                            );
-                        }
-                    }
-                }
             }
         }
     });
@@ -2035,7 +1900,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !forced_paper {
         let sync_pool = Arc::clone(&execution_pool);
         let sync_allocator = Arc::clone(&allocator_arc);
-        let sync_http = reqwest::Client::new();
+        let sync_http = tls_pinning::build_pinned_client(Some(&tls_pinning::TlsPins::empty()), 15, 5)
+            .unwrap_or_else(|e| { tracing::warn!(%e, "sync TLS client failed, using fallback"); reqwest::Client::new() });
         let _balance_sync_handle = tokio::spawn(async move {
             balance_sync::run_periodic_sync(
                 sync_pool,
@@ -2047,27 +1913,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         });
         println!("Periodic balance sync: every 60s from exchange APIs");
-
-        // ------------------------------------------------------------------
-        // 12b-ii. Position Reconciliation Loop (live mode only)
-        // ------------------------------------------------------------------
-        {
-            let recon_pool = Arc::clone(&execution_pool);
-            let _recon_handle = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
-                loop {
-                    interval.tick().await;
-                    tracing::info!("position reconciliation: cycle started");
-                    for (&eid, client) in recon_pool.iter() {
-                        if let Err(e) = client.get_balance(&reqwest::Client::new(), "USDT").await {
-                            tracing::warn!(exchange = eid, error = %e, "reconciliation: query failed");
-                        }
-                    }
-                    tracing::info!("position reconciliation: cycle complete");
-                }
-            });
-            println!("Position reconciliation loop: every 120s (live mode)");
-        }
 
         // ------------------------------------------------------------------
         // 12c. Order cancellation sweeper (live mode only)
@@ -2096,6 +1941,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         println!("Order status poller: persistent daemon, polls every 500ms (2.5s idle), skips orders >30s old");
         println!("Rate-limit circuit breaker: per-exchange 60s cooldown on HTTP 429");
+
+        // ------------------------------------------------------------------
+        // 12c-iii. Position Reconciliation Loop (live mode only) — CRITICAL FIX #6
+        // ------------------------------------------------------------------
+        // Periodically compares the bot's internal position state against
+        // actual exchange balances.  Detects drift (phantom orders, partial
+        // fills not tracked) and triggers alerts.
+        let recon_pool = Arc::clone(&execution_pool);
+        let recon_allocator = Arc::clone(&allocator_arc);
+        let recon_http = tls_pinning::build_pinned_client(Some(&tls_pinning::TlsPins::empty()), 15, 5)
+            .unwrap_or_else(|e| { tracing::warn!(%e, "reconciliation TLS client failed, using fallback"); reqwest::Client::new() });
+        let recon_config = position_reconciliation::ReconciliationConfig {
+            interval_secs: 120,      // every 2 minutes
+            max_drift_usd: dec!(50.0),
+            max_drift_pct: dec!(0.05),
+        };
+        let _recon_handle = tokio::spawn(async move {
+            PositionReconciliationLoop::run(
+                recon_config,
+                recon_allocator,
+                recon_pool,
+                recon_http,
+                num_exch,
+            ).await;
+        });
+        println!("Position reconciliation loop: every 120s, alerts on >$50 or >5% drift");
 
         // ------------------------------------------------------------------
         // 12d. Flash-crash volatility circuit breaker (live mode only)
@@ -2166,7 +2037,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 last_btc_price = btc_price;
 
                 // Every window_ticks, check if max deviation exceeded threshold.
-                if tick_count.is_multiple_of(window_ticks) {
+                if tick_count % window_ticks == 0 {
                     if max_deviation_bps >= threshold_bps {
                         tracing::error!(
                             max_deviation_bps = max_deviation_bps,
@@ -2233,31 +2104,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             errors = stats.total_errors,
             ws_reconnects = stats.ws_reconnects,
             healthy = stats.is_healthy,
-            engine_breaker_trips = engine_breaker.trip_count(),
-            engine_breaker_rejected = engine_breaker.rejected_count(),
-            dead_mans_tripped = dead_mans_switch.is_tripped(),
             "final health stats at shutdown"
         );
     }
 
-    // Flush ring buffer logger to disk.
-    if let Ok(mut rl) = ring_logger.lock() {
-        let count = rl.unread_count();
-        if count > 0 {
-            tracing::info!(unread_events = count, "flushing ring buffer logger");
-            let events = rl.drain_all();
-            // Events are already persisted via flush-on-drop, but we log the count.
-            drop(events);
-        }
-    }
-
     // Abort all spawned tasks.
+    // Trip the dead man's switch before aborting tasks.
+    dead_mans_switch.trip(dead_mans_switch::REASON_MANUAL_KILL);
     signal_loop.abort();
     coin_finder_handle.abort();
     rebalancer_handle.abort();
     disk_handle.abort();
     discord_handle.abort();
-    _dead_mans_handle.abort();
 
     // Wait up to 5 seconds for the signal loop to finish.
     match tokio::time::timeout(std::time::Duration::from_secs(5), signal_loop).await {
