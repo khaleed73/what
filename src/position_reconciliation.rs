@@ -66,6 +66,8 @@ impl PositionReconciliationLoop {
         execution_pool: Arc<std::collections::HashMap<u16, Arc<dyn signer::PrivateExchangeClient>>>,
         http_client: reqwest::Client,
         num_exchanges: usize,
+        num_tokens: usize,
+        token_symbols: &'static [&'static str],
     ) {
         info!(
             interval_s = config.interval_secs,
@@ -85,6 +87,8 @@ impl PositionReconciliationLoop {
                 &execution_pool,
                 &http_client,
                 num_exchanges,
+                num_tokens,
+                token_symbols,
                 &config,
             )
             .await;
@@ -113,54 +117,65 @@ impl PositionReconciliationLoop {
     /// Performs a single reconciliation pass across all exchanges.
     ///
     /// Queries real balances from each exchange and compares against the
-    /// local allocator's state for token 0 (USDT).
+    /// local allocator's state for every registered token.
     async fn reconcile(
         allocator: &balance_allocator::LocalCapitalAllocator,
         execution_pool: &std::collections::HashMap<u16, Arc<dyn signer::PrivateExchangeClient>>,
         http_client: &reqwest::Client,
         num_exchanges: usize,
+        num_tokens: usize,
+        token_symbols: &[&str],
         config: &ReconciliationConfig,
     ) -> Vec<PositionDrift> {
         let mut drifts = Vec::new();
 
-        for exch_id in 0..num_exchanges as u16 {
-            let local_bal = allocator.get_balance_atomic(exch_id as usize, 0);
+        // Get all registered token IDs from the allocator
+        let token_ids: Vec<usize> = (0..num_tokens).collect();
 
-            // Query real balance from the exchange.
-            let real_bal = if let Some(client) = execution_pool.get(&exch_id) {
-                match client.get_balance(http_client, "USDT").await {
-                    Ok(bal) => bal,
-                    Err(e) => {
-                        tracing::debug!(
-                            exchange = exch_id,
-                            error = %e,
-                            "balance query failed in reconciliation — using local value"
-                        );
-                        local_bal // Fall back to local on error.
+        for token_id in token_ids {
+            // Get the symbol for this token (use index, default to "UNKNOWN")
+            let symbol = token_symbols.get(token_id).copied().unwrap_or("UNKNOWN");
+
+            for exch_id in 0..num_exchanges as u16 {
+                let local_bal = allocator.get_balance_atomic(exch_id as usize, token_id);
+
+                // Query real balance from the exchange.
+                let real_bal = if let Some(client) = execution_pool.get(&exch_id) {
+                    match client.get_balance(http_client, symbol).await {
+                        Ok(bal) => bal,
+                        Err(e) => {
+                            tracing::debug!(
+                                exchange = exch_id,
+                                token = token_id,
+                                error = %e,
+                                "balance query failed in reconciliation — using local value"
+                            );
+                            local_bal // Fall back to local on error.
+                        }
                     }
+                } else {
+                    local_bal // No client — paper exchange, trust local.
+                };
+
+                let drift_usd = (local_bal - real_bal).abs();
+                let drift_pct = if local_bal > Decimal::ZERO {
+                    drift_usd / local_bal
+                } else if real_bal > Decimal::ZERO {
+                    Decimal::ONE // 100% drift if local is zero but exchange has funds.
+                } else {
+                    Decimal::ZERO
+                };
+
+                if drift_usd > config.max_drift_usd || drift_pct > config.max_drift_pct {
+                    drifts.push(PositionDrift {
+                        exchange_id: exch_id,
+                        token_id: token_id as u16,
+                        local_balance: local_bal,
+                        exchange_balance: real_bal,
+                        drift_usd,
+                        drift_pct,
+                    });
                 }
-            } else {
-                local_bal // No client — paper exchange, trust local.
-            };
-
-            let drift_usd = (local_bal - real_bal).abs();
-            let drift_pct = if local_bal > Decimal::ZERO {
-                drift_usd / local_bal
-            } else if real_bal > Decimal::ZERO {
-                Decimal::ONE // 100% drift if local is zero but exchange has funds.
-            } else {
-                Decimal::ZERO
-            };
-
-            if drift_usd > config.max_drift_usd || drift_pct > config.max_drift_pct {
-                drifts.push(PositionDrift {
-                    exchange_id: exch_id,
-                    token_id: 0,
-                    local_balance: local_bal,
-                    exchange_balance: real_bal,
-                    drift_usd,
-                    drift_pct,
-                });
             }
         }
 

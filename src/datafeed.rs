@@ -54,7 +54,10 @@ pub fn parse_raw_bytes_fast(payload: &[u8]) -> Option<(u16, u64, u64)> {
         let key = payload[i];
         i += 1;
 
-        // Expect closing quote
+        // Key must be exactly one character — closing quote must follow
+        // immediately.  This safely skips multi-char keys like "type",
+        // "best_ask", etc. because e.g. for "type" the byte after 't'
+        // is 'y', not '"'.
         if i >= len || payload[i] != b'"' {
             continue;
         }
@@ -338,7 +341,6 @@ impl LowLatencyWsListener {
                     }
 
                     warn!(exchange_id = ex, "ws stream ended, reconnecting");
-                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
                     self.arena.invalidate_exchange(ex as usize);
                 }
                 Ok(Err(e)) => {
@@ -399,31 +401,13 @@ impl LowLatencyWsListener {
                 }
             }
 
-            // Stream ended (not a connect failure) — use same backoff logic.
-            consecutive_failures += 1;
-            if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
-                tracing::error!(
-                    exchange_id = ex,
-                    consecutive_failures,
-                    "WS stream ended {} times — giving up, CRITICAL: feed worker exiting permanently, invalidating arena",
-                    MAX_CONSECUTIVE_FAILURES
-                );
-                self.arena.invalidate_exchange(ex as usize);
-                return;
-            }
-            tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+            // Stream ended after a successful connection — reset failure counter.
+            // A clean disconnect (including read errors mid-stream) after the
+            // connection was established does not indicate a connect failure.
+            consecutive_failures = 0;
             self.arena.invalidate_exchange(ex as usize);
-            let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
-                .min(MAX_DELAY_SECS) as f64;
-            let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
-            let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
-            warn!(
-                exchange_id = ex,
-                consecutive_failures,
-                delay_secs,
-                "reconnecting with jittered exponential backoff"
-            );
-            sleep(Duration::from_secs(delay_secs.max(1))).await;
+            warn!(exchange_id = ex, "ws stream ended after successful session, reconnecting");
+            sleep(Duration::from_secs(BASE_DELAY_SECS)).await;
         }
     }
 }
@@ -617,10 +601,12 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
         10 => {
             // Kraken uses a pair-based subscribe
             let pair_subs: Vec<serde_json::Value> = syms.iter().map(|s| {
-                // Kraken uses XBT not BTC for WS
-                let pair = s.replace("BTCUSDT", "XBT/USDT")
-                    .replace("BTC", "XBT");
-                serde_json::json!({"name": "ticker", "pair": pair})
+                // Note: Kraken uses XBT prefix for Bitcoin in WS pair names,
+                // but the arena uses standard names (BTC). Pair name mapping
+                // is handled by the coin finder / pair normalization layer,
+                // not by blanket string replacement here (which would mangle
+                // symbols like "BTCDOMUSDT").
+                serde_json::json!({"name": "ticker", "pair": s})
             }).collect();
             let sub_msg = serde_json::json!({
                 "event": "subscribe",

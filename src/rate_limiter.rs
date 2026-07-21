@@ -129,7 +129,7 @@ impl ExchangeRateState {
         let threshold = self.pause_threshold.load(Ordering::Acquire) as u64;
         let max = self.max_weight.load(Ordering::Acquire);
 
-        if current * BPS_PER_UNIT as u64 >= max * threshold {
+        if current.saturating_mul(BPS_PER_UNIT as u64) >= max.saturating_mul(threshold) {
             // Trip the pause.
             self.is_paused.store(true, Ordering::Release);
             *self.paused_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());

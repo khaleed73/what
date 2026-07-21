@@ -192,7 +192,7 @@ impl ExchangeHealthTracker {
     #[inline(always)]
     fn is_paused(&self, exchange_id: u16) -> bool {
         let now = current_time_millis();
-        let expires = self.pause_until[Self::idx(exchange_id)].load(Ordering::Relaxed);
+        let expires = self.pause_until[Self::idx(exchange_id)].load(Ordering::Acquire);
         now < expires
     }
 
@@ -204,7 +204,7 @@ impl ExchangeHealthTracker {
         let count = self.failure_counts[idx].fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         if count >= threshold {
             let now = current_time_millis();
-            self.pause_until[idx].store(now.saturating_add(pause_duration_ms), Ordering::Relaxed);
+            self.pause_until[idx].store(now.saturating_add(pause_duration_ms), Ordering::Release);
         }
     }
 
@@ -647,7 +647,7 @@ fn dollars_to_cents(dollars: Decimal) -> i64 {
     let abs = if neg { -cents } else { cents };
     let s = abs.to_string();
     let truncated = if let Some(dot) = s.find('.') { &s[..dot] } else { &s };
-    let val: i64 = truncated.parse().unwrap_or(10_000_000_000); // Cap at $100M cents
+    let val: i64 = truncated.parse().unwrap_or(0); // Fail-safe: 0 disables trading on parse error
     if neg { -val } else { val }
 }
 

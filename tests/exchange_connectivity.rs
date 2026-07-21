@@ -232,8 +232,8 @@ async fn test_all_exchanges_connectivity() {
         ("Bitstamp",   "https://www.bitstamp.net",            Box::new(BitstampExchange::new("Bitstamp".into(), dummy_config("https://www.bitstamp.net")).unwrap())),
         ("Deribit",    "https://www.deribit.com",             Box::new(DeribitExchange::new("Deribit".into(), dummy_config("https://www.deribit.com")).unwrap())),
         ("Delta",      "https://api.india.delta.exchange",    Box::new(DeltaExchange::new("Delta".into(),   dummy_config("https://api.india.delta.exchange")).unwrap())),
-        ("MEXC",       "https://api.mexc.com",                Box::new(MexcExchange::new("MEXC".into",     dummy_config("https://api.mexc.com")).unwrap())),
-        ("Ibank",      "https://api.independentreserve.com",  Box::new(IbankExchange::new("Ibank".into",   dummy_config("https://api.independentreserve.com")).unwrap())),
+        ("MEXC",       "https://api.mexc.com",                Box::new(MexcExchange::new("MEXC".into(),     dummy_config("https://api.mexc.com")).unwrap())),
+        ("Ibank",      "https://api.independentreserve.com",  Box::new(IbankExchange::new("Ibank".into(),   dummy_config("https://api.independentreserve.com")).unwrap())),
     ];
 
     println!("\n{}
@@ -272,9 +272,6 @@ async fn test_all_exchanges_connectivity() {
     // The combined test does NOT hard-assert so we always see the full
     // report.  Individual per-exchange tests above already assert is_ok().
     if failed > 0 {
-        eprintln!(
-            "WARNING: {}/{} exchanges failed health check (see above)",
-            failed, exchanges.len()
-        );
+        panic!("{} exchange(s) FAILED connectivity test", failed);
     }
 }

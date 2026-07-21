@@ -832,7 +832,13 @@ impl HighFrequencyExecutionEngine {
         let size_fp = decimal_to_fp(leg_a.qty * leg_a.price);
         self.risk_manager
             .pre_trade_check(profit_bps, size_fp, capital_fp, leg_a.exchange_id)
-            .map_err(|rejection| format!("pre-trade risk rejection: {}", rejection))?;
+            .map_err(|rejection| format!("pre-trade risk rejection (leg_a): {}", rejection))?;
+
+        // 1b. Risk gate for leg_b exchange as well.
+        let size_fp_b = decimal_to_fp(leg_b.qty * leg_b.price);
+        self.risk_manager
+            .pre_trade_check(profit_bps, size_fp_b, capital_fp, leg_b.exchange_id)
+            .map_err(|rejection| format!("pre-trade risk rejection (leg_b): {}", rejection))?;
 
         // 2. Stablecoin depeg circuit-breaker.
         if self.depeg_circuit.is_depeg_active().await {
@@ -985,16 +991,18 @@ impl HighFrequencyExecutionEngine {
                         exchange = leg_a.exchange_id,
                         symbol = %leg_a.symbol,
                         error = %e,
-                        "leg-a slippage violation"
+                        "leg-a slippage violation — REJECTING trade"
                     );
+                    return Err(format!("leg-a slippage violation: {}", e));
                 }
                 if let Err(e) = self.verify_leg_slippage(&leg_b_original, &result_b) {
                     tracing::warn!(
                         exchange = leg_b.exchange_id,
                         symbol = %leg_b.symbol,
                         error = %e,
-                        "leg-b slippage violation"
+                        "leg-b slippage violation — REJECTING trade"
                     );
+                    return Err(format!("leg-b slippage violation: {}", e));
                 }
 
                 Ok((result_a, result_b))
@@ -1246,8 +1254,9 @@ impl HighFrequencyExecutionEngine {
                             exchange = legs[i].exchange_id,
                             symbol = %legs[i].symbol,
                             error = %e,
-                            "triangular leg slippage violation"
+                            "triangular leg slippage violation — REJECTING trade"
                         );
+                        return Err(format!("triangular leg {} slippage violation: {}", i, e));
                     }
                 }
 

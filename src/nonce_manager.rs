@@ -89,7 +89,7 @@ impl ApiNonceManager {
         let nonce = ExchangeNonce::new(exchange_id, initial_nonce);
         self.nonces
             .write()
-            .expect("nonce_manager RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(exchange_id.to_lowercase(), nonce);
     }
 
@@ -102,7 +102,7 @@ impl ApiNonceManager {
     pub fn next_nonce(&self, exchange_id: &str) -> Option<u64> {
         self.nonces
             .read()
-            .expect("nonce_manager RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&exchange_id.to_lowercase())
             .map(|n| n.next())
     }
@@ -114,7 +114,7 @@ impl ApiNonceManager {
     pub fn current_nonce(&self, exchange_id: &str) -> Option<u64> {
         self.nonces
             .read()
-            .expect("nonce_manager RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&exchange_id.to_lowercase())
             .map(|n| n.peek())
     }
@@ -126,10 +126,10 @@ impl ApiNonceManager {
         if let Some(nonce) = self
             .nonces
             .read()
-            .expect("nonce_manager RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&exchange_id.to_lowercase())
         {
-            nonce.set(value);
+            nonce.ensure_min(value);
         }
     }
 
@@ -140,7 +140,7 @@ impl ApiNonceManager {
         if let Some(nonce) = self
             .nonces
             .read()
-            .expect("nonce_manager RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&exchange_id.to_lowercase())
         {
             nonce.current.store(value, Ordering::SeqCst);
@@ -150,7 +150,7 @@ impl ApiNonceManager {
     /// Synchronize nonce with exchange server value.
     /// Ensures local nonce is at least `server_nonce` to prevent collisions.
     pub fn sync_with_server(&self, exchange_id: &str, server_nonce: u64) {
-        let guard = self.nonces.read().expect("nonce_manager RwLock poisoned");
+        let guard = self.nonces.read().unwrap_or_else(|e| e.into_inner());
         if let Some(nonce) = guard.get(&exchange_id.to_lowercase()) {
             nonce.ensure_min(server_nonce);
             tracing::debug!(
@@ -166,7 +166,7 @@ impl ApiNonceManager {
     pub fn exchange_count(&self) -> usize {
         self.nonces
             .read()
-            .expect("nonce_manager RwLock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .len()
     }
 }

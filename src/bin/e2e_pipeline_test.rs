@@ -614,13 +614,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let paper_balance = Arc::new(Mutex::new(dec!(10000.00)));
     let paper_pipeline: Arc<dyn OrderPipeline> = Arc::new(PaperExecutionPipeline::new(Arc::clone(&paper_balance)));
-    let real_pipeline: Arc<dyn OrderPipeline> = Arc::new(PaperExecutionPipeline::new(Arc::clone(&paper_balance)));
     let depeg_circuit = Arc::new(StablecoinMonitor::new(StablecoinConfig::default()));
     let engine = Arc::new(HighFrequencyExecutionEngine::new(
         Arc::clone(&risk_manager),
         Arc::clone(&depeg_circuit),
         Arc::clone(&paper_pipeline),
-        real_pipeline,
+        paper_pipeline,
         true, // paper mode
     ));
 
@@ -684,13 +683,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let legs = [
                     OrderIntent { exchange_id, token_id: token_a, qty: dec!(0.01), price: pa, is_buy: true, symbol: format!("{}USDT", tok_name(token_a)) },
-                    OrderIntent { exchange_id, token_id: token_b, qty: dec!(0.01), price: pb, is_buy: true, symbol: format!("{}USDT", tok_name(token_b)) },
+                    OrderIntent { exchange_id, token_id: token_b, qty: dec!(0.01), price: pb, is_buy: false, symbol: format!("{}USDT", tok_name(token_b)) },
                     OrderIntent { exchange_id, token_id: token_c, qty: dec!(0.01), price: pc, is_buy: true, symbol: format!("{}USDT", tok_name(token_c)) },
                 ];
 
                 println!("\n  Firing TRIANGULAR blast_triangular_legs [{}]:", exch_name(exchange_id));
                 println!("    Leg 0: BUY 0.01 {} @ {}", legs[0].symbol, pa);
-                println!("    Leg 1: BUY 0.01 {} @ {}", legs[1].symbol, pb);
+                println!("    Leg 1: SELL 0.01 {} @ {}", legs[1].symbol, pb);
                 println!("    Leg 2: BUY 0.01 {} @ {}", legs[2].symbol, pc);
 
                 match engine.blast_triangular_legs(legs, profit_bps, 10_000_000_000).await {
@@ -794,7 +793,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n  E2E PIPELINE TEST: ALL PHASES PASSED");
         println!("  Datafeed -> Arena -> Strategy -> Protection -> Execution\n");
     } else {
-        println!("\n  E2E PIPELINE TEST: COMPLETED (check warnings above)\n");
+        let mut failures = Vec::new();
+        if !has_signals { failures.push("signals"); }
+        if !has_passed { failures.push("risk gate"); }
+        if !has_trades { failures.push("execution"); }
+        anyhow::bail!("E2E PIPELINE TEST: CRITICAL PHASES FAILED — {}", failures.join(", "));
     }
 
     Ok(())

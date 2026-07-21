@@ -132,7 +132,13 @@ impl DynamicFeeManager {
                 "BitMEX" => self.fetch_bitmex_fees(*id).await,
                 "Coinbase" => self.fetch_coinbase_fees(*id).await,
                 "HTX" => self.fetch_htx_fees(*id).await,
-                "Kraken" => self.fetch_kraken_fees(*id).await,
+                "Kraken" => {
+                    // Kraken's /0/private/TradeVolume requires HMAC-SHA256 auth
+                    // which is not available here. Use known defaults directly
+                    // (0.25% maker, 0.40% taker) instead of a failing call.
+                    debug!(exchange = "Kraken", "Using hardcoded fee defaults (auth required for API)");
+                    Some((25, 40))
+                }
                 "MEXC" => self.fetch_mexc_fees(*id).await,
                 _ => {
                     debug!(exchange = name, id, "No API fee fetcher; using config/default");
@@ -455,51 +461,6 @@ impl DynamicFeeManager {
                 Some((maker, taker))
             }
             None => None,
-        }
-    }
-
-    /// Kraken: `GET /0/private/TradeVolume`
-    ///
-    /// Kraken requires POST with API signature. The response contains
-    /// `fees_maker` and `fees` (taker) arrays. Since this is complex to
-    /// sign without the signer, we attempt a simple GET and fall back to
-    /// known defaults (0.25% maker, 0.40% taker).
-        // NOTE: This fetcher always falls back to defaults because Kraken's
-        // /0/private/TradeVolume requires HMAC auth which is not implemented
-        // here. Remove this fetcher and rely on config defaults.
-    async fn fetch_kraken_fees(&self, exchange_id: u16) -> Option<(u64, u64)> {
-        let url = self.rest_url(exchange_id, "/0/private/TradeVolume");
-
-        match self.http_client.post(&url).send().await {
-            Ok(resp) => {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    // Kraken returns { "result": { "fees_maker": [["XXBTZUSD","0.0025",...]], "fees": [...] } }
-                    if let Some(result) = body.get("result") {
-                        if let Some(fees_maker) = result.get("fees_maker").and_then(|v| v.as_array()) {
-                            if let Some(first_pair) = fees_maker.first() {
-                                if let Some(fee_str) = first_pair.get(1).and_then(|v| v.as_str()) {
-                                    let maker = bps_from_fraction_str(fee_str);
-                                    let taker = result
-                                        .get("fees")
-                                        .and_then(|v| v.as_array())
-                                        .and_then(|a| a.first())
-                                        .and_then(|f| f.get(1))
-                                        .and_then(|v| v.as_str())
-                                        .map(bps_from_fraction_str)
-                                        .unwrap_or(maker + 16); // approximate spread
-                                    return Some((maker, taker));
-                                }
-                            }
-                        }
-                    }
-                }
-                // Fallback to known Kraken defaults.
-                Some((25, 40))
-            }
-            Err(e) => {
-                warn!(exchange = "Kraken", error = %e, "Failed to fetch Kraken fees; using defaults");
-                Some((25, 40))
-            }
         }
     }
 

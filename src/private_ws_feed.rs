@@ -172,6 +172,11 @@ impl PrivateWsFeedListener {
             "Private WebSocket feed started (stub)"
         );
 
+        tracing::warn!(
+            exchange = %exchange_name,
+            "Private WebSocket feed is a STUB — no actual connection established. Fill/execution data will be stale."
+        );
+
         true
     }
 

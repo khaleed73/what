@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+
 // ---------------------------------------------------------------------------
 // Fee-aware spread configuration
 // ---------------------------------------------------------------------------
@@ -594,24 +597,25 @@ impl MarketArena {
                         continue;
                     }
 
-                    // Fixed-point profit ratio:
+                    // Decimal-based profit ratio to avoid integer division truncation:
                     //   ratio = (bid_a / ask_a) * (bid_b / ask_b) * (bid_c / ask_c)
                     //
-                    // Computed step-wise to avoid u64 overflow:
-                    //   step1 = (bid_a * BPS_SCALE) / ask_a        → scaled by BPS_SCALE
-                    //   step2 = (step1  * bid_b   ) / ask_b        → still scaled
-                    //   step3 = (step2  * bid_c   ) / ask_c        → still scaled
-                    //
+                    // Computed in Decimal to preserve precision across all three legs.
+                    // The final result is scaled by BPS_SCALE and truncated to u64.
                     // If step3 > BPS_SCALE, the loop is profitable.
                     // profit_bps = step3 - BPS_SCALE  (already in basis-point units).
 
-                    let step1 = bid_a.saturating_mul(BPS_SCALE) / ask_a;
-                    let step2 = step1.saturating_mul(bid_b) / ask_b;
-                    let step3 = step2.saturating_mul(bid_c) / ask_c;
+                    let ratio = Decimal::from(bid_a) / Decimal::from(ask_a)
+                        * (Decimal::from(bid_b) / Decimal::from(ask_b))
+                        * (Decimal::from(bid_c) / Decimal::from(ask_c));
+                    let step3 = (ratio * Decimal::from(BPS_SCALE))
+                        .trunc()
+                        .to_u64()
+                        .unwrap_or(0);
 
-                    // Guard: reject if any step produced an unreasonable ratio (>100x),
+                    // Guard: reject if the ratio is unreasonable (>100x),
                     // which indicates a data anomaly (e.g., near-zero ask price).
-                    if step1 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER || step3 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER {
+                    if step3 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER {
                         continue;
                     }
 

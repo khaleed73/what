@@ -4,8 +4,6 @@
 //! benchmark binaries, and the E2E pipeline test). This is the **library**
 //! crate; the binary target lives in `src/main.rs`.
 
-#![allow(dead_code)]
-
 pub mod exchange;
 pub mod strategies;
 pub mod protections;
@@ -34,9 +32,11 @@ pub mod exchange_constraints;
 pub mod atomic_orderbook;
 pub mod circuit_breaker;
 pub mod core_execution_shield;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod ring_buffer_logger;
 pub mod rebalance_matrix;
 pub mod zero_alloc_signer;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod zero_lag_stream;
 pub mod cross_exchange_executor;
 pub mod order_feed;
@@ -44,17 +44,22 @@ pub mod depeg_protection;
 pub mod rate_limiter;
 pub mod nonce_manager;
 pub mod timestamp_sync;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod shared_memory;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod payload_arena;
 pub mod size_slicer;
 pub mod capital_starvation;
 pub mod dust_manager;
 pub mod private_ws_feed;
 pub mod volatility_guard;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod tcp_optimizer;
 pub mod tri_path_finder;
 pub mod production_risk_shield;
 pub mod market_arena;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod zero_copy_parser;
+#[allow(dead_code)] // Infrastructure module — not yet fully wired into hot path.
 pub mod cpu_pinning;
 pub mod live_order_tracker;

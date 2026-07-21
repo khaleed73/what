@@ -159,7 +159,7 @@ impl TriPathFinder {
             return vec![];
         }
 
-        let mut best_profit = vec![f64::INFINITY; n];
+        let mut best_profit = vec![0.0f64; n];
         let mut predecessor = vec![-1isize; n];
         // Stores the predecessor node index (source node of the best edge).
         // Named `_predecessor_node` to clarify it is NOT an edge index.

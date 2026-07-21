@@ -436,7 +436,7 @@ impl PrivateExchangeClient for BinanceClient {
             params.insert("newClientOrderId", client_id.clone());
         }
         if order.order_type == OrderType::Limit {
-            params.insert("timeInForce", "GTC".to_string());
+            params.insert("timeInForce", "IOC".to_string());
         }
 
         let base_params: String = params
@@ -761,13 +761,15 @@ impl PrivateExchangeClient for BybitClient {
     ) -> Result<OrderResult, String> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let pre_sign = format!("{}{}{}", timestamp, self.api_key.expose(), self.signer.api_secret.expose());
+        let recv_window = "5000".to_string();
+        let pre_sign = format!("{}{}{}", timestamp, self.api_key.expose(), recv_window);
         let signature = crate::signer::hmac_signature(&pre_sign, self.signer.api_secret.expose());
         let url = format!("{}/v5/order/realtime?orderId={}", self.rest_url, order_id);
 
         let resp = http_client.get(&url)
             .header("X-BAPI-API-KEY", self.api_key.expose())
             .header("X-BAPI-TIMESTAMP", timestamp.to_string())
+            .header("X-BAPI-RECV-WINDOW", &recv_window)
             .header("X-BAPI-SIGN", signature)
             .send().await
             .map_err(|e| format!("Bybit query_order request failed: {}", e))?;
@@ -1189,6 +1191,11 @@ impl PrivateExchangeClient for KucoinClient {
 
         if let Some(price) = order.price {
             body_map.insert("price".into(), json!(price.to_string()));
+        }
+        match order.order_type {
+            OrderType::Fok => { body_map.insert("timeInForce".into(), json!("FOK")); }
+            OrderType::IoC => { body_map.insert("timeInForce".into(), json!("IOC")); }
+            _ => {}
         }
 
         let path = "/api/v1/orders";

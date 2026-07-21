@@ -15,9 +15,9 @@ use std::str::FromStr;
 /// Parsed result from an execution report frame.
 #[derive(Debug, Clone)]
 pub struct ExecutionReport {
-    /// The trade ID from the report (Binance 64-bit trade ID truncated to u16 for
-    /// internal tracking; use `trade_id_raw` for the full ID when needed).
-    pub token_id: u16,
+    /// The trade ID from the report (Binance 64-bit trade ID).
+    /// Use `trade_id_str` for string comparisons when needed.
+    pub token_id: u64,
     /// The full trade ID as a string (preserves the original 64-bit value).
     pub trade_id_str: String,
     /// The asset balance after this execution.
@@ -39,7 +39,7 @@ pub struct ExecutionReport {
 ///
 /// # Parsed Fields
 /// - `e` = "executionReport" → sets is_execution_report flag
-/// - `t` → parsed as u16 token_id
+/// - `t` → parsed as u64 trade ID
 /// - `B` → parsed as Decimal balance
 /// - `s` → parsed as symbol (optional)
 /// - `S` → parsed as side (optional)
@@ -49,7 +49,7 @@ pub struct ExecutionReport {
 /// # Returns
 /// `Some(ExecutionReport)` if this is a valid execution report, `None` otherwise.
 pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
-    let mut token_id: u16 = 0;
+    let mut token_id: u64 = 0;
     let mut balance_decimal = Decimal::ZERO;
     let mut is_execution_report = false;
     let mut trade_id_str = String::new();
@@ -72,11 +72,9 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                         }
                     }
                     b't' => {
-                        // Parse trade ID as string to avoid u16 truncation.
-                        // Binance trade IDs are 64-bit — truncating to u16 causes
+                        // Parse trade ID as u64 to avoid truncation.
+                        // Binance trade IDs are 64-bit — truncating to u16 caused
                         // silent data corruption after trade ID 65535.
-                        // Use trade_id_str (full string) as the primary identifier.
-                        // Never truncate to u16 for asset identification.
                         trade_id_str.clear();
                         let num_start = i;
                         while i < len && payload[i].is_ascii_digit() {
@@ -85,13 +83,11 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
                         if i > num_start {
                             if let Ok(s) = std::str::from_utf8(&payload[num_start..i]) {
                                 trade_id_str = s.to_string();
+                                // Parse as u64 to preserve the full 64-bit trade ID.
+                                if let Ok(id_val) = trade_id_str.parse::<u64>() {
+                                    token_id = id_val;
+                                }
                             }
-                        }
-                        // Keep full string as primary ID; u16 is only for
-                        // legacy backward compatibility and must NOT be used
-                        // for identifying assets.
-                        if let Ok(id_val) = trade_id_str.parse::<u16>() {
-                            token_id = id_val;
                         }
                     }
                     b'B' => {
@@ -171,7 +167,7 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
 /// Extended execution report with all parsed fields.
 #[derive(Debug, Clone)]
 pub struct FullExecutionReport {
-    pub token_id: u16,
+    pub token_id: u64,
     /// Full trade ID string (preserves the original 64-bit value).
     pub trade_id_str: String,
     pub balance: Decimal,
@@ -183,7 +179,7 @@ pub struct FullExecutionReport {
 
 /// Full parser that extracts all fields from an execution report.
 pub fn parse_full_execution_report(payload: &[u8]) -> Option<FullExecutionReport> {
-    let mut token_id: u16 = 0;
+    let mut token_id: u64 = 0;
     let mut trade_id_str = String::new();
     let mut balance_decimal = Decimal::ZERO;
     let mut is_execution_report = false;
@@ -216,10 +212,11 @@ pub fn parse_full_execution_report(payload: &[u8]) -> Option<FullExecutionReport
                         if i > num_start {
                             if let Ok(s) = std::str::from_utf8(&payload[num_start..i]) {
                                 trade_id_str = s.to_string();
+                                // Parse as u64 to preserve the full 64-bit trade ID.
+                                if let Ok(id_val) = trade_id_str.parse::<u64>() {
+                                    token_id = id_val;
+                                }
                             }
-                        }
-                        if let Ok(id_val) = trade_id_str.parse::<u16>() {
-                            token_id = id_val;
                         }
                     }
                     b'B' => {

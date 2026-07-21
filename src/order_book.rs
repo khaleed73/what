@@ -1149,7 +1149,7 @@ fn parse_binance_depth(raw: &str) -> Option<OrderBookDelta> {
     let is_snapshot = data
         .get("e")
         .and_then(|e| e.as_str())
-        .map(|e| e == "depthUpdate")
+        .map(|e| e != "depthUpdate") // depthUpdate is incremental, everything else (or missing "e") is snapshot
         .unwrap_or(true); // partial book depth snapshots have no "e"
 
     let bid_updates = parse_price_qty_pairs(bids_arr);
@@ -2256,27 +2256,15 @@ impl L2OrderBookListener {
                 }
             }
 
-            // Stream ended (not a connect failure) — backoff before retry
-            consecutive_failures += 1;
-            if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
-                error!(
-                    exchange_id = ex,
-                    consecutive_failures,
-                    "L2 WS stream ended {} times — giving up, feed worker exiting",
-                    MAX_CONSECUTIVE_FAILURES
-                );
-                return;
-            }
-            let delay_secs = (BASE_DELAY_SECS
-                << consecutive_failures.saturating_sub(1))
-                .min(MAX_DELAY_SECS);
+            // Stream ended after a successful connection — reset failure counter.
+            // A clean disconnect (including read errors mid-stream) after the
+            // connection was established does not indicate a connect failure.
+            consecutive_failures = 0;
             warn!(
                 exchange_id = ex,
-                consecutive_failures,
-                delay_secs,
-                "L2 order book: reconnecting with exponential backoff"
+                "L2 order book: stream ended after successful session, reconnecting"
             );
-            sleep(Duration::from_secs(delay_secs)).await;
+            sleep(Duration::from_secs(BASE_DELAY_SECS)).await;
         }
     }
 }

@@ -651,6 +651,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  {:>30}  {}/12", "Exchanges reachable:", h_pass);
     println!("\n{}", "═".repeat(78));
 
+    if h_pass == 0 {
+        anyhow::bail!("ALL {} exchanges FAILED health check — cannot benchmark with no reachable exchanges", NUM_EXCHANGES);
+    }
+
     Ok(())
 }
 

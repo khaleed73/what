@@ -46,9 +46,19 @@ impl Default for TlsPins {
 
 /// Builds a TLS-pinned `reqwest::Client`.
 ///
-/// When `pins` contains an entry for the given exchange, the client
-/// will verify that the server's certificate matches the pinned fingerprint.
-/// Otherwise, standard certificate verification is used.
+/// ⚠️ IMPORTANT LIMITATION: The current implementation uses system default
+/// root certificates. True certificate fingerprint pinning (comparing
+/// server cert SHA-256 against configured pins) requires a custom
+/// `rustls::ServerCertVerifier` implementation, which is planned but not
+/// yet implemented.
+///
+/// When `pins` are provided, this function:
+/// - Enables HTTPS-only mode (no plaintext HTTP)
+/// - Sets conservative timeouts
+/// - Logs a WARNING that true pinning is not yet active
+///
+/// TODO: Implement `rustls::client::danger::ServerCertVerifier` for actual
+/// fingerprint comparison.
 ///
 /// # Arguments
 /// * `pins` — Optional TLS pins. If `None`, standard TLS is used.
@@ -73,9 +83,10 @@ pub fn build_pinned_client(
     // custom `ServerCertVerifier` to implement true certificate pinning.
     if let Some(p) = pins {
         if !p.pins.is_empty() {
-            tracing::info!(
+            tracing::error!(
                 pinned_exchanges = p.pins.len(),
-                "TLS pinning configuration loaded — note: full pinning requires rustls custom cert verifier"
+                "TLS pins configured but true certificate pinning NOT YET IMPLEMENTED — \
+                 connections use system root CAs only. Implement rustls ServerCertVerifier for production."
             );
         }
     }

@@ -84,7 +84,7 @@ impl SharedMarketFrame {
             std::ptr::write_bytes(dst, 0, MAX_SYMBOL_LEN);
             std::ptr::copy_nonoverlapping(sym_bytes.as_ptr(), dst, len);
         }
-        std::sync::atomic::compiler_fence(Ordering::Release);
+        std::sync::atomic::fence(Ordering::Release);
 
         // Write prices and timestamp (all atomic — no torn reads).
         self.best_bid.store(best_bid, Ordering::Release);

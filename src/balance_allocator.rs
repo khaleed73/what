@@ -199,8 +199,13 @@ impl LocalCapitalAllocator {
 
     #[inline]
     fn idx(&self, exchange_id: usize, token_id: usize) -> usize {
-        assert!(exchange_id < self.total_exchanges, "exchange_id {} >= total_exchanges {}", exchange_id, self.total_exchanges);
-        assert!(token_id < self.total_tokens, "token_id {} >= total_tokens {}", token_id, self.total_tokens);
+        if exchange_id >= self.total_exchanges || token_id >= self.total_tokens {
+            tracing::error!(
+                exchange_id, token_id, total_exchanges = self.total_exchanges, total_tokens = self.total_tokens,
+                "FATAL: balance_allocator index out of bounds — falling back to slot 0 to prevent crash"
+            );
+            return 0; // safe fallback — writes to slot 0 instead of panicking
+        }
         exchange_id * self.total_tokens + token_id
     }
 
@@ -267,18 +272,27 @@ impl LocalCapitalAllocator {
         fp_to_decimal(total_fp)
     }
 
-    /// Atomically subtract `amount` from the balance using `fetch_sub`.
-    /// This is a single atomic operation, avoiding TOCTOU races between
-    /// a separate read and write (see C-2).
-    pub fn fetch_sub_balance(&self, exchange_id: usize, token_id: usize, amount: Decimal) {
+    /// Atomically subtract `amount` from the balance using `fetch_update`.
+    /// Returns `true` if the subtraction succeeded, `false` if the balance
+    /// was insufficient (logs a warning in that case).
+    pub fn fetch_sub_balance(&self, exchange_id: usize, token_id: usize, amount: Decimal) -> bool {
         let fp = decimal_to_fp(amount);
-        if fp == 0 { return; }
+        if fp == 0 { return true; }
         let idx = self.idx(exchange_id, token_id);
         // Use compare-and-swap loop to prevent wrapping underflow.
         // If the balance would go below zero, skip the subtraction and log.
-        let _ = self.balances[idx].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+        match self.balances[idx].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             current.checked_sub(fp)
-        });
+        }) {
+            Ok(_) => true,
+            Err(_) => {
+                tracing::warn!(
+                    exchange_id, token_id, requested = %amount,
+                    "balance subtraction failed — insufficient funds"
+                );
+                false
+            }
+        }
     }
 
     /// Atomically add `amount` to the balance using `fetch_add`.

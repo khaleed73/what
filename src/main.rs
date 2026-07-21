@@ -89,7 +89,7 @@ use paper_trading::PaperTradingPipeline;
 use persistence::{AsyncPersistenceWorker, PersistentState};
 use protections::RiskManager;
 use risk_shield::{RiskShield, MarketTicker};
-use cross_exchange_executor::CrossExchangeExecutor;
+use cross_exchange_executor::{CrossExchangeExecutor, CrossExchangeOrder};
 use production_risk_shield::ProductionRiskShield;
 use dead_mans_switch::DeadMansSwitch;
 use position_reconciliation::PositionReconciliationLoop;
@@ -112,7 +112,7 @@ const FP_SCALE: u64 = 1_000_000;
 
 /// Key patterns that indicate "no real API key configured".
 const PLACEHOLDER_PATTERNS: &[&str] = &[
-    "", "YOUR_", "PLACEHOLDER", "REPLACE", "XXXX", "XXXXXXXX",
+    "YOUR_", "PLACEHOLDER", "REPLACE", "XXXX", "XXXXXXXX",
     "API_KEY", "API_SECRET", "CHANGE_ME", "YOUR_KEY", "YOUR_SECRET",
     "INSERT_", "PUT_YOUR", "PASTE_", "EXAMPLE", "DEMO", "TEST",
 ];
@@ -1017,7 +1017,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (rebalance_tx, rebalance_rx) = create_rebalance_channel();
 
     let rebalancer_http = tls_pinning::build_pinned_client(Some(tls_pins), 30, 10)
-        .unwrap_or_else(|e| { tracing::warn!(%e, "rebalancer TLS client failed, using fallback"); reqwest::Client::new() });
+        .unwrap_or_else(|e| { tracing::error!(%e, "rebalancer TLS client build failed — using SAFE fallback"); reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).tcp_nodelay(true).https_only(true).build().expect("safe fallback client") });
     let mut rebalancer = AutoCapitalRebalancer::new(
         rebalance_rx,
         rebalancer_http,
@@ -1220,6 +1220,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if safety_ok {
                 println!("  All API key permissions verified — SAFE for automated trading");
             }
+            if !safety_ok || has_unsafe {
+                if !forced_paper {
+                    tracing::error!("ABORTING: API key safety check failed — fix config.toml before running live");
+                    std::process::exit(1);
+                } else {
+                    tracing::warn!("API key safety check failed — acceptable in paper mode");
+                }
+            }
         }
     }
 
@@ -1227,8 +1235,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 12f. Withdrawal Executor (for rebalancer)
     // ------------------------------------------------------------------
     let withdrawal_http = tls_pinning::build_pinned_client(Some(tls_pins), 30, 10)
-        .unwrap_or_else(|e| { tracing::warn!(%e, "withdrawal TLS client failed, using fallback"); reqwest::Client::new() });
-    let _withdrawal_executor = WithdrawalExecutor::new(
+        .unwrap_or_else(|e| { tracing::error!(%e, "withdrawal TLS client build failed — using SAFE fallback"); reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).connect_timeout(std::time::Duration::from_secs(10)).tcp_nodelay(true).https_only(true).build().expect("safe fallback client") });
+    let withdrawal_executor = WithdrawalExecutor::new(
         withdrawal_http,
         Arc::clone(&execution_pool),
         rest_urls.clone(),
@@ -1426,13 +1434,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// exchange 8 (Coinbase) uses "BASE-QUOTE", all others use "BASEQUOTE".
     fn build_pair_symbol(base: &str, quote: &str, exchange_id: u16) -> String {
         match exchange_id {
-            2 => format!("{}-{}", base, quote), // OKX: BTC-USDT
-            3 => format!("{}_{}", base, quote),  // GateIO: BTC_USDT
-            8 => format!("{}-{}", base, quote),  // Coinbase: BTC-USDT
-            _ => format!("{}{}", base, quote),   // Binance/Bybit/KuCoin: BTCUSDT
+            0 => format!("{}{}", base, quote),           // Binance: BTCUSDT
+            1 => format!("{}{}", base, quote),           // Bybit: BTCUSDT
+            2 => format!("{}-{}", base, quote),           // OKX: BTC-USDT
+            3 => format!("{}_{}", base, quote),           // GateIO: BTC_USDT
+            4 => format!("{}-{}", base, quote),           // KuCoin: BTC-USDT
+            5 => format!("t{}{}", base, quote),          // Bitfinex: tBTCUSD
+            6 => format!("{}{}", base, quote),            // Bitget: BTCUSDT
+            7 => format!("{}.{}", base, quote),           // MEXC: BTC.USDT
+            8 => format!("{}-{}", base, quote),           // Coinbase: BTC-USDT
+            9 => format!("{}{}", base, quote),            // HTX: BTCUSDT
+            10 => format!("{}{}", base, quote),           // LBank: BTCUSDT
+            11 => format!("{}{}", base, quote),           // Bitstamp: BTCUSD
+            12 => format!("{}{}_{}", base, quote),        // Deribit: BTC_USDT_PERP (approximation)
+            13 => format!("{}{}", base, quote),           // BitMEX: XBTUSD
+            14 => format!("{}{}", base, quote),           // Kraken: (uses internal XBT mapping)
+            15 => format!("{}{}", base, quote),           // Delta: BTCUSDT
+            16 => format!("{}{}", base, quote),           // Ibank: BTC/USD (approximation)
+            _ => format!("{}{}", base, quote),
         }
     }
 
+    let signal_trade_log = Arc::clone(&trade_log);
+    let signal_discord_tx = _discord_tx;
     let signal_loop = tokio::spawn(async move {
         let mut tick_counter: u64 = 0;
 
@@ -1654,6 +1678,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         rollback = cx_result.rollback_required,
                                         "cross-exchange execution complete"
                                     );
+                                    let _ = signal_trade_log.record_arb_pair(
+                                        buy_exchange,
+                                        sell_exchange,
+                                        &symbol,
+                                        qty.clone(),
+                                        buy_price,
+                                        sell_price,
+                                        Decimal::ZERO,
+                                        Decimal::ZERO,
+                                    ).await;
+                                    let _ = signal_discord_tx.try_send(discord::DiscordMessage::text(
+                                        format!("CROSS-EX: BUY {} on ex{} @ {}, SELL on ex{} @ {}, spread={}bps",
+                                            symbol, buy_exchange, buy_price, sell_exchange, sell_price, spread_bps)
+                                    ));
                                     // CRITICAL FIX #5: If rollback required (asymmetric fill),
                                     // log it for manual intervention.
                                     if cx_result.rollback_required {
@@ -1741,6 +1779,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .unwrap_or(10),
                                 ) / Decimal::from(10_000u64);
 
+                                let tri_qty = signal_allocator
+                                    .compute_lot_size(exch as usize, token_a as usize, lot_max_pct, lot_capital);
+                                let tri_qty = if tri_qty > Decimal::ZERO { tri_qty } else { lot_fallback };
+
                                 // Verify the loop is mathematically profitable.
                                 let tri_capital = tri_qty * ticker_a.ask_price;
                                 match signal_risk_shield.verify_triangular_loop(
@@ -1775,9 +1817,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 //
                                 // The is_buy direction for each leg is derived from the loop
                                 // structure, not hardcoded.
-                                let tri_qty = signal_allocator
-                                    .compute_lot_size(exch as usize, token_a as usize, lot_max_pct, lot_capital);
-                                let tri_qty = if tri_qty > Decimal::ZERO { tri_qty } else { lot_fallback };
+
+                                // Pre-save leg data for trade log recording (legs will be moved).
+                                let tri_leg1_sym = build_pair_symbol(&sym_a, "USDT", exch);
+                                let tri_leg2_sym = build_pair_symbol(&sym_a, &sym_b, exch);
+                                let tri_leg3_sym = build_pair_symbol(&sym_b, "USDT", exch);
+                                let tri_leg1_qty = tri_qty.clone();
+                                let tri_leg2_qty = tri_qty.clone();
+                                let tri_leg3_qty = tri_qty.clone();
+                                let tri_leg1_price = ticker_a.ask_price;
+                                let tri_leg2_price = ticker_b.bid_price;
+                                let tri_leg3_price = ticker_c.bid_price;
 
                                 // Build three OrderIntents for the triangular legs.
                                 // CRITICAL FIX #7: Use path-chained intermediate pairs.
@@ -1806,7 +1856,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let leg3 = OrderIntent {
                                     exchange_id: exch,
                                     token_id: token_c,
-                                    qty: tri_qty,
+                                    qty: tri_qty.clone(),
                                     price: ticker_c.bid_price,
                                     is_buy: false, // selling final asset for USDT
                                     symbol: build_pair_symbol(&sym_b, "USDT", exch),
@@ -1826,6 +1876,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             l2 = results[2].success,
                                             "three-leg triangular execution complete (path-chained, RiskShield-verified)"
                                         );
+                                        let _ = signal_trade_log.record_triangular(
+                                            exch,
+                                            pnl_report::TriangularLegs {
+                                                leg1_symbol: tri_leg1_sym,
+                                                leg1_quantity: tri_leg1_qty,
+                                                leg1_price: tri_leg1_price,
+                                                leg1_fee: Decimal::ZERO,
+                                                leg2_symbol: tri_leg2_sym,
+                                                leg2_quantity: tri_leg2_qty,
+                                                leg2_price: tri_leg2_price,
+                                                leg2_fee: Decimal::ZERO,
+                                                leg2_is_sell: true,
+                                                leg3_symbol: tri_leg3_sym,
+                                                leg3_quantity: tri_leg3_qty,
+                                                leg3_price: tri_leg3_price,
+                                                leg3_fee: Decimal::ZERO,
+                                            },
+                                        ).await;
+                                        let _ = signal_discord_tx.try_send(discord::DiscordMessage::text(
+                                            format!("TRIANGULAR: ex{} {}->{}->{} profit={}bps",
+                                                exch, sym_a, sym_b, sym_c, profit_bps)
+                                        ));
                                     }
                                     Err(e) => {
                                         signal_health.record_trade_error();
@@ -1964,6 +2036,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 recon_pool,
                 recon_http,
                 num_exch,
+                max_tokens,
+                &["USDT", "USDC", "DAI"],
             ).await;
         });
         println!("Position reconciliation loop: every 120s, alerts on >$50 or >5% drift");
@@ -2111,6 +2185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Abort all spawned tasks.
     // Trip the dead man's switch before aborting tasks.
     dead_mans_switch.trip(dead_mans_switch::REASON_MANUAL_KILL);
+    dms_watchdog.abort();
     signal_loop.abort();
     coin_finder_handle.abort();
     rebalancer_handle.abort();

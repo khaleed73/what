@@ -201,7 +201,7 @@ impl Exchange for BinanceClient {
                     .filter_map(|f| {
                         f["commission"]
                             .as_str()
-                            .map(|s| s.parse::<Decimal>().unwrap_or(Decimal::ZERO))
+                            .map(|s| s.parse::<Decimal>().unwrap_or(dec!(0.001)))
                     })
                     .sum()
             })
@@ -433,7 +433,7 @@ impl Exchange for BinanceClient {
         };
         let symbol = order.symbol.replace('/', "");
         let mut params = format!(
-            "symbol={}&side={}&type=LIMIT&quantity={}&price={}&timeInForce=GTC&timestamp={}",
+            "symbol={}&side={}&type=LIMIT&quantity={}&price={}&timeInForce=IOC&timestamp={}",
             symbol, side, order.quantity, price, timestamp
         );
         // Add newClientOrderId for idempotency

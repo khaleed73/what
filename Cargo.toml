@@ -5,7 +5,7 @@ edition = "2021"
 description = "High-frequency cross-exchange and triangular arbitrage bot with 14-layer risk system"
 
 [dependencies]
-tokio = { version = "1.38", features = ["full"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "fs"] }
 tokio-tungstenite = { version = "0.23", features = ["native-tls"] }
 futures-util = "0.3"
 rust_decimal = "1.35"
@@ -29,6 +29,8 @@ uuid = { version = "1", features = ["v4"] }
 dotenvy = "0.15"
 secrecy = "0.8"
 dashmap = "5"
+
+[dev-dependencies]
 rand = "0.8"
 
 [profile.release]
@@ -36,3 +38,4 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+strip = true

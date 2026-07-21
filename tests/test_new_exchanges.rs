@@ -436,10 +436,8 @@ async fn test_health_ibank() {
 #[tokio::test]
 async fn test_health_delta() {
     let c = DeltaExchange::new("Delta".into(), dummy_config("https://api.india.delta.exchange")).unwrap();
-    let r = c.health_check().await;
-    if r.is_err() {
-        println!("[Delta] health check returned error (geo-restriction expected in sandbox)");
-    }
+    let result = c.health_check().await;
+    assert!(result.is_ok(), "Delta health check failed: {:?}", result.err());
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

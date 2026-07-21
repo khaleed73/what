@@ -128,8 +128,12 @@ pub struct RawExchangeConfig {
     /// Exchange name (must match the TOML section key).
     pub name: String,
     /// API key for authenticated endpoints.
+    /// TODO: Use zeroizing SecretString for api_key and api_secret
+    /// (see `exchange::config::SecretString` for the secure wrapper already used downstream).
     pub api_key: String,
     /// API secret for request signing.
+    /// TODO: Use zeroizing SecretString for api_key and api_secret
+    /// (see `exchange::config::SecretString` for the secure wrapper already used downstream).
     pub api_secret: String,
     /// Optional passphrase (required by OKX, KuCoin, Bitget).
     #[serde(default)]
@@ -313,7 +317,9 @@ pub struct ValidatedTriangularConfig {
 pub struct ValidatedExchangeConfig {
     pub id: u16,
     pub name: String,
+    /// TODO: Use zeroizing SecretString (see `exchange::config::SecretString`).
     pub api_key: String,
+    /// TODO: Use zeroizing SecretString (see `exchange::config::SecretString`).
     pub api_secret: String,
     pub passphrase: Option<String>,
     pub wss_url: String,

@@ -82,23 +82,26 @@ impl TimestampSynchronizer {
         let offset = server_time_ms - local_ms;
 
         // M-4 fix: Use median of first few samples instead of accepting blindly.
-        let needs_median = {
+        let computed_median = {
             let mut buf = self.sample_buffer.lock().unwrap_or_else(|e| e.into_inner());
             buf.push(offset);
             if buf.len() < self.samples_required {
                 return;
             }
-            true
+            // Compute median from samples instead of using the latest single value.
+            buf.sort_unstable();
+            let mid = buf.len() / 2;
+            let median = if buf.len() % 2 == 0 {
+                (buf[mid - 1] + buf[mid]) / 2
+            } else {
+                buf[mid]
+            };
+            buf.clear();
+            median
         };
 
-        if !needs_median {
-            return;
-        }
-
-        // Clear the sample buffer once we have enough.
-        if let Ok(mut buf) = self.sample_buffer.lock() {
-            buf.clear();
-        }
+        // Use the median instead of the raw latest sample.
+        let offset = computed_median;
 
         // Guard against non-linear drift: reject if the jump from the
         // currently stored offset exceeds `max_drift_ms`.

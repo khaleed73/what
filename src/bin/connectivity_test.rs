@@ -61,7 +61,7 @@ const EXCHANGES: &[ExchangeDef] = &[
         health_path: "/api/v4/spot/time",
         symbols_path: "/api/v4/spot/currency_pairs",
         wss_url: Some("wss://api.gateio.ws/ws/v4/"),
-        wss_subscribe_msg: Some(r#"{"time":1234567890,"channel":"spot.tickers","event":"subscribe","payload":["BTC_USDT"]}"#),
+        wss_subscribe_msg: Some(r#"{"time":1735689600,"channel":"spot.tickers","event":"subscribe","payload":["BTC_USDT"]}"#),
         wss_subscribe_ack: Some(r#""event":"subscribe""#),
     },
     ExchangeDef {
@@ -79,7 +79,7 @@ const EXCHANGES: &[ExchangeDef] = &[
         health_path: "/platform/status",
         symbols_path: "/conf/pub:list:pair:exchange",
         wss_url: Some("wss://api-pub.bitfinex.com/ws/pub"),
-        wss_subscribe_msg: Some(r#"{"event":"subscribe","channel":"ticker","symbol":"tBTCUST"}"#),
+        wss_subscribe_msg: Some(r#"{"event":"subscribe","channel":"ticker","symbol":"tBTCUSD"}"#),
         wss_subscribe_ack: Some(r#""event":"subscribed""#),
     },
     ExchangeDef {
@@ -102,7 +102,7 @@ const EXCHANGES: &[ExchangeDef] = &[
     },
     ExchangeDef {
         name: "Coinbase",
-        rest_base: "https://api.pro.coinbase.com",
+        rest_base: "https://api.exchange.coinbase.com",
         health_path: "/time",
         symbols_path: "/products",
         wss_url: Some("wss://ws-feed.exchange.coinbase.com"),
