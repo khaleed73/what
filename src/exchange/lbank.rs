@@ -380,9 +380,11 @@ impl Exchange for LbankClient {
             .body(signed_body)
             .send()
             .await?;
-        // TODO: Validate exchange API response for error codes before
-        // assuming success. A 200 with an error body would cause
-        // silent order loss.
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("LBank order status query failed: {} — {}", status, &body[..body.len().min(200)]).into());
+        }
         let json: serde_json::Value = resp.json().await?;
         let order = &json["data"][0];
         let filled_qty = parse_json_decimal(&order["dealQuantity"]);
@@ -568,6 +570,7 @@ impl Exchange for LbankClient {
             exchange: self.name.clone(),
             bids,
             asks,
+            // TODO: Use exchange-provided timestamp when available for accurate cross-exchange latency
             timestamp_us: chrono::Utc::now().timestamp_millis() as u64 * 1000,
         })
     }

@@ -227,7 +227,7 @@ impl DiscordWorker {
                             // K: Sanitize error — reqwest::Error::to_string() may
                             // include the webhook URL which contains query params.
                             warn!(
-                                error = %e,
+                                status = %e.status().unwrap_or_default(),
                                 attempts = attempt,
                                 "discord notification failed after all retries"
                             );
@@ -237,7 +237,7 @@ impl DiscordWorker {
                         let jittered_ms = base_ms * (0.75 + 0.5 * rand::random::<f64>());
                         let delay = std::time::Duration::from_millis(jittered_ms as u64);
                         warn!(
-                            error = %e,
+                            status = %e.status().unwrap_or_default(),
                             attempt,
                             next_retry_ms = delay.as_millis(),
                             "discord notification error, retrying with jitter"

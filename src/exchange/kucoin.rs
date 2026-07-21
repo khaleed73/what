@@ -25,17 +25,24 @@ pub struct KucoinClient {
     config: ExchangeConfig,
     http: reqwest::Client,
     rate_limiter: RateLimiter,
+    /// Cached encrypted passphrase, computed once at construction time.
+    cached_passphrase: String,
 }
 
 impl KucoinClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
         let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
+        let cached_passphrase = sign_kucoin_passphrase(
+            config.api_secret.expose(),
+            config.passphrase_str(),
+        )?;
         Ok(Self {
             name,
             config,
             http,
             rate_limiter: RateLimiter::new(KUCOIN_RATE_LIMIT),
+            cached_passphrase,
         })
     }
 
@@ -56,12 +63,9 @@ impl KucoinClient {
         }
     }
 
-    /// Get the encrypted passphrase header value.
+    /// Get the encrypted passphrase header value (cached at construction time).
     fn encrypted_passphrase(&self) -> Result<String> {
-        sign_kucoin_passphrase(
-            self.config.api_secret.expose(),
-            self.config.passphrase_str(),
-        )
+        Ok(self.cached_passphrase.clone())
     }
 
     /// Parse a KuCoin order response from the data field.

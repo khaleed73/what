@@ -34,6 +34,8 @@ pub struct BinanceClient {
     const BINANCE_RATE_LIMIT: u64 = 20;
     /// Time sync deadline in seconds.
     const TIME_SYNC_DEADLINE_SECS: u64 = 30;
+    /// Maximum number of assets to track in seen_assets before clearing.
+    const MAX_SEEN_ASSETS: usize = 1000;
 
 impl BinanceClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
@@ -325,7 +327,11 @@ impl Exchange for BinanceClient {
         }
         // H-04: Include zero-balance entries for previously seen assets
         {
-            let seen = self.seen_assets.read().await;
+            let mut seen = self.seen_assets.write().await;
+            if seen.len() > MAX_SEEN_ASSETS {
+                tracing::info!(seen_count = seen.len(), "clearing stale seen_assets cache");
+                seen.clear();
+            }
             for asset in seen.iter() {
                 if !balances.contains_key(asset) {
                     balances.insert(asset.clone(), 0.0);
@@ -339,6 +345,7 @@ impl Exchange for BinanceClient {
     }
 
     async fn fetch_symbols(&self) -> Result<Vec<String>> {
+        self.throttle().await;
         let url = format!("{}/api/v3/exchangeInfo", self.config.base_url);
         let resp = self.http.get(&url).send().await?;
         let json: serde_json::Value = resp.json().await?;
@@ -503,6 +510,7 @@ impl Exchange for BinanceClient {
     }
 
     async fn fetch_order_book(&self, symbol: &str, depth: u32) -> Result<OrderBookSnapshot> {
+        self.throttle().await;
         let binance_symbol = symbol.replace('/', "");
         let limit = match depth {
             0..=5 => 5,
@@ -560,6 +568,7 @@ impl Exchange for BinanceClient {
             exchange: self.name.clone(),
             bids,
             asks,
+            // TODO: Use exchange-provided timestamp when available for accurate cross-exchange latency
             timestamp_us: chrono::Utc::now().timestamp_millis() as u64 * 1000,
         })
     }

@@ -213,32 +213,39 @@ impl RateLimitCircuitBreaker {
     }
 
     /// Registers an exchange with default settings.
-    pub fn register_exchange(&self, exchange_id: &str) {
+    pub fn register_exchange(&self, exchange_id: &str) -> Result<(), String> {
         self.register_exchange_with_config(
             exchange_id,
             self.default_max_weight,
             self.default_pause_threshold,
             self.default_cooldown,
-        );
+        )
     }
 
     /// Registers an exchange with custom settings.
-    /// Panics if `exchange_id` is empty.
+    /// Returns an error if parameters are invalid.
     pub fn register_exchange_with_config(
         &self,
         exchange_id: &str,
         max_weight: u64,
         pause_threshold: f64,
         cooldown: Duration,
-    ) {
-        assert!(!exchange_id.is_empty(), "exchange_id must not be empty");
-        assert!(max_weight > 0, "max_weight must be > 0");
-        assert!(pause_threshold > 0.0 && pause_threshold <= 1.0, "pause_threshold must be in (0, 1]");
+    ) -> Result<(), String> {
+        if exchange_id.is_empty() {
+            return Err("exchange_id must not be empty".to_string());
+        }
+        if max_weight == 0 {
+            return Err("max_weight must be > 0".to_string());
+        }
+        if !(pause_threshold > 0.0 && pause_threshold <= 1.0) {
+            return Err("pause_threshold must be in (0, 1]".to_string());
+        }
         let state = Arc::new(ExchangeRateState::new(max_weight, pause_threshold, cooldown));
         self.exchanges
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(exchange_id.to_lowercase(), state);
+        Ok(())
     }
 
     /// Record API weight consumption for an exchange.
@@ -317,8 +324,8 @@ mod tests {
 
     fn make_breaker() -> RateLimitCircuitBreaker {
         let cb = RateLimitCircuitBreaker::new(1000, 0.80, Duration::from_secs(30));
-        cb.register_exchange("binance");
-        cb.register_exchange_with_config("bybit", 2000, 0.75, Duration::from_secs(60));
+        cb.register_exchange("binance").unwrap();
+        cb.register_exchange_with_config("bybit", 2000, 0.75, Duration::from_secs(60)).unwrap();
         cb
     }
 

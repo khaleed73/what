@@ -14,6 +14,12 @@ use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Monotonic counter to prevent nonce collisions within the same millisecond
+/// on rapid successive OKX requests.
+static OKX_NONCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Default HTTP timeout in seconds when not configured.
     const DEFAULT_TIMEOUT_SECS: u64 = 30;
     /// OKX rate limit in requests per second.
@@ -86,11 +92,9 @@ impl OkxClient {
 
     /// Common OKX order-signing and sending logic.
     async fn send_okx_order(&self, body: serde_json::Value) -> Result<serde_json::Value> {
-        // TODO: Add monotonic counter to prevent nonce collisions within the
-        // same millisecond on rapid successive requests.
-        let timestamp = chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string();
+        let ts = chrono::Utc::now().timestamp_millis();
+        let nonce = format!("{}.{}", ts, OKX_NONCE_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let timestamp = nonce.clone();
         let body_str = serde_json::to_string(&body)?;
         let sign_str = format!("{}POST/api/v5/trade/order{}", timestamp, body_str);
         let signature =

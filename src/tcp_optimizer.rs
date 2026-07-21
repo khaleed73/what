@@ -102,9 +102,12 @@ impl TcpOptimizer {
     /// Register an exchange and pre-build its optimized HTTP client.
     ///
     /// This should be called at startup to pre-heat connections.
-    /// Panics if `exchange_id` is empty.
-    pub fn register_exchange(&mut self, exchange_id: &str, config: TcpOptimizedClientConfig) {
-        assert!(!exchange_id.is_empty(), "exchange_id must not be empty");
+    /// Returns an error if `exchange_id` is empty.
+    pub fn register_exchange(&mut self, exchange_id: &str, config: TcpOptimizedClientConfig) -> Result<(), String> {
+        if exchange_id.is_empty() {
+            tracing::error!("tcp_optimizer: register_exchange called with empty exchange_id");
+            return Err("exchange_id must not be empty".to_string());
+        }
         let client = Self::build_client(&config);
         self.clients.insert(exchange_id.to_lowercase(), Arc::new(client));
         self.configs.insert(exchange_id.to_lowercase(), config);
@@ -114,11 +117,12 @@ impl TcpOptimizer {
             pool_max_idle = self.configs[&exchange_id.to_lowercase()].pool_max_idle_per_host,
             "Optimized HTTP client created and pre-heated"
         );
+        Ok(())
     }
 
     /// Register with default config.
-    pub fn register_exchange_default(&mut self, exchange_id: &str) {
-        self.register_exchange(exchange_id, TcpOptimizedClientConfig::default());
+    pub fn register_exchange_default(&mut self, exchange_id: &str) -> Result<(), String> {
+        self.register_exchange(exchange_id, TcpOptimizedClientConfig::default())
     }
 
     /// Get the pre-built client for an exchange.
@@ -219,8 +223,8 @@ mod tests {
     #[test]
     fn test_optimizer_register_and_get() {
         let mut opt = TcpOptimizer::new();
-        opt.register_exchange_default("binance");
-        opt.register_exchange_default("bybit");
+        opt.register_exchange_default("binance").unwrap();
+        opt.register_exchange_default("bybit").unwrap();
 
         assert_eq!(opt.exchange_count(), 2);
         let _r1 = opt.get_client("binance").unwrap().post("https://test.com").timeout(std::time::Duration::from_secs(5));
@@ -230,7 +234,7 @@ mod tests {
     #[test]
     fn test_get_config() {
         let mut opt = TcpOptimizer::new();
-        opt.register_exchange("binance", TcpOptimizedClientConfig::low_latency());
+        opt.register_exchange("binance", TcpOptimizedClientConfig::low_latency()).unwrap();
         let config = opt.get_config("binance").unwrap();
         assert_eq!(config.pool_max_idle_per_host, 16);
     }

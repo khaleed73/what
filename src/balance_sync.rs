@@ -44,7 +44,9 @@ async fn sync_exchange_balance(
     let tracked = allocator.get_balance_atomic(exchange_id as usize, token_id);
     if tracked > Decimal::ZERO {
         let abs_diff = (balance - tracked).abs();
-        let drift_pct = abs_diff / tracked;
+        // Avoid division by near-zero balances that produce false positive drift alerts.
+        let effective_tracked = tracked.max(dec!(1.0)); // $1 minimum denominator
+        let drift_pct = abs_diff / effective_tracked;
         if drift_pct > Decimal::new(5, 2) {
             tracing::error!(
                 exchange_id,

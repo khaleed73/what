@@ -93,6 +93,44 @@ impl ExchangeConfig {
         }
         Ok(())
     }
+
+    /// Strict constructor that returns `Err` on validation failure.
+    ///
+    /// Unlike `new()` which logs and returns the invalid config, this method
+    /// prevents construction of configs that would fail in production.
+    pub fn new_strict(
+        api_key: &str,
+        api_secret: &str,
+        base_url: &str,
+    ) -> Result<Self, String> {
+        let cfg = Self {
+            api_key: SecretString::new(api_key),
+            api_secret: SecretString::new(api_secret),
+            base_url: base_url.to_owned(),
+            passphrase: None,
+            http_timeout_secs: None,
+        };
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Strict constructor with passphrase that returns `Err` on validation failure.
+    pub fn with_passphrase_strict(
+        api_key: &str,
+        api_secret: &str,
+        base_url: &str,
+        passphrase: &str,
+    ) -> Result<Self, String> {
+        let cfg = Self {
+            api_key: SecretString::new(api_key),
+            api_secret: SecretString::new(api_secret),
+            base_url: base_url.to_owned(),
+            passphrase: Some(SecretString::new(passphrase)),
+            http_timeout_secs: None,
+        };
+        cfg.validate()?;
+        Ok(cfg)
+    }
 }
 
 // ---------------------------------------------------------------------------

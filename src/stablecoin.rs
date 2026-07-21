@@ -192,6 +192,16 @@ impl StablecoinMonitor {
         state.usdc_held = usdc;
         state.dai_held = dai;
         state.total_capital = total;
+
+        // Sanity check: if total stablecoin holdings exceed 2× total capital,
+        // something is likely wrong with the input data.
+        let total_stable = usdt + usdc + dai;
+        if total_stable > total * Decimal::from(2) {
+            tracing::warn!(
+                total_stable = %total_stable, total_capital = %total,
+                "stablecoin holdings exceed 2x total capital — possible data error"
+            );
+        }
     }
 
     /// Returns `true` when a depeg event is currently active.

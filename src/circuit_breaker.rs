@@ -145,6 +145,11 @@ impl EngineCircuitBreaker {
             if matches!(reason, REASON_NETWORK_PARTITION | REASON_CLOCK_DRIFT)
                 && now.saturating_sub(ts) > TRANSIENT_COOLDOWN_MS
             {
+                if reason == REASON_CLOCK_DRIFT {
+                    tracing::warn!(
+                        "circuit breaker auto-recovering from CLOCK_DRIFT — note: clock stability not re-verified"
+                    );
+                }
                 self.reset();
                 tracing::info!(
                     reason_code = reason,

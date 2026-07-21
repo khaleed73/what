@@ -111,11 +111,12 @@ impl PayloadBuffer {
     pub fn as_str(&self) -> &str {
         // SAFETY: Single-threaded by design (see `len()`).
         // All callers write only ASCII param strings, which are valid UTF-8.
+        // Falls back to a safe placeholder instead of panicking on invalid data.
         unsafe {
             let ptr = (*self.data.get()).as_ptr() as *const u8;
             let slice = std::slice::from_raw_parts(ptr, self.len());
             std::str::from_utf8(slice)
-                .expect("PayloadArena data is guaranteed ASCII by construction")
+                .unwrap_or("[invalid payload]")
         }
     }
 
@@ -170,14 +171,33 @@ impl PreSignedPayloadArena {
 
     /// Gets the next available buffer (round-robin).
     ///
-    /// The caller should call `clear()` before reusing.
+    /// Enforces `max_capacity` — returns `None` if the arena is fully
+    /// in-use and cannot accept another allocation.
+    ///
+    /// The caller should call `release()` when done with the buffer.
     #[inline]
-    pub fn acquire(&self) -> &PayloadBuffer {
+    pub fn acquire(&self) -> Option<&PayloadBuffer> {
+        let current = self.total_allocated.get();
+        if current.saturating_add(PAYLOAD_BUFFER_SIZE) > self.max_capacity {
+            tracing::warn!(
+                current_allocated = current,
+                max_capacity = self.max_capacity,
+                "payload arena at capacity — acquire refused"
+            );
+            return None;
+        }
+        self.total_allocated.set(current + PAYLOAD_BUFFER_SIZE);
         let idx = self.next_index.get();
         let buf = &self.buffers[idx % self.buffers.len()];
         self.next_index.set(idx + 1);
         buf.clear();
-        buf
+        Some(buf)
+    }
+
+    /// Release a buffer back to the arena, decrementing the allocation counter.
+    #[inline]
+    pub fn release(&self) {
+        self.total_allocated.set(self.total_allocated.get().saturating_sub(PAYLOAD_BUFFER_SIZE));
     }
 
     /// Returns the total number of buffers in the arena.
@@ -243,10 +263,12 @@ mod tests {
     #[test]
     fn test_arena_acquire_round_robin() {
         let arena = PreSignedPayloadArena::new(3);
-        let b0 = arena.acquire();
-        let b1 = arena.acquire();
-        let b2 = arena.acquire();
-        let b3 = arena.acquire(); // wraps to 0
+        let b0 = arena.acquire().unwrap();
+        let b1 = arena.acquire().unwrap();
+        let b2 = arena.acquire().unwrap();
+        // Release b0 so the arena has space for another acquire.
+        arena.release();
+        let b3 = arena.acquire().unwrap(); // wraps to 0
 
         // Verify they're different buffers by writing different data.
         b0.append_str("ZERO");
@@ -255,8 +277,18 @@ mod tests {
         assert_eq!(b0.as_str(), "ZERO");
         assert_eq!(b1.as_str(), "ONE");
         assert_eq!(b2.as_str(), "TWO");
-        // b3 is the same buffer as b0, which now has "ZERO".
-        assert_eq!(b3.as_str(), "ZERO");
+        // b3 is the same buffer as b0, which was cleared on acquire.
+        assert_eq!(b3.as_str(), "");
+    }
+
+    #[test]
+    fn test_arena_capacity_enforced() {
+        // Arena with 2 buffers = max_capacity of 2 * 1024.
+        let arena = PreSignedPayloadArena::new(2);
+        let _b0 = arena.acquire().unwrap();
+        let _b1 = arena.acquire().unwrap();
+        // Third acquire should fail — all capacity in use.
+        assert!(arena.acquire().is_none());
     }
 
     #[test]

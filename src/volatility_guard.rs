@@ -13,7 +13,6 @@
 //! Only `spread_ceiling_bps`, `rejection_count`, and `ema_period` are
 //! truly lock-free via `AtomicU64`.
 
-use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,28 +23,6 @@ const DEFAULT_SPREAD_CEILING_BPS: u64 = 80;
 /// Upper bound for a reasonable spread in basis points (1 trillion bps).
 /// Values above this are considered nonsensical and rejected.
 const MAX_REASONABLE_SPREAD_BPS: u64 = 1_000_000_000_000;
-
-/// Stores a Decimal as fixed-point u64 with 9 decimal places.
-#[inline]
-fn decimal_to_fp(d: Decimal) -> u64 {
-    match (d * Decimal::from(1_000_000_000u64)).to_u64() {
-        Some(fp) if fp > 0 => fp,
-        Some(_) => {
-            tracing::warn!(value = %d, "volatility_guard decimal_to_fp: zero or negative result, returning 0");
-            0
-        }
-        None => {
-            tracing::error!(value = %d, "volatility_guard decimal_to_fp: overflow — returning MAX sentinel");
-            u64::MAX
-        }
-    }
-}
-
-/// Converts a fixed-point u64 back to a Decimal.
-#[inline]
-fn fp_to_decimal(fp: u64) -> Decimal {
-    Decimal::from(fp) / Decimal::from(1_000_000_000u64)
-}
 
 /// Volatility guard that rejects trades when the bid-ask spread
 /// is too wide.

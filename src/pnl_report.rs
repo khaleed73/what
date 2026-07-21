@@ -144,6 +144,12 @@ impl TradeLog {
         {
             let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             records.push(record.clone());
+            // Trim oldest records if exceeding max capacity
+            const MAX_RECORDS: usize = 50_000;
+            if records.len() > MAX_RECORDS {
+                let drain_count = records.len() - MAX_RECORDS;
+                records.drain(0..drain_count);
+            }
         }
 
         // Append to JSONL file.
@@ -221,14 +227,22 @@ impl TradeLog {
 
         {
             let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
-            if let Err(e) = self.append_to_file(&buy_record) {
-                error!(file = %self.file_path, error = %e, "Failed to append buy leg to JSONL");
-            }
-            if let Err(e) = self.append_to_file(&sell_record) {
-                error!(file = %self.file_path, error = %e, "Failed to append sell leg to JSONL");
-            }
             records.push(buy_record);
             records.push(sell_record);
+            // Trim oldest records if exceeding max capacity
+            const MAX_RECORDS: usize = 50_000;
+            if records.len() > MAX_RECORDS {
+                let drain_count = records.len() - MAX_RECORDS;
+                records.drain(0..drain_count);
+            }
+        }
+        // File I/O performed AFTER dropping the Mutex lock to avoid
+        // holding the lock across synchronous disk writes.
+        if let Err(e) = self.append_to_file(&buy_record) {
+            error!(file = %self.file_path, error = %e, "Failed to append buy leg to JSONL");
+        }
+        if let Err(e) = self.append_to_file(&sell_record) {
+            error!(file = %self.file_path, error = %e, "Failed to append sell leg to JSONL");
         }
 
         info!(
@@ -340,10 +354,20 @@ impl TradeLog {
         {
             let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             for rec in [&record1, &record2, &record3] {
-                if let Err(e) = self.append_to_file(rec) {
-                    error!(file = %self.file_path, error = %e, "Failed to append triangular leg to JSONL");
-                }
                 records.push(rec.clone());
+            }
+            // Trim oldest records if exceeding max capacity
+            const MAX_RECORDS: usize = 50_000;
+            if records.len() > MAX_RECORDS {
+                let drain_count = records.len() - MAX_RECORDS;
+                records.drain(0..drain_count);
+            }
+        }
+        // File I/O performed AFTER dropping the Mutex lock to avoid
+        // holding the lock across synchronous disk writes.
+        for rec in [&record1, &record2, &record3] {
+            if let Err(e) = self.append_to_file(rec) {
+                error!(file = %self.file_path, error = %e, "Failed to append triangular leg to JSONL");
             }
         }
 
@@ -447,26 +471,15 @@ impl TradeLog {
         }
     }
 
-    /// Print a formatted terminal summary table of P&L stats.
+    /// Print a formatted P&L summary using structured logging.
     pub async fn print_summary(&self) {
         let report = self.generate_report().await;
 
-        println!();
-        println!("╔══════════════════════════════════════════════════════════════════╗");
-        println!("║                    P&L REPORT SUMMARY                           ║");
-        println!("╠══════════════════════════════════════════════════════════════════╣");
-        println!("║  Total Trades:  {:>10}                                        ║", report.trades.len());
-        println!("║  Total Volume:  {:>10} USD                                     ║", report.total_volume.round_dp(2));
-        println!("║  Total Fees:    {:>10} USD                                     ║", report.total_fees.round_dp(4));
-        println!("╠══════════════════════════════════════════════════════════════════╣");
+        info!(total_trades = report.trades.len(), total_volume_usd = %report.total_volume.round_dp(2),
+            total_fees_usd = %report.total_fees.round_dp(4), "P&L REPORT SUMMARY");
 
-        let pnl_color = if report.total_pnl >= Decimal::ZERO {
-            "+"
-        } else {
-            ""
-        };
-        println!("║  NET P&L:       {:>10} USD  ({})                            ║",
-            report.total_pnl.round_dp(4), pnl_color);
+        let pnl_sign = if report.total_pnl >= Decimal::ZERO { "+" } else { "" };
+        info!(net_pnl_usd = %report.total_pnl.round_dp(4), sign = pnl_sign, "NET P&L");
 
         // M-12: Zero-division guard — win_rate denominator checked before division.
         let win_rate = if report.win_count + report.loss_count > 0 {
@@ -476,25 +489,16 @@ impl TradeLog {
         } else {
             Decimal::ZERO
         };
-        println!("║  Win Rate:      {:>9.2} %                                        ║", win_rate);
-        println!("║  Wins / Losses: {:>4} / {:<4}                                       ║",
-            report.win_count, report.loss_count);
-        println!("╠══════════════════════════════════════════════════════════════════╣");
-        println!("║  DAILY P&L BREAKDOWN                                           ║");
-        println!("╠══════════════════════════════════════════════════════════════════╣");
+        info!(win_rate_pct = %win_rate.round_dp(2), wins = report.win_count, losses = report.loss_count, "Win Rate");
 
         if report.daily_pnl.is_empty() {
-            println!("║  (no trades recorded yet)                                      ║");
+            info!("(no trades recorded yet)");
         } else {
             for (date, pnl) in &report.daily_pnl {
                 let marker = if *pnl >= Decimal::ZERO { "+" } else { "" };
-                println!("║  {}  {:>12.4} USD ({})                        ║",
-                    date, pnl, marker);
+                info!(date = %date, pnl_usd = %pnl.round_dp(4), sign = marker, "Daily P&L");
             }
         }
-
-        println!("╚══════════════════════════════════════════════════════════════════╝");
-        println!();
     }
 
     /// Export all trades to a CSV file at the given path.

@@ -203,7 +203,7 @@ impl SharedMemoryArena {
                 slot, self.capacity
             ));
         }
-        let seq = self.global_seq.fetch_add(1, Ordering::Relaxed);
+        let seq = self.global_seq.fetch_add(1, Ordering::Release);
         let ts = chrono::Utc::now().timestamp_millis() as u64;
         self.frames[slot].write(seq, symbol, best_bid, best_ask, ts);
         Ok(())

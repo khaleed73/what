@@ -141,9 +141,14 @@ fn detect_paper_mode(config: &EngineConfig) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Install a simple tracing subscriber so all modules can emit logs.
+    // Install a tracing subscriber.  Default to INFO in production; override
+    // with the RUST_LOG env var (e.g. RUST_LOG=debug).
+    let log_level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|l| l.parse::<tracing::Level>().ok())
+        .unwrap_or(tracing::Level::INFO);
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(log_level)
         .init();
 
     println!("=== INITIALIZING HIGH-FREQUENCY TRADING ENGINES ===");
@@ -152,6 +157,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Pin core computations to CPU Core 0
     // ------------------------------------------------------------------
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
+    // NOTE: Only the main thread is pinned here. Tokio worker threads are NOT pinned.
+    // For full HFT latency optimization, use the cpu_pinning module to spawn
+    // dedicated pinned threads for hot-path work.
     if let Some(core_id) = core_ids.first() {
         core_affinity::set_for_current(*core_id);
         println!("CPU core pinned to physical core {:?}", core_id);
@@ -162,7 +170,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 2. Load and validate configuration
     // ------------------------------------------------------------------
-    let config = EngineConfig::load_and_validate("config.toml")?;
+    let config_path = std::env::var("HFT_CONFIG")
+        .unwrap_or_else(|_| "config.toml".to_string());
+    let config = EngineConfig::load_and_validate(&config_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load config from '{}': {}", config_path, e))?;
     println!("Configuration loaded: {} exchange(s) configured", config.exchanges.len());
 
     // ------------------------------------------------------------------
@@ -800,7 +811,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("  To force paper mode: set force_live_mode = false in config.");
         eprintln!("==============================================================");
         eprintln!();
-        std::process::exit(1);
+        return Err(anyhow::anyhow!(
+            "Exchange client initialization failed in LIVE mode: {}",
+            live_init_failures.iter().map(|(id, name, err)| format!("{} ({}): {}", name, id, err)).collect::<Vec<_>>().join("; ")
+        ).into());
     }
 
     // ------------------------------------------------------------------
@@ -834,7 +848,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("  FIX: Check network, API keys, and exchange status.");
             eprintln!("==============================================================");
             eprintln!();
-            std::process::exit(1);
+            return Err(anyhow::anyhow!(
+                "All exchange balance queries FAILED in LIVE mode — cannot safely trade without knowing real balances"
+            ).into());
         }
     } else {
         DEFAULT_PAPER_CAPITAL
@@ -1053,7 +1069,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 10. Start the Async Persistence Worker
     // ------------------------------------------------------------------
-    let (disk_worker, state_tx) = AsyncPersistenceWorker::new("state.json", 50);
+    let state_path = std::env::var("HFT_STATE_FILE").unwrap_or_else(|_| "state.json".to_string());
+    let (disk_worker, state_tx) = AsyncPersistenceWorker::new(&state_path, 50);
     let disk_handle = tokio::spawn(async move {
         disk_worker.run_disk_writer_loop().await;
     });
@@ -1158,17 +1175,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (id, name, maker, taker) in &summary {
                 println!("  {} (ID {}): maker={} bps, taker={} bps", name, id, maker, taker);
             }
-            fm.refresh_periodically(30).await;
+            fm.refresh_periodically(30);
         });
     }
 
     // ------------------------------------------------------------------
     // 12d. Trade Log & P&L Reporting
     // ------------------------------------------------------------------
-    let trade_log = Arc::new(TradeLog::new("trade_log.jsonl".to_string()));
+    let trade_log_path = std::env::var("HFT_TRADE_LOG").unwrap_or_else(|_| "trade_log.jsonl".to_string());
+    let trade_log = Arc::new(TradeLog::new(trade_log_path.clone()));
     trade_log.load_existing().await;
     let existing_count = trade_log.records.lock().unwrap_or_else(|e| e.into_inner()).len();
-    println!("Trade log initialized — {} existing trades loaded from trade_log.jsonl", existing_count);
+    println!("Trade log initialized — {} existing trades loaded from {}", existing_count, trade_log_path);
     start_daily_pnl_printer(Arc::clone(&trade_log));
 
     // ------------------------------------------------------------------
@@ -1308,17 +1326,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     // 12. Spawn the Prometheus metrics server (port 9090)
     // ------------------------------------------------------------------
-    {
-        let metrics_state = Arc::new(metrics::MetricsState {
-            health: Arc::clone(&health),
-            risk: Arc::clone(&risk_manager),
-            execution: Some(Arc::clone(&engine)),
-        });
-        let metrics_config = metrics::MetricsConfig::default();
-        let (_metrics_handle, _metrics_shutdown) =
-            metrics::spawn_metrics_server(metrics_config, metrics_state);
-        println!("Prometheus metrics endpoint: http://0.0.0.0:9090/metrics");
-    }
+    let metrics_state = Arc::new(metrics::MetricsState {
+        health: Arc::clone(&health),
+        risk: Arc::clone(&risk_manager),
+        execution: Some(Arc::clone(&engine)),
+    });
+    let metrics_config = metrics::MetricsConfig::default();
+    let (_metrics_handle, _metrics_shutdown) =
+        metrics::spawn_metrics_server(metrics_config, metrics_state);
+    println!("Prometheus metrics endpoint: http://0.0.0.0:9090/metrics");
+    // NOTE: _metrics_shutdown is intentionally kept alive (not dropped) so
+    // the metrics server stays running for the entire lifetime of main().
+    let _ = &_metrics_shutdown;
 
     let signal_arena = Arc::clone(&arena);
     let signal_engine = Arc::clone(&engine);
@@ -1507,12 +1526,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the WS feed callback with the exact (exchange, token) that
             // changed.  Here we sweep all exchanges periodically
             // using the coin finder's dynamically-discovered token list.
+            let active_tokens_snapshot = signal_arena.active_tokens.try_lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
             for exch_id in 0..num_exch {
-                let tokens = match signal_arena.active_tokens.try_lock() {
-                    Ok(guard) => guard.clone(),
-                    Err(_) => continue,
-                };
-                for &token_id in &tokens {
+                for &token_id in &active_tokens_snapshot {
                     let signals = signal_arena.evaluate_tick(
                         exch_id,
                         token_id as usize,
@@ -1645,6 +1663,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             Arc::clone(&signal_engine.real_pipeline)
                                         };
                                         async move {
+                                            let exec_start = std::time::Instant::now();
                                             match pipeline.execute_order(&intent).await {
                                                 Ok(res) => cross_exchange_executor::LegResult {
                                                     exchange_name: order.exchange_name,
@@ -1654,7 +1673,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     filled_quantity: res.filled_qty,
                                                     filled_price: res.avg_price,
                                                     error_message: res.error,
-                                                    execution_time_us: 0,
+                                                    execution_time_us: exec_start.elapsed().as_micros() as u64,
                                                 },
                                                 Err(e) => cross_exchange_executor::LegResult {
                                                     exchange_name: order.exchange_name,
@@ -1664,7 +1683,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     filled_quantity: Decimal::ZERO,
                                                     filled_price: Decimal::ZERO,
                                                     error_message: Some(e),
-                                                    execution_time_us: 0,
+                                                    execution_time_us: exec_start.elapsed().as_micros() as u64,
                                                 },
                                             }
                                         }

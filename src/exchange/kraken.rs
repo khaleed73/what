@@ -619,6 +619,7 @@ impl Exchange for KrakenClient {
             exchange: self.name.clone(),
             bids,
             asks,
+            // TODO: Use exchange-provided timestamp when available for accurate cross-exchange latency
             timestamp_us: chrono::Utc::now().timestamp_millis() as u64 * 1000,
         })
     }

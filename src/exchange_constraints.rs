@@ -62,7 +62,7 @@ impl ExchangeConstraints {
             return price;
         }
         let ticks = (price / self.price_tick_size).floor();
-        (ticks * self.price_tick_size).max(self.price_tick_size)
+        (ticks * self.price_tick_size).max(Decimal::ZERO)
     }
 
     /// Rounds a price UP to the nearest valid tick for SELL orders.

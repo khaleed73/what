@@ -156,15 +156,15 @@ impl DeribitExchange {
             .to_string();
         // BITMEX/DERIBIT_EXPIRES_SECS: 1-hour default fallback (seconds).
         const DEFAULT_EXPIRES_SECS: u64 = 3600;
-        let expires_in_ms = json["result"]["expires_in"]
+        let expires_in_secs = json["result"]["expires_in"]
             .as_u64()
             .unwrap_or(DEFAULT_EXPIRES_SECS);
         let now_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
-        // D FIX: use saturating_mul to prevent overflow when expires_in_ms is large.
-        let expires_at_us = now_us.saturating_add(expires_in_ms.saturating_mul(1000));
+        // D FIX: use saturating_mul to prevent overflow when expires_in_secs is large.
+        let expires_at_us = now_us.saturating_add(expires_in_secs.saturating_mul(1_000));
 
         // Cache it with expiry
         {
@@ -682,6 +682,7 @@ impl Exchange for DeribitExchange {
             exchange: self.name.clone(),
             bids,
             asks,
+            // TODO: Use exchange-provided timestamp when available for accurate cross-exchange latency
             timestamp_us: chrono::Utc::now().timestamp_millis() as u64 * 1000,
         })
     }

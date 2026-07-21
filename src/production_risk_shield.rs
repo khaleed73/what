@@ -75,24 +75,38 @@ impl FastOrderBook {
     }
 
     /// Set ask levels from Decimal arrays.
-    /// Layers that overflow the fixed-point representation are skipped.
+    /// Layers that overflow the fixed-point representation are skipped with a log.
     pub fn set_asks(&mut self, prices: &[Decimal], quantities: &[Decimal]) {
         for i in 0..MATRIX_BOOK_DEPTH {
             if i < prices.len() && i < quantities.len() {
                 if let Some(layer) = OrderBookLayer::from_decimal(prices[i], quantities[i]) {
                     self.asks[i] = layer;
+                } else {
+                    tracing::debug!(
+                        level = i,
+                        price = %prices[i],
+                        qty = %quantities[i],
+                        "ask level skipped: fixed-point overflow (price too high for u64 * 1e9)"
+                    );
                 }
             }
         }
     }
 
     /// Set bid levels from Decimal arrays.
-    /// Layers that overflow the fixed-point representation are skipped.
+    /// Layers that overflow the fixed-point representation are skipped with a log.
     pub fn set_bids(&mut self, prices: &[Decimal], quantities: &[Decimal]) {
         for i in 0..MATRIX_BOOK_DEPTH {
             if i < prices.len() && i < quantities.len() {
                 if let Some(layer) = OrderBookLayer::from_decimal(prices[i], quantities[i]) {
                     self.bids[i] = layer;
+                } else {
+                    tracing::debug!(
+                        level = i,
+                        price = %prices[i],
+                        qty = %quantities[i],
+                        "bid level skipped: fixed-point overflow (price too high for u64 * 1e9)"
+                    );
                 }
             }
         }

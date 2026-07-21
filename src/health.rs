@@ -106,13 +106,19 @@ impl HealthMonitor {
     /// * `exchange_id` — Numeric exchange identifier (e.g. 1 = Binance, 2 = Bybit).
     pub fn record_feed_update(&self, exchange_id: u16) {
         let now_ms = Self::now_ms() as i64;
-        // TODO: Consider migrating to DashMap to avoid the write lock on every
-        // feed update. The lock is only needed for the first registration of a
-        // new exchange_id; subsequent updates could be lock-free.
+        // Fast path: read lock to check if exchange already registered.
+        {
+            let map = self.last_feed_update.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = map.get(&exchange_id) {
+                entry.store(now_ms, Ordering::Release);
+                return;
+            }
+        }
+        // Slow path: write lock only when inserting a new exchange entry.
         let mut map = self.last_feed_update.write().unwrap_or_else(|e| e.into_inner());
         map.entry(exchange_id)
             .or_insert_with(|| AtomicI64::new(now_ms))
-            .store(now_ms, Ordering::Relaxed);
+            .store(now_ms, Ordering::Release);
     }
 
     /// Returns `true` if the given exchange's data feed has been seen

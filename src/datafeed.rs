@@ -349,13 +349,14 @@ impl LowLatencyWsListener {
                         tracing::error!(
                             exchange_id = ex,
                             consecutive_failures,
-                            "WS connect failed {} times in a row — giving up, CRITICAL: feed worker exiting permanently, invalidating arena",
+                            "WS connect failed {} times in a row — resetting counter and applying 60s cooldown before retry",
                             MAX_CONSECUTIVE_FAILURES
                         );
+                        consecutive_failures = 0;
                         self.arena.invalidate_exchange(ex as usize);
-                        return;
+                        sleep(Duration::from_secs(60)).await;
+                        continue;
                     }
-                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
                     self.arena.invalidate_exchange(ex as usize);
                     let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS) as f64;
@@ -377,13 +378,14 @@ impl LowLatencyWsListener {
                         tracing::error!(
                             exchange_id = ex,
                             consecutive_failures,
-                            "WS connect failed {} times in a row — giving up, CRITICAL: feed worker exiting permanently, invalidating arena",
+                            "WS connect failed {} times in a row — resetting counter and applying 60s cooldown before retry",
                             MAX_CONSECUTIVE_FAILURES
                         );
+                        consecutive_failures = 0;
                         self.arena.invalidate_exchange(ex as usize);
-                        return;
+                        sleep(Duration::from_secs(60)).await;
+                        continue;
                     }
-                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
                     self.arena.invalidate_exchange(ex as usize);
                     let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS) as f64;

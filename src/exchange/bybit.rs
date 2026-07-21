@@ -23,6 +23,8 @@ pub struct BybitClient {
     config: ExchangeConfig,
     http: reqwest::Client,
     rate_limiter: RateLimiter,
+    /// Cached receive-window value (milliseconds), read once from env at construction.
+    recv_window_ms: u64,
 }
 
     /// Default HTTP timeout in seconds when not configured.
@@ -50,11 +52,16 @@ impl BybitClient {
         config.base_url = base_url;
         let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let http = build_http_client(timeout_secs)?;
+        let recv_window_ms: u64 = std::env::var("BYBIT_RECV_WINDOW")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
         Ok(Self {
             name,
             config,
             http,
             rate_limiter: RateLimiter::new(BYBIT_RATE_LIMIT),
+            recv_window_ms,
         })
     }
 
@@ -123,13 +130,8 @@ impl Exchange for BybitClient {
             }
             ("Market", b)
         };
- // BYBIT_DEFAULT_RECV_WINDOW_MS: configurable via BYBIT_RECV_WINDOW env var (default 5000ms).
-        const BYBIT_DEFAULT_RECV_WINDOW_MS: u64 = 5000;
         let body_str = serde_json::to_string(&body)?;
-
-        // M97 FIX: configurable recvWindow (default 5000ms)
-        let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
+        let recv_window = self.recv_window_ms;
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
@@ -205,9 +207,7 @@ impl Exchange for BybitClient {
             "orderId": order_id
         });
         let body_str = serde_json::to_string(&body)?;
-        // BYBIT_DEFAULT_RECV_WINDOW_MS: configurable via BYBIT_RECV_WINDOW env var (default 5000ms).
-        let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
+        let recv_window = self.recv_window_ms;
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
@@ -259,8 +259,7 @@ impl Exchange for BybitClient {
         let timestamp = chrono::Utc::now().timestamp_millis();
         self.throttle().await;
         let query_string = "accountType=UNIFIED";
-        let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
+        let recv_window = self.recv_window_ms;
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
@@ -350,8 +349,7 @@ impl Exchange for BybitClient {
             symbol.replace('/', ""),
             order_id
         );
-        let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-            .ok().and_then(|s| s.parse().ok()).unwrap_or(BYBIT_DEFAULT_RECV_WINDOW_MS);
+        let recv_window = self.recv_window_ms;
         let sign_str = format!(
             "{}{}{}{}",
             timestamp,
@@ -425,8 +423,7 @@ impl Exchange for BybitClient {
                     continue;
                 }
             };
-            let recv_window = std::env::var("BYBIT_RECV_WINDOW")
-                .ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
+            let recv_window = self.recv_window_ms;
             let sign_str = format!(
                 "{}{}{}{}",
                 timestamp,

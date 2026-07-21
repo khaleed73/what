@@ -14,7 +14,7 @@
 //!     rest_urls,            // HashMap<u16, String>
 //! ));
 //! fee_mgr.fetch_all_fees().await;
-//! fee_mgr.refresh_periodically(fee_mgr.clone(), 30).await;
+//! fee_mgr.refresh_periodically(30);
 //! ```
 //!
 //! # L-6 Known Limitation: Fee Consistency Across Trade Legs
@@ -229,7 +229,9 @@ impl DynamicFeeManager {
 
     /// Spawn a background task that refreshes all fee schedules every
     /// `interval_secs` seconds.
-    pub async fn refresh_periodically(self: Arc<Self>, interval_secs: u64) {
+    ///
+    /// Returns the `JoinHandle` so the caller can track or abort the task.
+    pub fn refresh_periodically(self: Arc<Self>, interval_secs: u64) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
             loop {
@@ -237,7 +239,7 @@ impl DynamicFeeManager {
                 info!("Periodic fee refresh triggered (every {}s)", interval_secs);
                 self.fetch_all_fees().await;
             }
-        });
+        })
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -531,11 +533,12 @@ impl DynamicFeeManager {
     /// Perform an unsigned GET request and parse the JSON body.
     /// Returns `None` on any error (network, parsing, non-2xx).
     async fn unsigned_get_json(&self, url: &str) -> Option<serde_json::Value> {
-        let resp = self.http_client.get(url).send().await.ok()?;
+        let resp = self.http_client.get(url).timeout(std::time::Duration::from_secs(10)).send().await.ok()?;
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            warn!(url, %status, body_preview = &body[..body.len().min(200)], "Non-success response fetching fees");
+            let preview = String::from_utf8_lossy(&body.as_bytes()[..body.len().min(200)]);
+            warn!(url, %status, body_preview = %preview, "Non-success response fetching fees");
             return None;
         }
         resp.json().await.ok()
