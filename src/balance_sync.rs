@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use tracing::{error, info};
 
 use crate::balance_allocator::LocalCapitalAllocator;

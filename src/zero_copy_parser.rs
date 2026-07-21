@@ -223,9 +223,9 @@ fn extract_number_value(text: &str, key: &str) -> Option<f64> {
     // scientific notation. The '-' sign is only accepted at the first position.
     let mut num_str = String::new();
     for (i, c) in after_ws.chars().enumerate() {
-        if i == 0 && c == '-' {
-            num_str.push(c);
-        } else if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' {
+        let is_number_char = c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+'
+            || (c == '-' && i == 0);
+        if is_number_char {
             num_str.push(c);
         } else {
             break;

@@ -324,7 +324,7 @@ mod tests {
         hm.record_ws_reconnect();
 
         let stats = hm.get_stats();
-        assert!(stats.uptime_secs >= 0);
+        assert!(stats.uptime_secs < 2);
         assert_eq!(stats.total_signals, 1);
         assert_eq!(stats.total_trades, 1);
         assert_eq!(stats.total_errors, 1);

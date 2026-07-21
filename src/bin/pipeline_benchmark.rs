@@ -3,6 +3,7 @@
 //! ═══════════════════════════════════════════════════════════════════════════════
 //!
 //! Measures MICROSECOND-LEVEL latency for each pipeline stage:
+#![allow(clippy::needless_range_loop)]
 
 #![allow(dead_code)]
 //!
@@ -154,7 +155,7 @@ fn create_exchange_client(meta: &ExchangeMeta) -> anyhow::Result<Box<dyn Exchang
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     println!("\n{}", "═".repeat(78));

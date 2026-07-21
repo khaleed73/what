@@ -66,6 +66,12 @@ impl ExchangeFeeSchedule {
         let fee = self.taker_fees.get(exchange_id).copied().unwrap_or(DEFAULT_TAKER_FEE_BPS);
         fee.saturating_mul(3)
     }
+
+    /// Return the single-leg taker fee for a specific exchange, in basis points.
+    #[inline(always)]
+    pub fn get_taker(&self, exchange_id: usize) -> u64 {
+        self.taker_fees.get(exchange_id).copied().unwrap_or(DEFAULT_TAKER_FEE_BPS)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,14 +1068,10 @@ mod tests {
                   * Decimal::from(bid_c) / Decimal::from(ask_c);
         let profit_bps_dec = ((ratio - Decimal::ONE) * Decimal::from(BPS_SCALE))
             .floor().to_u64().unwrap_or(0);
-        let profit_bps_fp = if step3 > BPS_SCALE { step3 - BPS_SCALE } else { 0 };
+        let profit_bps_fp = step3.saturating_sub(BPS_SCALE);
 
         // FP should be within 2 bps of Decimal (truncation error from 3 divisions).
-        let diff = if profit_bps_fp > profit_bps_dec {
-            profit_bps_fp - profit_bps_dec
-        } else {
-            profit_bps_dec - profit_bps_fp
-        };
+        let diff = profit_bps_fp.abs_diff(profit_bps_dec);
         assert!(diff <= 3,
             "FP triangular profit ({}) must be within 3 bps of Decimal ({}). \
              3 integer divisions can introduce up to 3 bps truncation.",

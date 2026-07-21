@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

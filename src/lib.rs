@@ -4,6 +4,10 @@
 //! benchmark binaries, and the E2E pipeline test). This is the **library**
 //! crate; the binary target lives in `src/main.rs`.
 
+// Library crate: allow dead code since many items are public API for
+// integration tests and future use, not all consumed by the bin target.
+#![allow(dead_code)]
+
 pub mod exchange;
 pub mod strategies;
 pub mod protections;

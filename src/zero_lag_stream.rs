@@ -419,7 +419,7 @@ mod tests {
         };
         let mgr = ZeroLagStreamManager::new(config);
 
-        let d0 = mgr.next_reconnect_delay(0); // ~250ms
+        let _d0 = mgr.next_reconnect_delay(0); // ~250ms
         let d5 = mgr.next_reconnect_delay(5); // Should be capped at ~1000ms
 
         assert!(d5.as_millis() <= 1500); // Allow some jitter above cap

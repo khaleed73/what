@@ -5,6 +5,12 @@
 //! configuration, wires every subsystem together, and either starts live
 //! WebSocket feeds or runs the built-in integration smoke-test.
 
+// Bin target: allow dead code for library items not yet wired into the
+// signal loop.  The lib crate (`lib.rs`) already has its own targeted
+// allows.  Items here are public API that will be consumed as modules
+// are progressively activated in production.
+#![allow(dead_code, unused_variables, unused_assignments)]
+
 mod balance_allocator;
 mod backtest;
 mod coin_finder;
@@ -273,6 +279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         usdt_max_pct: config.stablecoin.usdt_max_pct,
         usdc_min_pct: config.stablecoin.usdc_min_pct,
         monitored_symbols: config.stablecoin.monitored_symbols.clone(),
+        check_interval_ms: 5000, // default: check every 5s
     };
     let depeg_circuit = Arc::new(StablecoinMonitor::new(stable_config));
     println!("Stablecoin depeg circuit active — monitoring {:?}", config.stablecoin.monitored_symbols);
@@ -1159,7 +1166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ------------------------------------------------------------------
     let mut config_fee_map: HashMap<String, u64> = HashMap::new();
     for (name, bps) in &config.friction_protections.exchange_taker_fees {
-        config_fee_map.insert(name.to_lowercase(), *bps as u64);
+        config_fee_map.insert(name.to_lowercase(), *bps);
     }
     let fee_http = tls_pinning::build_pinned_client(Some(tls_pins), 15, 5)
         .map_err(|e| anyhow::anyhow!("failed to build fee manager HTTP client: {}", e))?;
@@ -1469,7 +1476,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             9 => format!("{}{}", base, quote),            // HTX: BTCUSDT
             10 => format!("{}{}", base, quote),           // LBank: BTCUSDT
             11 => format!("{}{}", base, quote),           // Bitstamp: BTCUSD
-            12 => format!("{}{}_{}", base, quote),        // Deribit: BTC_USDT_PERP (approximation)
+            12 => format!("{}_{}_PERP", base, quote),        // Deribit: BTC_USDT_PERP (approximation)
             13 => format!("{}{}", base, quote),           // BitMEX: XBTUSD
             14 => format!("{}{}", base, quote),           // Kraken: (uses internal XBT mapping)
             15 => format!("{}{}", base, quote),           // Delta: BTCUSDT
@@ -1494,7 +1501,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // CRITICAL FIX #1: Check if the dead man's switch has been tripped.
             // If tripped, skip all signal evaluation and execution.
             if signal_dms.is_tripped() {
-                if tick_counter % 100 == 0 {
+                if tick_counter.is_multiple_of(100) {
                     tracing::error!("dead man's switch is tripped — all trading halted");
                 }
                 continue;
@@ -1595,7 +1602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // CRITICAL FIX #2: Pre-trade ProductionRiskShield validation.
                                 // Build a FastOrderBook from arena data and run VWAP slippage.
                                 let notional = buy_price * qty;
-                                let expected_profit_pct = Decimal::from(spread_bps as u64) / dec!(100.0);
+                                let expected_profit_pct = Decimal::from(spread_bps) / dec!(100.0);
                                 if !signal_prod_shield.validate_execution_safety(notional, expected_profit_pct) {
                                     tracing::debug!(
                                         notional = %notional,
@@ -1614,7 +1621,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     symbol: symbol.clone(),
                                     side: "BUY".to_string(),
                                     price: buy_price,
-                                    quantity: qty.clone(),
+                                    quantity: qty,
                                     order_type: "LIMIT".to_string(),
                                     time_in_force: "IOC".to_string(),
                                 };
@@ -1624,7 +1631,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     symbol: sell_symbol.clone(),
                                     side: "SELL".to_string(),
                                     price: sell_price,
-                                    quantity: qty.clone(),
+                                    quantity: qty,
                                     order_type: "LIMIT".to_string(),
                                     time_in_force: "IOC".to_string(),
                                 };
@@ -1632,12 +1639,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Determine fee rates from arena fee schedule.
                                 let fee_buy = Decimal::from(
                                     signal_arena.fee_schedule.read()
-                                        .map(|f| f.get_taker(buy_exchange as usize).unwrap_or(10))
+                                        .map(|f| f.get_taker(buy_exchange as usize))
                                         .unwrap_or(10),
                                 ) / Decimal::from(10_000u64);
                                 let fee_sell = Decimal::from(
                                     signal_arena.fee_schedule.read()
-                                        .map(|f| f.get_taker(sell_exchange as usize).unwrap_or(10))
+                                        .map(|f| f.get_taker(sell_exchange as usize))
                                         .unwrap_or(10),
                                 ) / Decimal::from(10_000u64);
 
@@ -1708,7 +1715,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         buy_exchange,
                                         sell_exchange,
                                         &symbol,
-                                        qty.clone(),
+                                        qty,
                                         buy_price,
                                         sell_price,
                                         Decimal::ZERO,
@@ -1801,10 +1808,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Fee rate from arena schedule (fallback 0.1%).
                                 let tri_fee = Decimal::from(
                                     signal_arena.fee_schedule.read()
-                                        .map(|f| f.get_taker(exch as usize).unwrap_or(10))
+                                        .map(|f| f.get_taker(exch as usize))
                                         .unwrap_or(10),
                                 ) / Decimal::from(10_000u64);
 
+                                // Compute lot size for triangular execution.
                                 let tri_qty = signal_allocator
                                     .compute_lot_size(exch as usize, token_a as usize, lot_max_pct, lot_capital);
                                 let tri_qty = if tri_qty > Decimal::ZERO { tri_qty } else { lot_fallback };
@@ -1848,9 +1856,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let tri_leg1_sym = build_pair_symbol(&sym_a, "USDT", exch);
                                 let tri_leg2_sym = build_pair_symbol(&sym_a, &sym_b, exch);
                                 let tri_leg3_sym = build_pair_symbol(&sym_b, "USDT", exch);
-                                let tri_leg1_qty = tri_qty.clone();
-                                let tri_leg2_qty = tri_qty.clone();
-                                let tri_leg3_qty = tri_qty.clone();
+                                let tri_leg1_qty = tri_qty;
+                                let tri_leg2_qty = tri_qty;
+                                let tri_leg3_qty = tri_qty;
                                 let tri_leg1_price = ticker_a.ask_price;
                                 let tri_leg2_price = ticker_b.bid_price;
                                 let tri_leg3_price = ticker_c.bid_price;
@@ -1861,10 +1869,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let leg1 = OrderIntent {
                                     exchange_id: exch,
                                     token_id: token_a,
-                                    qty: tri_qty.clone(),
-                                    price: ticker_a.ask_price,
+                                    qty: tri_leg1_qty,
+                                    price: tri_leg1_price,
                                     is_buy: true,
-                                    symbol: build_pair_symbol(&sym_a, "USDT", exch),
+                                    symbol: tri_leg1_sym.clone(),
                                 };
                                 // Leg 2: Sell token_a for token_b (A/B or B/A pair, bid side)
                                 // In a standard USDT→A→B→USDT loop, we sell A to get B.
@@ -1873,19 +1881,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let leg2 = OrderIntent {
                                     exchange_id: exch,
                                     token_id: token_b,
-                                    qty: tri_qty.clone(), // same qty as leg1 output
-                                    price: ticker_b.bid_price,
+                                    qty: tri_leg2_qty,
+                                    price: tri_leg2_price,
                                     is_buy: false, // selling token_a intermediate
-                                    symbol: build_pair_symbol(&sym_a, &sym_b, exch),
+                                    symbol: tri_leg2_sym.clone(),
                                 };
                                 // Leg 3: Sell token_b for USDT (B/USDT bid)
                                 let leg3 = OrderIntent {
                                     exchange_id: exch,
                                     token_id: token_c,
-                                    qty: tri_qty.clone(),
-                                    price: ticker_c.bid_price,
+                                    qty: tri_leg3_qty,
+                                    price: tri_leg3_price,
                                     is_buy: false, // selling final asset for USDT
-                                    symbol: build_pair_symbol(&sym_b, "USDT", exch),
+                                    symbol: tri_leg3_sym.clone(),
                                 };
 
                                 let legs = [leg1, leg2, leg3];
@@ -1939,7 +1947,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Every 300 ticks (~30 seconds), push the latest discovered
             // symbols to the WS watch channel so feed workers re-subscribe
             // with the full list on their next reconnect.
-            if tick_counter % 300 == 0 {
+            if tick_counter.is_multiple_of(300) {
                 if let Ok(tokens) = signal_arena.active_tokens.try_lock() {
                     let syms: Vec<String> = tokens.iter()
                         .filter_map(|&tid| signal_allocator.get_symbol(tid))
@@ -1953,7 +1961,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Every 1000 ticks (~100 seconds), log health stats.
-            if tick_counter % 1000 == 0 {
+            if tick_counter.is_multiple_of(1000) {
                 let stats = signal_health.get_stats();
                 tracing::info!(
                     uptime_secs = stats.uptime_secs,
@@ -1971,7 +1979,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // The detector's callback (wired above) automatically sends
             // a RebalanceRequest to the rebalancer channel, selecting the
             // best-funded source exchange dynamically.
-            if tick_counter % 500 == 0 {
+            if tick_counter.is_multiple_of(500) {
                 for exch_id in 0..num_exch {
                     let bal = signal_allocator.get_balance_atomic(exch_id, 0); // token 0 = USDT
                     if let Some(event) = signal_starvation_detector.check_balance(
@@ -2137,7 +2145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 last_btc_price = btc_price;
 
                 // Every window_ticks, check if max deviation exceeded threshold.
-                if tick_count % window_ticks == 0 {
+                if tick_count.is_multiple_of(window_ticks) {
                     if max_deviation_bps >= threshold_bps {
                         tracing::error!(
                             max_deviation_bps = max_deviation_bps,

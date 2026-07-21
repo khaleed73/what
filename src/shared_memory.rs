@@ -271,15 +271,15 @@ mod tests {
     #[test]
     fn test_read_consistent() {
         let frame = SharedMarketFrame::zeroed();
-        frame.write(1, "BTCUSDT", 50000_000_000_000, 50001_000_000_000, 1700000000000);
+        frame.write(1, "BTCUSDT", 50_000_000_000_000, 50_001_000_000_000, 1700000000000);
 
         let result = frame.read_consistent();
         assert!(result.is_some());
         let (seq, sym, bid, ask, ts) = result.unwrap();
         assert_eq!(seq, 1); // seq / 2
         assert_eq!(sym, "BTCUSDT");
-        assert_eq!(bid, 50000_000_000_000);
-        assert_eq!(ask, 50001_000_000_000);
+        assert_eq!(bid, 50_000_000_000_000);
+        assert_eq!(ask, 50_001_000_000_000);
         assert_eq!(ts, 1700000000000);
     }
 
@@ -294,8 +294,8 @@ mod tests {
     #[test]
     fn test_arena_write_read() {
         let arena = SharedMemoryArena::new(4);
-        arena.write_slot(0, "BTCUSDT", 50000_000_000_000, 50001_000_000_000);
-        arena.write_slot(1, "ETHUSDT", 3000_000_000_000, 3001_000_000_000);
+        let _ = arena.write_slot(0, "BTCUSDT", 50_000_000_000_000, 50_001_000_000_000);
+        let _ = arena.write_slot(1, "ETHUSDT", 3_000_000_000_000, 3_001_000_000_000);
 
         let f0 = arena.read_slot(0).unwrap();
         assert_eq!(f0.symbol_str(), "BTCUSDT");
@@ -313,8 +313,8 @@ mod tests {
     #[test]
     fn test_sequence_increments() {
         let arena = SharedMemoryArena::new(2);
-        arena.write_slot(0, "A", 1, 2);
-        arena.write_slot(1, "B", 3, 4);
+        let _ = arena.write_slot(0, "A", 1, 2);
+        let _ = arena.write_slot(1, "B", 3, 4);
         assert!(arena.global_sequence() >= 2);
     }
 

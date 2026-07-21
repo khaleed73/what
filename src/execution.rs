@@ -1594,7 +1594,7 @@ mod tests {
     /// Helper: build a simple sell intent.
     fn sell_intent(exchange_id: u16, symbol: &str, qty: &str, price: &str) -> OrderIntent {
         OrderIntent {
-            exchange_id: exchange_id,
+            exchange_id,
             token_id: 1,
             qty: Decimal::from_str(qty).unwrap(),
             price: Decimal::from_str(price).unwrap(),
@@ -1818,9 +1818,9 @@ mod tests {
         // Buy limit should be 50000 * (1 + 0.0005) = 50025
         assert_eq!(adjusted.price, Decimal::from_str("50025.000000").unwrap_or_else(|_| {
             // Allow small rounding differences
-            let expected = Decimal::from_str("50000").unwrap()
-                * (Decimal::ONE + Decimal::new(5, 4));
-            expected
+            
+            Decimal::from_str("50000").unwrap()
+                * (Decimal::ONE + Decimal::new(5, 4))
         }));
         assert!(adjusted.price > intent.price, "buy limit should be higher than signal");
     }
@@ -2378,7 +2378,6 @@ pub fn spawn_order_status_poller(
 mod math_verification_extended {
     use super::*;
     use rust_decimal_macros::dec;
-    use std::str::FromStr;
 
     /// Verify three-leg triangular fee deduction:
     /// net_profit_bps = raw_profit_bps - (fee_a + fee_b + fee_c)
@@ -2468,7 +2467,7 @@ mod math_verification_extended {
 
         // Verify conservation: total value before = total value after
         let total_before = dec!(20000.0); // 10k + 10k
-        let total_after = usdt_a + usdt_b + btc_a * buy_price + btc_b * sell_price;
+        let _total_after = usdt_a + usdt_b + btc_a * buy_price + btc_b * sell_price;
         let total_fees = buy_fee + sell_fee;
 
         // Total capital = balances + fees paid

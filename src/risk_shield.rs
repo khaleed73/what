@@ -389,7 +389,7 @@ mod tests {
     fn test_cross_exchange_profitable() {
         let shield = CrossExchangeRiskShield::new(dec!(5.0), dec!(0.001), dec!(0.001), dec!(0.01));
         // Buy on Y at 50000, sell on X at 50100 — 0.2% spread, fees 0.2%, net ~0% — but above floor
-        let result = shield.evaluate_window(dec!(50100.0), dec!(50000.0), dec!(1.0), dec!(1.0), dec!(50000.0));
+        let _result = shield.evaluate_window(dec!(50100.0), dec!(50000.0), dec!(1.0), dec!(1.0), dec!(50000.0));
         // spread = 100, buy cost = 50000, sell = 50100, buy_fee = 50, sell_fee = 50.1
         // profit = 50100 - 50.1 - 50000 - 50 = -0.1 — actually negative with these fees
         // Need bigger spread

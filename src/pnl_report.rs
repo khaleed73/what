@@ -227,8 +227,8 @@ impl TradeLog {
 
         {
             let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
-            records.push(buy_record);
-            records.push(sell_record);
+            records.push(buy_record.clone());
+            records.push(sell_record.clone());
             // Trim oldest records if exceeding max capacity
             const MAX_RECORDS: usize = 50_000;
             if records.len() > MAX_RECORDS {

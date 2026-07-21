@@ -579,8 +579,6 @@ async fn test_orderbook_deribit() {
     assert!(!b.bids.is_empty() && !b.asks.is_empty(), "Deribit book needs bids+asks");
 }
 
-use rust_decimal::Decimal;
-
 // ══════════════════════════════════════════════════════════════════════════════
 // SECTION 10: COMPREHENSIVE COMBINED TEST — all 11 exchanges in one test
 // ══════════════════════════════════════════════════════════════════════════

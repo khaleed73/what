@@ -69,7 +69,7 @@ pub fn build_pinned_client(
     timeout_secs: u64,
     connect_timeout_secs: u64,
 ) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
         .connect_timeout(Duration::from_secs(connect_timeout_secs))
         .tcp_nodelay(true)

@@ -383,7 +383,7 @@ impl Exchange for LbankClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("LBank order status query failed: {} — {}", status, &body[..body.len().min(200)]).into());
+            return Err(anyhow::anyhow!("LBank order status query failed: {} — {}", status, &body[..body.len().min(200)]));
         }
         let json: serde_json::Value = resp.json().await?;
         let order = &json["data"][0];

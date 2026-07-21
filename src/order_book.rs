@@ -2098,7 +2098,6 @@ impl L2OrderBookListener {
 
             match connect_result {
                 Ok(Ok((ws_stream, _response))) => {
-                    consecutive_failures = 0;
                     info!(exchange_id = ex, "L2 order book websocket connected");
 
                     let (mut write, mut read) = ws_stream.split();

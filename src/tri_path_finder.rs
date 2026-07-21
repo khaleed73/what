@@ -321,7 +321,7 @@ mod tests {
 
         // 50000 * 0.065 * 3250 = 10,562,500 (should be ~1.0 with these prices)
         // No arb expected with balanced books.
-        let paths = finder.find_profitable_paths();
+        let _paths = finder.find_profitable_paths();
         // With 0.3% total fees on 3 legs, need > 0.3% profit.
         // These balanced prices shouldn't produce profit.
     }

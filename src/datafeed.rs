@@ -277,8 +277,6 @@ impl LowLatencyWsListener {
 
             match connect_result {
                 Ok(Ok((ws_stream, _response))) => {
-                    // Successful connection — reset failure counter.
-                    consecutive_failures = 0;
                     info!(exchange_id = ex, "websocket connected");
 
                     let (mut write, mut read) = ws_stream.split();

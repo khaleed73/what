@@ -1,6 +1,7 @@
 //! Full End-to-End Pipeline Test — ALL 12 EXCHANGES
 //!
 //! Exercises the COMPLETE arbitrage pipeline with REAL exchange data:
+#![allow(clippy::needless_range_loop)]
 //!   0. INVENTORY  — Fetches symbol lists, checks coin availability
 //!   1. HEALTH     — Verifies public REST connectivity on all 12 exchanges
 //!   2. DATAFEED   — Fetches live orderbooks (BTC/USDT, ETH/USDT, SOL/USDT)
@@ -216,7 +217,7 @@ fn create_exchange_client(meta: &ExchangeMeta) -> anyhow::Result<Box<dyn Exchang
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     println!("\n{}", "=".repeat(76));

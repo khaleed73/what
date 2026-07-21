@@ -91,7 +91,7 @@ impl TimestampSynchronizer {
             // Compute median from samples instead of using the latest single value.
             buf.sort_unstable();
             let mid = buf.len() / 2;
-            let median = if buf.len() % 2 == 0 {
+            let median = if buf.len().is_multiple_of(2) {
                 (buf[mid - 1] + buf[mid]) / 2
             } else {
                 buf[mid]
@@ -246,7 +246,7 @@ mod tests {
         let local_ms = chrono::Utc::now().timestamp_millis();
         // Adjusted should be ~100ms ahead of local.
         let diff = adjusted - local_ms;
-        assert!(diff >= 90 && diff <= 110);
+        assert!((90..=110).contains(&diff));
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod tests {
         // A jump of 100ms is well within the 5000ms threshold.
         sync.update_offset(local_ms + 150);
         let offset = sync.offset_ms();
-        assert!(offset >= 100 && offset <= 200, "offset should be ~150, got {}", offset);
+        assert!((100..=200).contains(&offset), "offset should be ~150, got {}", offset);
     }
 
     #[test]

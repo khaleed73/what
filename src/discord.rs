@@ -50,6 +50,8 @@ const DISCORD_RATE_LIMIT_MS: u64 = 200;
 /// included in the payload.
 #[derive(Debug, Clone)]
 pub enum DiscordNotification {
+    /// Simple text message (lightweight, no embed).
+    Text(String),
     /// Two-leg cross-exchange arbitrage fill.
     CrossExchangeFill {
         token_id: u16,
@@ -91,6 +93,16 @@ pub enum DiscordNotification {
 // ---------------------------------------------------------------------------
 // DiscordWorker — background sender task
 // ---------------------------------------------------------------------------
+
+/// Backward-compatible alias used by main.rs.
+pub type DiscordMessage = DiscordNotification;
+
+impl DiscordMessage {
+    /// Convenience constructor for simple text notifications.
+    pub fn text(msg: impl Into<String>) -> Self {
+        DiscordNotification::Text(msg.into())
+    }
+}
 
 /// Background worker that receives notifications and POSTs them to Discord.
 ///
@@ -268,6 +280,14 @@ fn build_embed_payload(notification: &DiscordNotification) -> serde_json::Value 
         .unwrap_or_default();
 
     let (title, description, color, fields, footer_text) = match notification {
+        DiscordNotification::Text(msg) => (
+            "📊 Signal".to_string(),
+            msg.clone(),
+            DISCORD_COLOR_BLURPLE,
+            vec![],
+            "HFT Arbitrage Engine".to_string(),
+        ),
+
         DiscordNotification::CrossExchangeFill {
             symbol,
             total_size_usd,

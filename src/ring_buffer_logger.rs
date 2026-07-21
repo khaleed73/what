@@ -352,7 +352,7 @@ mod tests {
     #[test]
     #[ignore = "65536-element buffer overflows stack in debug mode"]
     fn test_peek_empty() {
-        let mut logger = RingBufferLogger::new();
+        let logger = RingBufferLogger::new();
         assert!(logger.peek_latest().is_none());
     }
 

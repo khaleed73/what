@@ -7,9 +7,11 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::time::sleep;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
+
+use crate::balance_allocator::LocalCapitalAllocator;
+use crate::signer::PrivateExchangeClient;
 
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -62,8 +64,8 @@ impl PositionReconciliationLoop {
     /// * `http_client` — HTTP client for REST API calls.
     pub async fn run(
         config: ReconciliationConfig,
-        allocator: Arc<balance_allocator::LocalCapitalAllocator>,
-        execution_pool: Arc<std::collections::HashMap<u16, Arc<dyn signer::PrivateExchangeClient>>>,
+        allocator: Arc<LocalCapitalAllocator>,
+        execution_pool: Arc<std::collections::HashMap<u16, Arc<dyn PrivateExchangeClient>>>,
         http_client: reqwest::Client,
         num_exchanges: usize,
         num_tokens: usize,
@@ -119,8 +121,8 @@ impl PositionReconciliationLoop {
     /// Queries real balances from each exchange and compares against the
     /// local allocator's state for every registered token.
     async fn reconcile(
-        allocator: &balance_allocator::LocalCapitalAllocator,
-        execution_pool: &std::collections::HashMap<u16, Arc<dyn signer::PrivateExchangeClient>>,
+        allocator: &LocalCapitalAllocator,
+        execution_pool: &std::collections::HashMap<u16, Arc<dyn PrivateExchangeClient>>,
         http_client: &reqwest::Client,
         num_exchanges: usize,
         num_tokens: usize,
