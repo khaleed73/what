@@ -251,6 +251,28 @@ impl Exchange for BinanceClient {
 
         let json = parse_exchange_response(resp, "Binance").await?;
 
+        // H-102 FIX: Binance returns HTTP 200 with {"code": -2011, "msg": "Unknown order..."}
+        // for non-existent orders. We must check the body for error codes before returning
+        // a fake "CANCELED" success response.
+        if let Some(code) = json["code"].as_i64() {
+            if code != 0 {
+                let msg = json["msg"].as_str().unwrap_or("unknown Binance error");
+                anyhow::bail!(
+                    "Binance cancel_order API error (code {}): {} (order_id={})",
+                    code, msg, order_id
+                );
+            }
+        }
+        // Also guard against status fields that indicate failure
+        if let Some(status) = json["status"].as_str() {
+            if status == "EXPIRED" || status == "REJECTED" {
+                anyhow::bail!(
+                    "Binance cancel_order returned failure status '{}' for order_id={}",
+                    status, order_id
+                );
+            }
+        }
+
         let filled_qty = parse_json_decimal(&json["executedQty"]);
         let avg_price = if filled_qty > Decimal::ZERO {
             parse_json_decimal(&json["cummulativeQuoteQty"]) / filled_qty

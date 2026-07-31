@@ -28,9 +28,24 @@ impl ExchangeNonce {
     }
 
     /// Get and increment the nonce atomically.
+    ///
+    /// M-1 FIX: Uses `fetch_update` with `checked_add` to detect u64 overflow.
+    /// If the counter has reached `u64::MAX`, a wrap-around would produce
+    /// nonce 0 which the exchange would reject.  Returns `None` on overflow
+    /// and logs a CRITICAL alert.
     #[inline(always)]
-    fn next(&self) -> u64 {
-        self.current.fetch_add(1, Ordering::SeqCst)
+    fn next(&self) -> Option<u64> {
+        match self.current.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| v.checked_add(1)) {
+            Ok(val) => Some(val),
+            Err(_) => {
+                tracing::error!(
+                    exchange = %self.name,
+                    "M-1: nonce counter overflowed u64::MAX for exchange — \
+                     all further nonces will be rejected until manual reset"
+                );
+                None
+            }
+        }
     }
 
     /// Get current nonce without incrementing.
@@ -95,7 +110,8 @@ impl ApiNonceManager {
 
     /// Get the next nonce for an exchange (atomically incrementing).
     ///
-    /// Returns `None` if the exchange is not registered.  Callers MUST handle
+    /// Returns `None` if the exchange is not registered **or** the nonce
+    /// counter has overflowed `u64::MAX` (M-1 FIX).  Callers MUST handle
     /// this — sending a request without a valid nonce will be rejected by
     /// the exchange and may trigger rate-limit bans.
     #[inline(always)]
@@ -104,7 +120,7 @@ impl ApiNonceManager {
             .read()
             .expect("nonce_manager RwLock poisoned")
             .get(&exchange_id.to_lowercase())
-            .map(|n| n.next())
+            .and_then(|n| n.next())
     }
 
     /// Peek at the current nonce without incrementing.
@@ -120,8 +136,11 @@ impl ApiNonceManager {
     }
 
     /// Set the nonce for an exchange, only increasing it (never moving backwards).
-    /// Uses the same `ensure_min` CAS loop as `sync_with_server` to prevent
-    /// a stale or lower nonce from clobbering a higher local value.
+    ///
+    /// M-2 FIX: Uses the same CAS-based `ensure_min` logic as `sync_with_server`
+    /// instead of a raw `store`.  This prevents a stale persisted nonce (loaded
+    /// after a task restart) from clobbering a higher in-memory value and
+    /// causing nonce reuse / server rejection.
     pub fn set_nonce(&self, exchange_id: &str, value: u64) {
         if let Some(nonce) = self
             .nonces
@@ -129,7 +148,13 @@ impl ApiNonceManager {
             .expect("nonce_manager RwLock poisoned")
             .get(&exchange_id.to_lowercase())
         {
-            nonce.set(value);
+            nonce.ensure_min(value);
+            tracing::debug!(
+                exchange = %exchange_id,
+                requested = value,
+                actual = nonce.peek(),
+                "set_nonce applied (clamped to max of requested and current)"
+            );
         }
     }
 
@@ -254,5 +279,17 @@ mod tests {
     fn test_exchange_count() {
         let mgr = make_manager();
         assert_eq!(mgr.exchange_count(), 2);
+    }
+
+    #[test]
+    fn test_set_nonce_monotonicity_across_restart() {
+        // M-2 FIX: set_nonce must never move the counter backwards.
+        let mgr = make_manager();
+        mgr.next_nonce("binance").unwrap(); // now at 1001
+        mgr.set_nonce("binance", 500); // stale persisted value — must NOT move back
+        assert_eq!(mgr.current_nonce("binance").unwrap(), 1001);
+        // But a higher value should move forward.
+        mgr.set_nonce("binance", 9999);
+        assert_eq!(mgr.current_nonce("binance").unwrap(), 9999);
     }
 }

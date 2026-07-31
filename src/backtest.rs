@@ -313,11 +313,12 @@ impl BacktestEngine {
             }
 
             // For each symbol, check all exchange pairs for arb opportunity.
-            // H-2 fix: Snapshot balances before evaluating strategies to prevent
-            // intra-timestamp look-ahead bias.  Without this, strategy 2's
-            // balance check would see strategy 1's trade applied at the same
-            // timestamp, which is information it shouldn't have.
-            let _balances_snapshot: HashMap<u16, Decimal> = self.exchange_balances.clone();
+            // C-59 / H-2 fix: Snapshot balances BEFORE evaluating any strategies
+            // at this timestamp.  All balance reads within this timestamp use
+            // the snapshot (working_balances), preventing intra-timestamp
+            // look-ahead bias where strategy 2 would see strategy 1's
+            // already-applied trade.
+            let mut working_balances: HashMap<u16, Decimal> = self.exchange_balances.clone();
             for (symbol, symbol_bars) in &by_symbol {
                 if symbol_bars.len() < 2 {
                     continue;
@@ -356,13 +357,12 @@ impl BacktestEngine {
                                 // Calculate position size.
                                 // Max position = capital * max_position_pct.
                                 // We need capital on both exchanges.
-                                let bal_a = self
-                                    .exchange_balances
+                                // C-59: Read from working_balances (snapshot), not live state.
+                                let bal_a = working_balances
                                     .get(&ex_a)
                                     .copied()
                                     .unwrap_or(Decimal::ZERO);
-                                let bal_b = self
-                                    .exchange_balances
+                                let bal_b = working_balances
                                     .get(&ex_b)
                                     .copied()
                                     .unwrap_or(Decimal::ZERO);
@@ -400,20 +400,15 @@ impl BacktestEngine {
                                         fees: total_fees,
                                     };
 
-                                    // Update balances.
+                                    // C-59: Update working_balances (not self.exchange_balances)
+                                    // so subsequent strategy checks at this timestamp
+                                    // don't see this trade's effect.
                                     let new_bal_a = bal_a - buy_cost - buy_fee;
                                     let new_bal_b = bal_b + sell_proceeds - sell_fee;
-                                    self.exchange_balances.insert(ex_a, new_bal_a);
-                                    self.exchange_balances.insert(ex_b, new_bal_b);
-
-                                    self.capital = self
-                                        .exchange_balances
-                                        .values()
-                                        .copied()
-                                        .fold(Decimal::ZERO, |acc, v| acc.checked_add(v).unwrap_or(Decimal::MAX));
+                                    working_balances.insert(ex_a, new_bal_a);
+                                    working_balances.insert(ex_b, new_bal_b);
 
                                     self.trades.push(trade);
-                                    equity_curve.push(self.capital);
                                 }
                             }
                         }
@@ -430,13 +425,12 @@ impl BacktestEngine {
                                 let buy_price = ask_b;
                                 let sell_price = bid_a;
 
-                                let bal_b = self
-                                    .exchange_balances
+                                // C-59: Read from working_balances (snapshot).
+                                let bal_b = working_balances
                                     .get(&ex_b)
                                     .copied()
                                     .unwrap_or(Decimal::ZERO);
-                                let bal_a = self
-                                    .exchange_balances
+                                let bal_a = working_balances
                                     .get(&ex_a)
                                     .copied()
                                     .unwrap_or(Decimal::ZERO);
@@ -473,25 +467,29 @@ impl BacktestEngine {
                                         fees: total_fees,
                                     };
 
+                                    // C-59: Update working_balances.
                                     let new_bal_b = bal_b - buy_cost - buy_fee;
                                     let new_bal_a = bal_a + sell_proceeds - sell_fee;
-                                    self.exchange_balances.insert(ex_b, new_bal_b);
-                                    self.exchange_balances.insert(ex_a, new_bal_a);
-
-                                    self.capital = self
-                                        .exchange_balances
-                                        .values()
-                                        .copied()
-                                        .fold(Decimal::ZERO, |acc, v| acc.checked_add(v).unwrap_or(Decimal::MAX));
+                                    working_balances.insert(ex_b, new_bal_b);
+                                    working_balances.insert(ex_a, new_bal_a);
 
                                     self.trades.push(trade);
-                                    equity_curve.push(self.capital);
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // C-59: Commit working_balances to self.exchange_balances and
+            // update equity curve ONCE per timestamp (not per trade).
+            self.exchange_balances = working_balances;
+            self.capital = self
+                .exchange_balances
+                .values()
+                .copied()
+                .fold(Decimal::ZERO, |acc, v| acc.checked_add(v).unwrap_or(Decimal::MAX));
+            equity_curve.push(self.capital);
         }
 
         // ── Compute aggregate statistics ─────────────────────────────────

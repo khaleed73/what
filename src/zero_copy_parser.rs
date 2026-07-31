@@ -18,6 +18,14 @@
 /// rejected to prevent DoS via large WebSocket frames.
 const MAX_INPUT_SIZE: usize = 1_048_576;
 
+/// FIX-M3-1: Maximum length of an extracted string value (e.g. symbol name).
+/// Prevents DoS via extremely long values in JSON fields.
+const MAX_EXTRACTED_STRING_LEN: usize = 256;
+
+/// FIX-M3-1: Maximum length of an extracted number string before parsing.
+/// Prevents DoS via extremely long numeric strings in JSON fields.
+const MAX_EXTRACTED_NUM_LEN: usize = 128;
+
 /// Result of parsing an order book update.
 #[derive(Debug, Clone)]
 pub struct FastParsedOrderBook {
@@ -178,6 +186,18 @@ fn extract_string_value(text: &str, key: &str) -> Option<String> {
     // Find the closing quote.
     let value_end = after_quote.find('"')?;
 
+    // FIX-M3-1: Bounds check — reject overly long extracted values to prevent
+    // memory exhaustion from adversarial payloads (e.g. 1MB symbol string).
+    if value_end > MAX_EXTRACTED_STRING_LEN {
+        tracing::warn!(
+            len = value_end,
+            max = MAX_EXTRACTED_STRING_LEN,
+            key = %key,
+            "zero_copy_parser: extracted string value exceeds max length, rejecting"
+        );
+        return None;
+    }
+
     Some(after_quote[..value_end].to_string())
 }
 
@@ -223,6 +243,11 @@ fn extract_number_value(text: &str, key: &str) -> Option<f64> {
     // scientific notation. The '-' sign is only accepted at the first position.
     let mut num_str = String::new();
     for (i, c) in after_ws.chars().enumerate() {
+        // FIX-M3-1: Reject number strings that exceed max length to prevent
+        // memory exhaustion from adversarial payloads (e.g. 1MB digit string).
+        if num_str.len() >= MAX_EXTRACTED_NUM_LEN {
+            return None;
+        }
         if i == 0 && c == '-' {
             num_str.push(c);
         } else if c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' {

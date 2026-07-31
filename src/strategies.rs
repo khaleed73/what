@@ -348,7 +348,12 @@ impl MarketArena {
                 let bid = self.bid_prices[idx].load(Ordering::Acquire);
                 let ask = self.ask_prices[idx].load(Ordering::Acquire);
                 if bid > 0 && ask > 0 {
-                    exchange_mask |= 1u64 << exch_id;
+                    // M-2: Validate exchange ID is within u64 bit range before shifting.
+                    if exch_id < 64 {
+                        exchange_mask |= 1u64 << exch_id;
+                    } else {
+                        tracing::warn!(exch_id, "exchange ID >= 64, cannot set bitmask");
+                    }
                     shared_count = shared_count.saturating_add(1);
                 }
             }
@@ -632,7 +637,8 @@ impl MarketArena {
 
                         if net_profit_bps > min_tri_profit_bps {
                             // Check per-strategy exchange allowlist.
-                            if tri_mask & (1u64 << updated_exch) != 0 {
+                            // M-2: Guard against shift overflow for exchange IDs >= 64.
+                            if updated_exch < 64 && tri_mask & (1u64 << updated_exch) != 0 {
                                 signals.push(ArbitrageSignal::Triangular {
                                     exchange_id: updated_exch as u16,
                                     token_a: tri.token_a,

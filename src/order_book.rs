@@ -155,14 +155,34 @@ impl OrderBook {
         const MAX_LEVELS_PER_SIDE: usize = 500;
         while self.bids.len() > MAX_LEVELS_PER_SIDE {
             // Remove the worst bid (lowest price = first in BTreeMap).
+            // FIX-M3-2: Safe pattern — .copied() drops the borrow before .remove().
             if let Some(k) = self.bids.keys().next().copied() {
                 self.bids.remove(&k);
             }
         }
         while self.asks.len() > MAX_LEVELS_PER_SIDE {
             // Remove the worst ask (highest price = last in BTreeMap).
+            // FIX-M3-2: Safe pattern — .copied() drops the borrow before .remove().
             if let Some(k) = self.asks.keys().next_back().copied() {
                 self.asks.remove(&k);
+            }
+        }
+
+        // FIX-M3-2: Detect and log crossed spreads (best_bid >= best_ask).
+        // BTreeMap guarantees bids ascending, asks ascending, so:
+        //   best bid = bids.last_key_value() (highest price)
+        //   best ask = asks.first_key_value() (lowest price)
+        // A crossed book produces incorrect arbitrage signals and must be flagged.
+        if let (Some((bid_px, _)), Some((ask_px, _))) =
+            (self.bids.last_key_value(), self.asks.first_key_value())
+        {
+            if *bid_px >= *ask_px {
+                warn!(
+                    bid_px = %bid_px,
+                    ask_px = %ask_px,
+                    update_id = delta.last_update_id,
+                    is_snapshot = delta.is_snapshot,
+                    "Order book crossed spread detected — best bid >= best ask; snapshot refresh recommended");
             }
         }
     }

@@ -1069,7 +1069,10 @@ impl WithdrawalExecutor {
             .map_err(|e| format!("HTX body serialize: {}", e))?;
 
         let timestamp = epoch_millis().to_string();
-        let preimage = format!("{}{}{}", timestamp, "POST", body_str);
+        // H-45: HTX signing preimage format: {method}\n{host}\n{path}\n{body}
+        let host = extract_host(base_url);
+        let sign_path = "/v1/dw/withdraw/api/create";
+        let preimage = format!("POST\n{}\n{}\n{}", host, sign_path, body_str);
         let signature = hmac_hex(&creds.api_secret, &preimage);
 
         let url = format!("{}/v1/dw/withdraw/api/create", base_url);
@@ -1105,7 +1108,9 @@ impl WithdrawalExecutor {
         let timestamp = epoch_millis().to_string();
         let method = "GET";
         let path = format!("/v2/reference/currencies/{}", currency);
-        let preimage = format!("{}{}{}", timestamp, method, "");
+        // H-45: HTX signing preimage format: {method}\n{host}\n{path}\n{query}
+        let host = extract_host(base_url);
+        let preimage = format!("{}\n{}\n{}\n", method, host, path);
         let signature = hmac_hex(&creds.api_secret, &preimage);
 
         let url = format!("{}{}", base_url, path);
@@ -1178,18 +1183,11 @@ impl WithdrawalExecutor {
             .collect::<Vec<_>>()
             .join("&");
 
-        // Kraken signs: HMAC-SHA256(secret, path + SHA256(nonce + body))
-        // First, compute SHA256(nonce + form_body)
-        use ring::digest;
-        let nonce_body = format!("{}{}", nonce, form_body);
-        let hash = digest::digest(&digest::SHA256, nonce_body.as_bytes());
-        let hash_hex = hex::encode(hash.as_ref());
-
-        // Then, sign path + hash_hex
+        // H-48: Kraken signing preimage format: {nonce}{path}{body} with HMAC-SHA512
         let sign_path = "/0/private/Withdraw";
-        let preimage = format!("{}{}", sign_path, hash_hex);
+        let preimage = format!("{}{}{}", nonce, sign_path, form_body);
         let signature_bytes = {
-            let key = hmac::Key::new(hmac::HMAC_SHA256, creds.api_secret.as_bytes());
+            let key = hmac::Key::new(hmac::HMAC_SHA512, creds.api_secret.as_bytes());
             hmac::sign(&key, preimage.as_bytes())
         };
         let signature = base64::engine::general_purpose::STANDARD.encode(signature_bytes.as_ref());
@@ -1226,15 +1224,11 @@ impl WithdrawalExecutor {
         let nonce = epoch_millis().to_string();
         let form_body = format!("nonce={}&asset={}", nonce, currency);
 
-        use ring::digest;
-        let nonce_body = format!("{}asset={}", nonce, currency);
-        let hash = digest::digest(&digest::SHA256, nonce_body.as_bytes());
-        let hash_hex = hex::encode(hash.as_ref());
-
+        // H-48: Kraken signing preimage format: {nonce}{path}{body} with HMAC-SHA512
         let sign_path = "/0/private/WithdrawInfo";
-        let preimage = format!("{}{}", sign_path, hash_hex);
+        let preimage = format!("{}{}{}", nonce, sign_path, form_body);
         let signature_bytes = {
-            let key = hmac::Key::new(hmac::HMAC_SHA256, creds.api_secret.as_bytes());
+            let key = hmac::Key::new(hmac::HMAC_SHA512, creds.api_secret.as_bytes());
             hmac::sign(&key, preimage.as_bytes())
         };
         let signature = base64::engine::general_purpose::STANDARD.encode(signature_bytes.as_ref());
@@ -1859,6 +1853,18 @@ fn epoch_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| std::time::Duration::from_secs(0))
         .as_secs()
+}
+
+/// Extract the hostname from a base URL (e.g., `https://api.huobi.pro` → `api.huobi.pro`).
+/// Used for HTX (H-45) signing preimage construction.
+#[inline]
+fn extract_host(base_url: &str) -> String {
+    base_url
+        .strip_prefix("https://")
+        .or_else(|| base_url.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Map common network names to GateIO short chain codes.

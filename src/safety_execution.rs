@@ -13,6 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Maximum deviation from best bid/ask before rejection (0.5 %).
 const MAX_SLIPPAGE_THRESHOLD: Decimal = dec!(0.005);
 
+/// H-64: Absolute minimum price floor — no order (including counter-orders) may
+/// have a price below this value.  Set to 0.01 USD, the smallest meaningful tick
+/// on most fiat-quoted venues.
+const MIN_PRICE_FLOOR: Decimal = dec!(0.01);
+
 /// Client order ID hash modulo mask (32-bit).
 const ORDER_ID_HASH_MASK: u64 = 0xFFFFFFFF;
 
@@ -319,21 +324,48 @@ impl SafetyExecutionEngine {
     /// `filled_quantity_override` — if `Some(q)`, use the actual filled quantity
     /// instead of `original.quantity`.  This prevents reversing more than was
     /// actually filled on partial IOC fills.
+    ///
+    /// Returns `None` if the computed counter-order price would be zero, negative,
+    /// or below the minimum price floor (H-64).  Callers MUST check for `None`
+    /// and handle the skipped unwind appropriately (e.g. raise an alert).
     #[inline]
     pub fn build_counter_order(
         original: &SafeOrderPayload,
         adverse_nudge_bps: u64,
         filled_quantity_override: Option<Decimal>,
-    ) -> SafeOrderPayload {
+    ) -> Option<SafeOrderPayload> {
         let nudge_factor = Decimal::from(adverse_nudge_bps) / dec!(10000.0);
         let counter_side = if original.side == "BUY" { "SELL" } else { "BUY" };
-        let counter_price = if counter_side == "SELL" {
+        let raw_counter_price = if counter_side == "SELL" {
             // Sell at a slightly lower price to ensure fill (accept worse price)
             original.price * (Decimal::ONE - nudge_factor)
         } else {
             // Buy at a slightly higher price to ensure fill (accept worse price)
             original.price * (Decimal::ONE + nudge_factor)
         };
+
+        // H-64: Floor-clamp the counter-order price so it can never be zero or
+        // negative.  The floor is the larger of MIN_PRICE_FLOOR (0.01 USD) and
+        // 1e-8 of the original fill price (protects against tiny-priced tokens
+        // where 0.01 would be a massive multiplier).  If the raw price is
+        // already below the floor we skip the counter-order entirely rather than
+        // placing a guaranteed-disastrous order.
+        let relative_floor = (original.price * dec!(0.00000001)).max(MIN_PRICE_FLOOR);
+
+        if raw_counter_price <= Decimal::ZERO || raw_counter_price < relative_floor {
+            tracing::warn!(
+                exchange_id = original.exchange_id,
+                symbol = %original.symbol,
+                original_price = %original.price,
+                raw_counter_price = %raw_counter_price,
+                adverse_nudge_bps = adverse_nudge_bps,
+                price_floor = %relative_floor,
+                "H-64: counter-order price would be zero/negative or below floor — skipping reverse order to prevent disastrous execution"
+            );
+            return None;
+        }
+
+        let counter_price = raw_counter_price;
 
         // Use the actual filled quantity when available, otherwise fall back
         // to the original requested quantity.
@@ -371,7 +403,7 @@ impl SafetyExecutionEngine {
             "counter-order built for emergency unwind"
         );
 
-        counter_order
+        Some(counter_order)
     }
 }
 
@@ -514,7 +546,7 @@ mod tests {
             Some(dec!(49990.0)), Some(dec!(50000.0)),
         ).unwrap();
 
-        let counter = SafetyExecutionEngine::build_counter_order(&original, 10, None); // 10 bps adverse
+        let counter = SafetyExecutionEngine::build_counter_order(&original, 10, None).unwrap(); // 10 bps adverse
         assert_eq!(counter.side, "SELL");
         assert_eq!(counter.order_type, SafeOrderType::Ioc);
         assert!(counter.price < original.price); // Sell at slightly lower price
@@ -528,8 +560,66 @@ mod tests {
             Some(dec!(50000.0)), Some(dec!(50010.0)),
         ).unwrap();
 
-        let counter = SafetyExecutionEngine::build_counter_order(&original, 10, None);
+        let counter = SafetyExecutionEngine::build_counter_order(&original, 10, None).unwrap();
         assert_eq!(counter.side, "BUY");
         assert!(counter.price > original.price); // Buy at slightly higher price
+    }
+
+    // ── H-64 regression tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_h64_counter_order_rejects_negative_price() {
+        // 20000 bps nudge on a SELL counter → price = original * (1 - 2.0) = negative
+        let original = SafetyExecutionEngine::build_safe_order(
+            "BTCUSDT", "BUY", SafeOrderType::Ioc,
+            dec!(50000.0), dec!(0.001), 0,
+            Some(dec!(49990.0)), Some(dec!(50000.0)),
+        ).unwrap();
+
+        let result = SafetyExecutionEngine::build_counter_order(&original, 20000, None);
+        assert!(result.is_none(), "H-64: counter-order with negative price must be rejected");
+    }
+
+    #[test]
+    fn test_h64_counter_order_rejects_zero_price() {
+        // Exactly 10000 bps on a SELL counter → price = original * 0 = zero
+        let original = SafetyExecutionEngine::build_safe_order(
+            "BTCUSDT", "BUY", SafeOrderType::Ioc,
+            dec!(50000.0), dec!(0.001), 0,
+            Some(dec!(49990.0)), Some(dec!(50000.0)),
+        ).unwrap();
+
+        let result = SafetyExecutionEngine::build_counter_order(&original, 10000, None);
+        assert!(result.is_none(), "H-64: counter-order with zero price must be rejected");
+    }
+
+    #[test]
+    fn test_h64_counter_order_rejects_below_floor() {
+        // A very small original price (0.005) with 10 bps adverse sell nudge
+        // would yield 0.00495, which is below MIN_PRICE_FLOOR (0.01).
+        let original = SafetyExecutionEngine::build_safe_order(
+            "SHITUSDT", "BUY", SafeOrderType::Ioc,
+            dec!(0.005), dec!(1000.0), 0,
+            Some(dec!(0.004)), Some(dec!(0.005)),
+        ).unwrap();
+
+        let result = SafetyExecutionEngine::build_counter_order(&original, 10, None);
+        assert!(result.is_none(), "H-64: counter-order price below absolute floor must be rejected");
+    }
+
+    #[test]
+    fn test_h64_counter_order_accepts_above_floor() {
+        // Original price 0.02 with 10 bps adverse sell → 0.0198, above 0.01 floor.
+        let original = SafetyExecutionEngine::build_safe_order(
+            "SMALLUSDT", "BUY", SafeOrderType::Ioc,
+            dec!(0.02), dec!(100.0), 0,
+            Some(dec!(0.019)), Some(dec!(0.02)),
+        ).unwrap();
+
+        let result = SafetyExecutionEngine::build_counter_order(&original, 10, None);
+        assert!(result.is_some(), "H-64: counter-order above floor should succeed");
+        let counter = result.unwrap();
+        assert_eq!(counter.side, "SELL");
+        assert!(counter.price >= MIN_PRICE_FLOOR);
     }
 }

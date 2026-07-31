@@ -73,7 +73,7 @@ impl BitmexClient {
         time_in_force: Option<&str>,
     ) -> serde_json::Value {
         let mut body = serde_json::json!({
-            "symbol": order.symbol.replace("/", "").to_uppercase(),
+            "symbol": Self::bitmex_symbol(&order.symbol),
             "side": if order.side == OrderSide::Buy { "Buy" } else { "Sell" },
             "orderQty": order.quantity,
             "ordType": ord_type,
@@ -91,6 +91,13 @@ impl BitmexClient {
             }
         }
         body
+    }
+
+    /// Build the BitMEX symbol format (e.g. "XBTUSD").
+    /// BitMEX uses XBT prefix for Bitcoin, not BTC.
+    #[inline]
+    fn bitmex_symbol(symbol: &str) -> String {
+        symbol.replace('/', "").to_uppercase().replace("BTC", "XBT")
     }
 
     /// BitMEX order signature expires (seconds from now). Must be > current time.
@@ -217,7 +224,7 @@ impl Exchange for BitmexClient {
                     .stop_price
                     .ok_or_else(|| anyhow::anyhow!("BitMEX stop-limit requires a stop_price"))?;
                 let body = serde_json::json!({
-                    "symbol": order.symbol.replace("/", "").to_uppercase(),
+                    "symbol": Self::bitmex_symbol(&order.symbol),
                     "side": if order.side == OrderSide::Buy { "Buy" } else { "Sell" },
                     "orderQty": order.quantity,
                     "ordType": "StopLimit",
@@ -231,7 +238,7 @@ impl Exchange for BitmexClient {
                     .stop_price
                     .ok_or_else(|| anyhow::anyhow!("BitMEX stop-market requires a stop_price"))?;
                 let body = serde_json::json!({
-                    "symbol": order.symbol.replace("/", "").to_uppercase(),
+                    "symbol": Self::bitmex_symbol(&order.symbol),
                     "side": if order.side == OrderSide::Buy { "Buy" } else { "Sell" },
                     "orderQty": order.quantity,
                     "ordType": "Stop",
@@ -410,7 +417,7 @@ impl Exchange for BitmexClient {
     async fn cancel_all_orders(&self, symbols: &[String]) -> Vec<Result<OrderResponse>> {
         let mut results = Vec::new();
         for symbol in symbols {
-            let bitmex_symbol = symbol.replace('/', "").to_uppercase();
+            let bitmex_symbol = Self::bitmex_symbol(symbol);
             let expires = chrono::Utc::now().timestamp() as u64 + Self::BITMEX_ORDER_EXPIRES_SECS as u64;
             let query = format!("symbol={}", bitmex_symbol);
             let path = format!("/api/v1/order/all?{}", query);
@@ -480,7 +487,7 @@ impl Exchange for BitmexClient {
 
     async fn fetch_order_book(&self, symbol: &str, depth: u32) -> Result<OrderBookSnapshot> {
         self.rate_limiter.throttle().await;
-        let bitmex_symbol = symbol.replace('/', "").to_uppercase();
+        let bitmex_symbol = Self::bitmex_symbol(symbol);
         let url = format!(
             "{}/api/v1/orderBook/L2?symbol={}&depth={}",
             self.config.base_url.trim_end_matches('/'),

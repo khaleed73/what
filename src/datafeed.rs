@@ -584,11 +584,14 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
             Some(format!(r#"{{"op":"subscribe","args":{:?}}}"#, args))
         }
         // Exchange 7 → BitMEX: subscribe to instrument
+        // H-72: BitMEX expects a single JSON object with all symbols in the
+        // args array, NOT a JSON array of individual objects.
         7 => {
-            let subs: Vec<serde_json::Value> = syms.iter().map(|s| {
-                serde_json::json!({"op": "subscribe", "args": [format!("instrument:{}", s)]})
-            }).collect();
-            Some(serde_json::to_string(&subs).unwrap_or_default())
+            let args: Vec<String> = syms.iter()
+                .map(|s| format!("instrument:{}", s))
+                .collect();
+            let sub_msg = serde_json::json!({"op": "subscribe", "args": args});
+            Some(serde_json::to_string(&sub_msg).unwrap_or_default())
         }
         // Exchange 8 → Coinbase: subscribe to ticker channel
         8 => {
@@ -616,10 +619,26 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
         // Exchange 10 → Kraken: subscribe to ticker channel
         10 => {
             // Kraken uses a pair-based subscribe
+            // H-63: Kraken uses XBT not BTC for WS. Only replace "BTC" at
+            // the START of the symbol when followed by a non-letter (or end of
+            // string) so that WBTC, BTCDOM, etc. are left untouched.
+            // First do a specific BTCUSDT -> XBT/USDT conversion (with slash),
+            // then handle any remaining standalone BTC prefix.
+            fn kraken_symbol(s: &str) -> String {
+                if s.starts_with("BTCUSDT") {
+                    return format!("XBT/{}", &s[3..]);
+                }
+                if s.starts_with("BTC") {
+                    // Only replace if next char is not a letter (A-Z/a-z)
+                    let rest = &s[3..];
+                    if rest.is_empty() || !rest.as_bytes()[0].is_ascii_alphabetic() {
+                        return format!("XBT{}", rest);
+                    }
+                }
+                s.to_string()
+            }
             let pair_subs: Vec<serde_json::Value> = syms.iter().map(|s| {
-                // Kraken uses XBT not BTC for WS
-                let pair = s.replace("BTCUSDT", "XBT/USDT")
-                    .replace("BTC", "XBT");
+                let pair = kraken_symbol(s);
                 serde_json::json!({"name": "ticker", "pair": pair})
             }).collect();
             let sub_msg = serde_json::json!({
@@ -660,14 +679,14 @@ fn build_subscribe_message(exchange_id: u16, symbols: &[String]) -> Option<Strin
             Some(serde_json::to_string(&sub_msg).unwrap_or_default())
         }
         // Exchange 14 → Delta: subscribe to ticker channel
+        // H-73: Delta Exchange expects a single JSON object with all symbols
+        // in the symbols array, NOT a JSON array of individual objects.
         14 => {
-            let subs: Vec<serde_json::Value> = syms.iter().map(|s| {
-                serde_json::json!({
-                    "type": "subscribe",
-                    "payload": { "channel": "v2/ticker", "symbols": [s] }
-                })
-            }).collect();
-            Some(serde_json::to_string(&subs).unwrap_or_default())
+            let sub_msg = serde_json::json!({
+                "type": "subscribe",
+                "payload": { "channel": "v2/ticker", "symbols": syms }
+            });
+            Some(serde_json::to_string(&sub_msg).unwrap_or_default())
         }
         // Exchange 15 → MEXC: Binance-compatible WS subscription
         15 => {

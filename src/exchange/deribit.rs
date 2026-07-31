@@ -156,15 +156,15 @@ impl DeribitExchange {
             .to_string();
         // BITMEX/DERIBIT_EXPIRES_SECS: 1-hour default fallback (seconds).
         const DEFAULT_EXPIRES_SECS: u64 = 3600;
-        let expires_in_ms = json["result"]["expires_in"]
+        let expires_in_secs = json["result"]["expires_in"]
             .as_u64()
             .unwrap_or(DEFAULT_EXPIRES_SECS);
         let now_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64;
-        // D FIX: use saturating_mul to prevent overflow when expires_in_ms is large.
-        let expires_at_us = now_us.saturating_add(expires_in_ms.saturating_mul(1000));
+        // expires_in is in seconds; convert to microseconds before adding to now_us.
+        let expires_at_us = now_us.saturating_add(expires_in_secs.saturating_mul(1_000_000));
 
         // Cache it with expiry
         {

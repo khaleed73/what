@@ -230,7 +230,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // When set in config, only the specified exchanges emit signals for
     // that strategy.  When omitted, all exchanges are eligible (default).
     if let Some(ref exchs) = config.strategies.cross_exchange.exchanges {
-        let mask: u64 = exchs.iter().fold(0u64, |m, &id| m | (1u64 << id));
+        // M-2: Validate exchange IDs are within u64 bit range before shifting.
+        let mask: u64 = exchs.iter().fold(0u64, |m, &id| {
+            if id < 64 { m | (1u64 << id) } else { m }
+        });
         arena.cross_exchange_mask.store(mask, Ordering::Relaxed);
         println!(
             "  Cross-exchange restricted to exchanges: {:?}",
@@ -238,7 +241,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     if let Some(ref exchs) = config.strategies.triangular.exchanges {
-        let mask: u64 = exchs.iter().fold(0u64, |m, &id| m | (1u64 << id));
+        // M-2: Validate exchange IDs are within u64 bit range before shifting.
+        let mask: u64 = exchs.iter().fold(0u64, |m, &id| {
+            if id < 64 { m | (1u64 << id) } else { m }
+        });
         arena.tri_exchange_mask.store(mask, Ordering::Relaxed);
         println!(
             "  Triangular restricted to exchanges: {:?}",

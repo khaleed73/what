@@ -653,6 +653,16 @@ impl EngineConfig {
 
         let mut exchanges: HashMap<u16, ValidatedExchangeConfig> = HashMap::new();
         for (section_name, raw_ex) in &raw.exchanges {
+            if section_name.is_empty() {
+                return Err("Exchange section name must not be empty".into());
+            }
+            if raw_ex.name.is_empty() {
+                return Err(format!(
+                    "Exchange [{}] has an empty 'name' field",
+                    section_name
+                )
+                .into());
+            }
             if exchanges.contains_key(&raw_ex.id) {
                 return Err(format!(
                     "Duplicate exchange id {} (found in section [exchanges.{}])",
@@ -767,8 +777,16 @@ impl EngineConfig {
                 &f.default_taker_fee_pct,
                 "friction_protections.default_taker_fee_pct",
             )?;
-            validate_pct_range(default_taker_fee_pct,
-                "friction_protections.default_taker_fee_pct")?;
+            // Reject zero default taker fee — a zero fee would make the
+            // strategy engine think trading is free, leading to incorrect
+            // profitability calculations and potentially unprofitable trades.
+            if default_taker_fee_pct <= Decimal::ZERO || default_taker_fee_pct > Decimal::ONE {
+                return Err(format!(
+                    "friction_protections.default_taker_fee_pct = {} must be strictly between 0 and 1 (exclusive of 0)",
+                    default_taker_fee_pct
+                )
+                .into());
+            }
 
             // Validate per-exchange fee overrides: each must be > 0.
             for (name, bps) in &f.exchange_taker_fees {

@@ -118,7 +118,18 @@ impl PaperTradingPipeline {
     /// For testing triangular arbitrage, BTC (token 1) and ETH (token 2) are
     /// pre-funded with 1.0 and 10.0 units respectively.
     /// FX quote currencies (JPY, EUR, GBP) are pre-funded for FX tri arb.
+    ///
+    /// FIX-M3-5: Panics if `initial_capital <= 0` to prevent a paper
+    /// trading session from operating with no or negative capital.
     pub fn new(initial_capital: Decimal) -> Self {
+        // FIX-M3-5: Validate initial capital is strictly positive.
+        if initial_capital <= Decimal::ZERO {
+            panic!(
+                "PaperTradingPipeline::new: initial_capital must be > 0, got {}",
+                initial_capital
+            );
+        }
+
         let mut balances = HashMap::new();
         balances.insert(0u16, initial_capital);
         balances.insert(1u16, dec!(1.0));   // BTC – for triangular arb
@@ -415,6 +426,24 @@ impl PaperTradingPipeline {
         let balances = self.balances.read().await;
         let usdt = balances.get(&0u16).copied().unwrap_or(Decimal::ZERO);
         usdt - self.initial_capital
+    }
+
+    /// FIX-M3-5: Compute PnL as a percentage of initial capital.
+    ///
+    /// Returns `(pnl / initial_capital) * 100` as a `Decimal` percentage.
+    /// Since `initial_capital` is validated to be > 0 in `new()`,
+    /// division by zero is structurally impossible. An additional
+    /// defensive guard is included for safety if the type were ever
+    /// used in a context where the invariant doesn't hold.
+    pub async fn get_pnl_percentage(&self) -> Decimal {
+        let pnl = self.get_total_pnl().await;
+        // FIX-M3-5: Guard against division by zero defensively.
+        // initial_capital is validated > 0 in new(), but this protects
+        // against any future misuse (e.g. deserialization bypassing new()).
+        if self.initial_capital <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+        (pnl / self.initial_capital) * Decimal::from(100u32)
     }
 
     /// Return a clone of the full trade history.

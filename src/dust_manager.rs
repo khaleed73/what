@@ -99,7 +99,17 @@ impl DustManager {
         quantity: Decimal,
         price_usd: Decimal,
     ) {
+        // Reject non-positive quantities — zero or negative amounts are not
+        // valid balances and must never enter the dust inventory.
         if quantity <= Decimal::ZERO {
+            return;
+        }
+        // Reject non-positive prices — a zero or negative price would produce
+        // a zero or negative USD value, which could corrupt the dust total
+        // (e.g. a negative estimated_usd_value would reduce total_dust and
+        // suppress sweep triggers).  Also prevents a future division-by-zero
+        // if someone later adds a value/price calculation.
+        if price_usd <= Decimal::ZERO {
             return;
         }
 
@@ -153,6 +163,11 @@ impl DustManager {
             .iter()
             .filter_map(|entry| {
                 // M-18: Skip entries below the minimum withdrawal amount.
+                // Also guard against entries with non-positive estimated value
+                // (defensive: should never happen after the update_balance guard).
+                if entry.estimated_usd_value <= Decimal::ZERO {
+                    return None;
+                }
                 if entry.estimated_usd_value < self.min_withdrawal_usd {
                     return None;
                 }

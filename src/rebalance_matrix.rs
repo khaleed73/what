@@ -284,7 +284,17 @@ impl RebalanceMatrixEngine {
         let target_each = total / Decimal::TWO;
 
         // C-9 fix: Correct transfer fee formula — use (1 - fee) not (1 + fee).
-        let raw_transfer = (source_balance - target_each) / (Decimal::ONE - self.execution_fee);
+        // C-43 fix: Guard against fee >= 100% which makes (1 - fee) <= 0,
+        // causing a division-by-zero panic in rust_decimal.
+        let one_minus_fee = Decimal::ONE - self.execution_fee;
+        if one_minus_fee <= Decimal::ZERO {
+            tracing::error!(
+                fee = %self.execution_fee,
+                "execution fee >= 100% — rebalancing is impossible, skipping"
+            );
+            return None;
+        }
+        let raw_transfer = (source_balance - target_each) / one_minus_fee;
         // Round down to be conservative
         let transfer_amount = raw_transfer.floor();
 
@@ -457,5 +467,29 @@ mod tests {
         // Fee should be 1% of transfer
         let expected_fee = action.transfer_amount * dec!(0.01);
         assert!((action.estimated_fee - expected_fee).abs() < dec!(0.01));
+    }
+
+    // C-43 regression test: fee >= 100% must not panic.
+    #[test]
+    fn test_fee_100_percent_no_panic() {
+        let engine = RebalanceMatrixEngine::new(dec!(0.60), dec!(1.0), dec!(1.0)); // 100% fee
+        let inv = AccountInventory {
+            stable_balance_x: dec!(9000.0),
+            stable_balance_y: dec!(1000.0),
+        };
+        // Must return None, not panic with division by zero.
+        let action = engine.compute_hedged_rebalance_execution(&inv, 0, 1);
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_fee_over_100_percent_no_panic() {
+        let engine = RebalanceMatrixEngine::new(dec!(0.60), dec!(1.5), dec!(1.0)); // 150% fee
+        let inv = AccountInventory {
+            stable_balance_x: dec!(9000.0),
+            stable_balance_y: dec!(1000.0),
+        };
+        let action = engine.compute_hedged_rebalance_execution(&inv, 0, 1);
+        assert!(action.is_none());
     }
 }

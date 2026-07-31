@@ -76,38 +76,47 @@ impl TimestampSynchronizer {
     /// * `server_time_ms` — Server timestamp in milliseconds since epoch.
     ///
     /// The offset is computed as: `server_time_ms - local_time_ms`.
-    /// A median of multiple samples is recommended for accuracy.
+    /// A median of multiple samples is used for the initial estimate to
+    /// filter out network latency outliers.
+    ///
+    /// FIX-M3-3: No division is used in offset computation (simple subtraction),
+    /// so there is no risk of division-by-zero in clock drift estimation.
     pub fn update_offset(&self, server_time_ms: i64) {
         let local_ms = chrono::Utc::now().timestamp_millis();
         let offset = server_time_ms - local_ms;
 
         // M-4 fix: Use median of first few samples instead of accepting blindly.
-        let needs_median = {
+        // FIX-M3-3: Actually compute the median instead of discarding the samples.
+        let median_offset = {
             let mut buf = self.sample_buffer.lock().unwrap_or_else(|e| e.into_inner());
             buf.push(offset);
             if buf.len() < self.samples_required {
-                return;
+                return; // Not enough samples yet — keep collecting.
             }
-            true
+            // Compute median from collected samples.
+            buf.sort();
+            let mid = buf.len() / 2;
+            let median = if buf.len() % 2 == 0 {
+                // Even number of samples: average the two middle values.
+                // FIX-M3-3: Guard against overflow when averaging.
+                let a = buf[mid - 1];
+                let b = buf[mid];
+                a / 2 + b / 2 + (a % 2 + b % 2) / 2
+            } else {
+                buf[mid]
+            };
+            buf.clear(); // Drain buffer after computing median.
+            median
         };
-
-        if !needs_median {
-            return;
-        }
-
-        // Clear the sample buffer once we have enough.
-        if let Ok(mut buf) = self.sample_buffer.lock() {
-            buf.clear();
-        }
 
         // Guard against non-linear drift: reject if the jump from the
         // currently stored offset exceeds `max_drift_ms`.
         let current = self.offset_ms.load(Ordering::Acquire);
-        if (offset - current).abs() > self.max_drift_ms {
+        if (median_offset - current).abs() > self.max_drift_ms {
             tracing::warn!(
                 exchange = %self.exchange_name,
                 old_offset_ms = current,
-                new_offset_ms = offset,
+                new_offset_ms = median_offset,
                 max_jump_ms = self.max_drift_ms,
                 "Rejected offset update: jump exceeds max_drift_ms (possible corrupted NTP response)"
             );
@@ -117,11 +126,11 @@ impl TimestampSynchronizer {
         // CRITICAL FIX: Check for fatal drift BEFORE storing.
         // A fatal offset would cause all subsequent orders to be rejected,
         // so we must refuse to store it even if it passed the jump check.
-        let abs_offset = offset.abs();
+        let abs_offset = median_offset.abs();
         if abs_offset > self.max_drift_fatal_ms {
             tracing::error!(
                 exchange = %self.exchange_name,
-                offset_ms = offset,
+                offset_ms = median_offset,
                 "FATAL: Clock drift exceeds fatal threshold ({}ms) — offset NOT stored",
                 self.max_drift_fatal_ms
             );
@@ -129,7 +138,7 @@ impl TimestampSynchronizer {
         }
 
         // Store the offset.
-        self.offset_ms.store(offset, Ordering::Release);
+        self.offset_ms.store(median_offset, Ordering::Release);
         *self.last_sync.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
 
         if abs_offset > self.max_drift_warn_ms {
@@ -156,14 +165,22 @@ impl TimestampSynchronizer {
     /// previous one.  Backward NTP corrections that step the local clock
     /// backwards would otherwise produce monotonically *decreasing*
     /// timestamps, causing the system to treat stale order-book data as fresh.
+    ///
+    /// FIX-M3-3: Floors the result at 1 (never returns zero or negative)
+    /// to prevent API rejections from exchanges that reject non-positive
+    /// timestamps. A large negative NTP offset could otherwise produce
+    /// negative millisecond timestamps.
     #[inline]
     pub fn adjusted_timestamp_ms(&self) -> i64 {
         let local_ms = chrono::Utc::now().timestamp_millis();
         let adjusted = local_ms + self.offset_ms.load(Ordering::Acquire);
+        // FIX-M3-3: Ensure the timestamp is never zero or negative.
+        // Exchanges reject orders with non-positive timestamps.
+        let floored = adjusted.max(1);
         // Enforce monotonicity: never return a value less than the previous one.
         loop {
             let prev = self.last_returned_ms.load(Ordering::Acquire);
-            let result = adjusted.max(prev);
+            let result = floored.max(prev);
             if result == prev || self.last_returned_ms.compare_exchange_weak(prev, result, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 return result;
             }

@@ -1,5 +1,7 @@
 // exchange/config.rs — ExchangeConfig struct used by the rich Exchange trait clients.
 
+use super::common::TlsPinningConfig;
+
 /// Per-exchange configuration.  Each client receives one at construction time.
 ///
 /// `api_key` and `api_secret` are wrapped in `SecretString` which zeroises
@@ -11,6 +13,10 @@ pub struct ExchangeConfig {
     pub base_url: String,
     pub passphrase: Option<SecretString>,
     pub http_timeout_secs: Option<u64>,
+    /// Optional TLS certificate pinning for this exchange.
+    /// When set, only servers presenting certificates from the pinned CA(s)
+    /// will be trusted. Falls back to system trust store when `ca_cert_pem` is `None`.
+    pub tls: TlsPinningConfig,
 }
 
 impl std::fmt::Debug for ExchangeConfig {
@@ -21,6 +27,7 @@ impl std::fmt::Debug for ExchangeConfig {
             .field("base_url", &self.base_url)
             .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
             .field("http_timeout_secs", &self.http_timeout_secs)
+            .field("tls", &self.tls)
             .finish()
     }
 }
@@ -48,10 +55,11 @@ impl ExchangeConfig {
             base_url: base_url.to_owned(),
             passphrase: None,
             http_timeout_secs: None,
+            tls: TlsPinningConfig::default(),
         };
         // M-2: Validate at construction time so invalid configs fail early.
         if let Err(e) = cfg.validate() {
-            tracing::error!(error = %e, "ExchangeConfig::new validation failed");
+            tracing::warn!(error = %e, "ExchangeConfig::new validation failed");
         }
         cfg
     }
@@ -69,20 +77,45 @@ impl ExchangeConfig {
             base_url: base_url.to_owned(),
             passphrase: Some(SecretString::new(passphrase)),
             http_timeout_secs: None,
+            tls: TlsPinningConfig::default(),
         };
         // M-2: Validate at construction time so invalid configs fail early.
         if let Err(e) = cfg.validate() {
-            tracing::error!(error = %e, "ExchangeConfig::with_passphrase validation failed");
+            tracing::warn!(error = %e, "ExchangeConfig::with_passphrase validation failed");
         }
         cfg
+    }
+
+    /// Set TLS certificate pinning for this exchange.
+    ///
+    /// When `ca_cert_pem` is `Some(pem)`, only servers presenting certificates
+    /// signed by the pinned CA(s) will be trusted. This prevents MITM attacks
+    /// even if the system's root certificate store is compromised.
+    pub fn with_tls(mut self, ca_cert_pem: Option<String>) -> Self {
+        self.tls = TlsPinningConfig { ca_cert_pem };
+        self
+    }
+
+    /// Build an HTTP client respecting the TLS pinning configuration.
+    ///
+    /// If `tls.ca_cert_pem` is set, builds a pinned client via
+    /// [`super::common::build_pinned_http_client`]; otherwise falls back
+    /// to the default system-trust-store client.
+    pub fn build_client(&self, timeout_secs: u64) -> anyhow::Result<reqwest::Client> {
+        if self.tls.ca_cert_pem.is_some() {
+            super::common::build_pinned_http_client(timeout_secs, &self.tls)
+        } else {
+            super::common::build_http_client(timeout_secs)
+        }
     }
 
     /// Validate the config for production use.
     ///
     /// * `base_url` must use HTTPS to prevent credential leakage over plaintext.
     /// * API key and secret must not be empty.
+    /// * API key should not contain obvious placeholder values.
     pub fn validate(&self) -> Result<(), String> {
-        if !self.base_url.starts_with("https://") {
+        if !self.base_url.starts_with("https://") && !self.base_url.starts_with("http://localhost") {
             return Err(format!(
                 "Exchange base_url must use HTTPS for production, got: {}",
                 self.base_url
@@ -90,6 +123,19 @@ impl ExchangeConfig {
         }
         if self.api_key.expose().is_empty() || self.api_secret.expose().is_empty() {
             return Err("API key and secret must not be empty".to_string());
+        }
+        // Detect common placeholder/missed-configuration patterns
+        let key_lower = self.api_key.expose().to_lowercase();
+        if key_lower.contains("your_key")
+            || key_lower.contains("your-api-key")
+            || key_lower.contains("replace_me")
+            || key_lower == "api_key"
+            || key_lower == "apikey"
+        {
+            return Err(format!(
+                "API key appears to be an unconfigured placeholder: {}...",
+                &self.api_key.expose()[..self.api_key.expose().len().min(16)]
+            ));
         }
         Ok(())
     }

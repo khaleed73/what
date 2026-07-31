@@ -57,6 +57,13 @@ pub trait Exchange: Send + Sync {
     }
 
     /// Place an order with an explicit order type and optional price.
+    ///
+    /// **C-100 fix**: The default implementation now constructs the appropriate
+    /// `OrderRequest` fields and delegates to [`Self::place_order`] (market) or
+    /// returns a "not implemented" error for other types.  This breaks the
+    /// mutual recursion that previously existed between this method and
+    /// [`Self::place_limit_order`].  Implementors that support limit orders
+    /// should override either this method or `place_limit_order`.
     async fn place_order_with_type(
         &self,
         order: &OrderRequest,
@@ -67,8 +74,15 @@ pub trait Exchange: Send + Sync {
         match order_type {
             OrderType::Market => self.place_order(order).await,
             OrderType::Limit => {
-                let p = price.ok_or_else(|| anyhow::anyhow!("limit order requires a price"))?;
-                self.place_limit_order(order, p).await
+                let _ = price.ok_or_else(|| anyhow::anyhow!("limit order requires a price"))?;
+                // Do NOT call self.place_limit_order() here — that would
+                // create infinite recursion.  If the exchange impl doesn't
+                // override this method or place_limit_order, the caller
+                // gets a clear error.
+                anyhow::bail!(
+                    "place_order_with_type(Limit) is not implemented for this exchange — \
+                     override place_limit_order() or place_order_with_type()"
+                )
             }
             _ => anyhow::bail!("order type {:?} not natively supported", order_type),
         }

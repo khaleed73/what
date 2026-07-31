@@ -96,22 +96,32 @@ impl GateioClient {
         map
     }
 
-    /// Sign a GET request. Preimage: `timestamp + "GET" + path + query`.
+    /// Sign a GET request. Preimage: `timestamp + "GET" + path + "?" + query`.
+    /// If query is empty, the trailing `?` is omitted per Gate.io V4 spec.
     fn sign_get(&self, timestamp: &str, path: &str, query: &str) -> Result<String> {
-        let payload = format!("{}GET{}{}", timestamp, path, query);
+        let payload = if query.is_empty() {
+            format!("{}GET{}", timestamp, path)
+        } else {
+            format!("{}GET{}?{}", timestamp, path, query)
+        };
         sign_hmac(self.config.api_secret.expose(), &payload)
     }
 
-    /// Sign a POST request. Preimage: `timestamp + "POST" + path + "" + sha256_hex(body)`.
+    /// Sign a POST request. Preimage: `timestamp + "POST" + path + "\n" + sha256_hex(body)`.
     fn sign_post(&self, timestamp: &str, path: &str, body: &[u8]) -> Result<String> {
         let body_hash = sha256_hex(body);
-        let payload = format!("{}POST{}{}", timestamp, path, body_hash);
+        let payload = format!("{}POST{}\n{}", timestamp, path, body_hash);
         sign_hmac(self.config.api_secret.expose(), &payload)
     }
 
-    /// Sign a DELETE request. Preimage: `timestamp + "DELETE" + path + query`.
+    /// Sign a DELETE request. Preimage: `timestamp + "DELETE" + path + "?" + query`.
+    /// If query is empty, the trailing `?` is omitted per Gate.io V4 spec.
     fn sign_delete(&self, timestamp: &str, path: &str, query: &str) -> Result<String> {
-        let payload = format!("{}DELETE{}{}", timestamp, path, query);
+        let payload = if query.is_empty() {
+            format!("{}DELETE{}", timestamp, path)
+        } else {
+            format!("{}DELETE{}?{}", timestamp, path, query)
+        };
         sign_hmac(self.config.api_secret.expose(), &payload)
     }
 
@@ -128,7 +138,7 @@ impl GateioClient {
                     "CANCELED".to_string()
                 }
             }
-            "cancelled" | "canceled" => "CANCELED".to_string(),
+            "cancelled" | "canceled" | "expired" => "CANCELED".to_string(),
             _ => status.to_uppercase(),
         }
     }

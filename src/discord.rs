@@ -36,6 +36,12 @@ const DISCORD_COLOR_RED: u32 = 16_711_680;
 /// Discord embed color: blurple (system info, Discord brand).
 const DISCORD_COLOR_BLURPLE: u32 = 3_066_993;
 
+/// M-3 FIX: Maximum length for Discord embed field values (Discord limit = 1024).
+const DISCORD_FIELD_VALUE_MAX: usize = 1024;
+
+/// M-3 FIX: Maximum length for Discord embed description (Discord limit = 2048).
+const DISCORD_DESCRIPTION_MAX: usize = 2048;
+
 /// Minimum interval between Discord webhook sends (200ms = 5/sec).
 const DISCORD_RATE_LIMIT_MS: u64 = 200;
 
@@ -113,10 +119,29 @@ impl DiscordWorker {
     /// # Arguments
     /// * `webhook_url` — Discord webhook URL (must start with `https://`)
     /// * `buffer_capacity` — Bounded channel capacity for pending notifications
+    ///
+    /// # Panics
+    /// Panics if `webhook_url` does not match the Discord webhook URL format
+    /// (`https://discord.com/api/webhooks/...` or `https://discordapp.com/api/webhooks/...`).
+    /// M-4 FIX: Rejects malformed URLs at construction time rather than
+    /// silently sending secrets to an arbitrary host.
     pub fn new(
         webhook_url: String,
         buffer_capacity: usize,
     ) -> (Self, mpsc::Sender<DiscordNotification>) {
+        // M-4 FIX: Validate webhook URL at construction time.
+        if !is_valid_discord_webhook_url(&webhook_url) {
+            tracing::error!(
+                "M-4: invalid Discord webhook URL — must match \
+                 https://discord.com/api/webhooks/... or \
+                 https://discordapp.com/api/webhooks/..."
+            );
+            panic!(
+                "invalid Discord webhook URL: must start with \
+                 https://discord.com/api/webhooks/ or \
+                 https://discordapp.com/api/webhooks/"
+            );
+        }
         let (tx, rx) = mpsc::channel(buffer_capacity);
         let worker = Self {
             webhook_url,
@@ -253,6 +278,40 @@ impl DiscordWorker {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// M-4 FIX: Validates that a URL is a legitimate Discord webhook URL.
+///
+/// Accepts only:
+/// * `https://discord.com/api/webhooks/...`
+/// * `https://discordapp.com/api/webhooks/...`
+///
+/// Rejects HTTP, bare domains, IP addresses, or other hosts to prevent
+/// webhook tokens from being sent to arbitrary endpoints.
+fn is_valid_discord_webhook_url(url: &str) -> bool {
+    url.starts_with("https://discord.com/api/webhooks/")
+        || url.starts_with("https://discordapp.com/api/webhooks/")
+}
+
+/// M-3 FIX: Truncates a string to `max_len` characters, appending "…"
+/// if the string was truncated, to stay within Discord's embed field limits.
+fn truncate_for_discord(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        // Leave room for the ellipsis character (3 bytes in UTF-8).
+        let trunc_at = max_len.saturating_sub(1); // 1 char for '…'
+        let mut end = trunc_at;
+        // Don't split in the middle of a multi-byte UTF-8 character.
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Payload builders
 // ---------------------------------------------------------------------------
 
@@ -354,6 +413,23 @@ fn build_embed_payload(notification: &DiscordNotification) -> serde_json::Value 
             "HFT Arbitrage Engine".to_string(),
         ),
     };
+
+    // M-3 FIX: Truncate description and all field values to stay within
+    // Discord's embed character limits.  Without this, a long violation_detail
+    // or SystemInfo description would cause Discord to reject the webhook
+    // payload with HTTP 400.
+    let description = truncate_for_discord(&description, DISCORD_DESCRIPTION_MAX);
+    let fields: Vec<serde_json::Value> = fields
+        .into_iter()
+        .map(|mut f| {
+            if let Some(val) = f.get_mut("value").and_then(|v| v.as_str()) {
+                let truncated = truncate_for_discord(val, DISCORD_FIELD_VALUE_MAX);
+                f["value"] = json!(truncated);
+            }
+            f
+        })
+        .collect();
+    let footer_text = truncate_for_discord(&footer_text, DISCORD_DESCRIPTION_MAX);
 
     json!({
         "embeds": [{
@@ -482,5 +558,47 @@ mod tests {
 
         // Verify worker fields are set
         assert_eq!(worker.webhook_url, "https://discord.com/api/webhooks/fake/test");
+    }
+
+    #[test]
+    fn test_valid_discord_webhook_urls() {
+        // M-4 FIX: Only allowed domains/paths accepted.
+        assert!(is_valid_discord_webhook_url("https://discord.com/api/webhooks/abc/123"));
+        assert!(is_valid_discord_webhook_url("https://discordapp.com/api/webhooks/abc/123"));
+    }
+
+    #[test]
+    fn test_invalid_discord_webhook_urls() {
+        // M-4 FIX: Reject HTTP, bare domains, IP addresses, wrong paths.
+        assert!(!is_valid_discord_webhook_url("http://discord.com/api/webhooks/abc/123"));
+        assert!(!is_valid_discord_webhook_url("https://evil.com/api/webhooks/abc/123"));
+        assert!(!is_valid_discord_webhook_url("https://discord.com/invalid/path"));
+        assert!(!is_valid_discord_webhook_url("https://192.168.1.1/api/webhooks/abc/123"));
+        assert!(!is_valid_discord_webhook_url(""));
+    }
+
+    #[test]
+    fn test_truncate_for_discord_short() {
+        // M-3 FIX: Short strings pass through unchanged.
+        assert_eq!(truncate_for_discord("hello", 1024), "hello");
+    }
+
+    #[test]
+    fn test_truncate_for_discord_long() {
+        // M-3 FIX: Long strings are truncated with ellipsis.
+        let long = "x".repeat(2000);
+        let result = truncate_for_discord(&long, 1024);
+        assert!(result.len() <= 1024); // byte length within limit
+        assert!(result.ends_with('\u{2026}')); // ends with …
+    }
+
+    #[test]
+    fn test_truncate_for_discord_utf8_boundary() {
+        // M-3 FIX: Won't split multi-byte UTF-8 characters.
+        let emoji = "🎉".repeat(300); // each emoji is 4 bytes
+        let result = truncate_for_discord(&emoji, 1024);
+        assert!(result.len() <= 1024);
+        // Verify the result is valid UTF-8.
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
     }
 }

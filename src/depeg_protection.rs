@@ -65,8 +65,24 @@ impl StablecoinProtectionCircuit {
     }
 
     /// Creates a circuit with a custom depeg threshold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `threshold` is zero, negative, or greater than 0.1 (10%).
+    /// A zero/negative threshold would trip on *any* price noise, while
+    /// a threshold above 10% is too permissive to catch a real depeg.
     #[inline]
     pub fn with_threshold(symbol: &str, threshold: Decimal) -> Self {
+        assert!(
+            threshold > Decimal::ZERO,
+            "depeg threshold must be positive, got {}",
+            threshold
+        );
+        assert!(
+            threshold <= dec!(0.1),
+            "depeg threshold unreasonably large ({}), max is 0.1 (10%)",
+            threshold
+        );
         Self {
             target_symbol: symbol.to_uppercase(),
             is_depegged: AtomicBool::new(false),

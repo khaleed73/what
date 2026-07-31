@@ -160,6 +160,11 @@ impl AsyncPersistenceWorker {
                 .map_err(|e| format!("open for sync failed: {}", e))?;
             file.sync_all()
                 .map_err(|e| format!("sync_all failed: {}", e))?;
+            // Drop the read handle BEFORE renaming.  On Windows (and some
+            // other OSes) an open file handle prevents the rename from
+            // succeeding.  On POSIX the rename works fine with open fds,
+            // but dropping explicitly makes the intent clear.
+            drop(file);
             // M-10: EXDEV fallback — rename fails across filesystems.
             if let Err(e) = fs::rename(&tmp_path, &path) {
                 if e.raw_os_error() == Some(EXDEV_ERRNO) {

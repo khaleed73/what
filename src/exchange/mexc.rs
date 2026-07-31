@@ -143,10 +143,18 @@ impl Exchange for MexcExchange {
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
+        let mapped_status = match status_str {
+            "NEW" => "NEW",
+            "PARTIALLY_FILLED" => "PARTIALLY_FILLED",
+            "FILLED" => "FILLED",
+            "CANCELED" | "CANCELLED" | "EXPIRED" => "CANCELED",
+            "REJECTED" => "REJECTED",
+            _ => "UNKNOWN",
+        };
         Ok(OrderResponse {
             order_id,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: status_str.to_string(),
+            status: mapped_status.to_string(),
             filled_qty,
             avg_price,
             exchange: self.name.clone(),
@@ -482,10 +490,18 @@ impl Exchange for MexcExchange {
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
+        let mapped_status = match status_str {
+            "NEW" => "NEW",
+            "PARTIALLY_FILLED" => "PARTIALLY_FILLED",
+            "FILLED" => "FILLED",
+            "CANCELED" | "CANCELLED" | "EXPIRED" => "CANCELED",
+            "REJECTED" => "REJECTED",
+            _ => "UNKNOWN",
+        };
         Ok(OrderResponse {
             order_id,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: status_str.to_string(),
+            status: mapped_status.to_string(),
             filled_qty: Decimal::ZERO,
             avg_price: Decimal::ZERO,
             exchange: self.name.clone(),
@@ -581,10 +597,18 @@ impl Exchange for MexcExchange {
 
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
         let status_str = json["status"].as_str().unwrap_or("UNKNOWN");
+        let mapped_status = match status_str {
+            "NEW" => "NEW",
+            "PARTIALLY_FILLED" => "PARTIALLY_FILLED",
+            "FILLED" => "FILLED",
+            "CANCELED" | "CANCELLED" | "EXPIRED" => "CANCELED",
+            "REJECTED" => "REJECTED",
+            _ => "UNKNOWN",
+        };
         Ok(OrderResponse {
             order_id,
             client_order_id: order.client_order_id.clone().unwrap_or_default(),
-            status: status_str.to_string(),
+            status: mapped_status.to_string(),
             filled_qty,
             avg_price,
             exchange: self.name.clone(),

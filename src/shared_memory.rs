@@ -17,6 +17,16 @@ pub const MAX_SYMBOL_LEN: usize = 12;
 /// This is the spec-mandated `SharedMarketFrame` — a `#[repr(C)]` struct
 /// with fixed-size fields for lock-free IPC between processes.
 ///
+/// **H-66 safety note**: The `symbol` field is accessed through raw pointer
+/// writes (in `write()`) and non-atomic byte reads (in `symbol_str()`). This
+/// is safe ONLY under the single-writer + sequence-lock protocol documented
+/// below. Wrapping `symbol` in `UnsafeCell` would change the `#[repr(C)]`
+/// layout and break ABI compatibility with C/FFI consumers. The current
+/// approach is sound because: (1) only one writer task exists, (2) readers
+/// use the sequence-lock retry pattern, and (3) `compiler_fence(Ordering::Release)`
+/// prevents reordering. Miri may still flag these accesses — this is a known
+/// limitation of lock-free IPC patterns in safe Rust.
+///
 /// Layout:
 /// ```text
 /// | sequence_id (8) | symbol (12) | best_bid (8) | best_ask (8) | timestamp (8) |

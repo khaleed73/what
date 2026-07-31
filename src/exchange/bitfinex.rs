@@ -13,6 +13,12 @@ use crate::exchange::common::*;
 use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// H-106 FIX: Global monotonic counter for collision-resistant client order IDs.
+/// Combined with timestamp and entropy, this prevents cid collisions even under
+/// high-frequency order placement.
+static CID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Bitfinex exchange client with rate limiting.
 pub struct BitfinexClient {
@@ -118,18 +124,32 @@ impl BitfinexClient {
                 .map_err(|e| anyhow::anyhow!("failed to serialize price: {}", e))?;
         }
         // Bitfinex uses "cid" (client ID) for idempotency
-        if let Some(ref client_oid) = order.client_order_id {
-            if !client_oid.is_empty() {
-                // cid must be an integer; hash the string to get one
-                let cid = client_oid
-                    .chars()
-                    .map(|c| c as u32)
-                    .fold(0u64, |acc, v| acc.wrapping_add(v as u64));
-                order_obj["cid"] = serde_json::Value::Number(cid.into());
-            }
-        }
+        // H-106 FIX: Replace collision-prone char-sum hash with a robust scheme
+        // combining timestamp (42 bits), monotonic counter (14 bits), and
+        // derived entropy (8 bits). Result fits in u64, well within Bitfinex's
+        // 36-char cid constraint. Fits in i64 for JSON serialization.
+        let cid = Self::generate_cid();
+        order_obj["cid"] = serde_json::Value::Number(cid.into());
         // Bitfinex API uses [0, "on", null, {order_details}] format
         Ok(serde_json::json!([0, "on", null, order_obj]))
+    }
+
+    /// H-106 FIX: Generate a collision-resistant client order ID (u64).
+    /// Combines three components into a 64-bit value:
+    ///   - 42 bits of timestamp_millis (lower bits, covers ~139 years)
+    ///   - 14 bits of monotonic counter (16 384 unique IDs per ms)
+    ///   - 8 bits of derived entropy (mixing counter with a large prime constant)
+    /// The result fits in i64 for JSON integer serialization and is well within
+    /// Bitfinex's 36-character cid constraint (u64 max = 20 decimal digits).
+    #[inline]
+    fn generate_cid() -> u64 {
+        let ts = chrono::Utc::now().timestamp_millis() as u64;
+        let ctr = CID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Derive pseudo-random 8 bits from counter using a multiplicative hash
+        // (Knuth's multiplicative method variant) — no external RNG dependency.
+        let entropy = ((ctr.wrapping_mul(0x517cc1b727220a95) >> 56) & 0xFF) as u64;
+        // Pack: [42 bits timestamp | 14 bits counter | 8 bits entropy]
+        ((ts & 0x3FFFFFFFFFF) << 22) | ((ctr & 0x3FFF) << 8) | entropy
     }
 
     /// Parse a Bitfinex order response.

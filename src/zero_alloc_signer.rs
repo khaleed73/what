@@ -11,6 +11,12 @@ use secrecy::ExposeSecret;
 /// Maximum payload length supported (4 KB — sufficient for any exchange query string).
 const MAX_PAYLOAD_LEN: usize = 4096;
 
+/// Overhead for the signature suffix: "&signature=" (12 bytes) + 64 hex chars = 76 bytes.
+const SIGNATURE_OVERHEAD: usize = 76;
+
+/// Maximum allowed preimage length.  Must leave room for the signature suffix.
+const MAX_PREIMAGE_LEN: usize = MAX_PAYLOAD_LEN - SIGNATURE_OVERHEAD;
+
 /// Pre-allocated HMAC signer that reuses stack buffers.
 pub struct ZeroAllocationSigner {
     secret_key: secrecy::SecretString,
@@ -112,6 +118,13 @@ impl ZeroAllocationSigner {
         use ring::hmac;
         let key = hmac::Key::new(hmac::HMAC_SHA256, self.secret_key.expose_secret().as_bytes());
         let tag = hmac::sign(&key, preimage.as_bytes());
+
+        // Early check: reject if the preimage alone exceeds the buffer capacity
+        // minus the signature overhead, avoiding a needless allocation of the
+        // output string that would immediately fail the write.
+        if preimage.len() > MAX_PREIMAGE_LEN {
+            return Err("Preimage too large for output buffer");
+        }
 
         // Build final output
         let mut output = String::with_capacity(preimage.len() + 80);

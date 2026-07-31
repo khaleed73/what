@@ -158,7 +158,13 @@ impl PreSignedPayloadArena {
     /// Creates an arena with the given number of buffers.
     ///
     /// The maximum capacity defaults to `count * PAYLOAD_BUFFER_SIZE`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `count` is zero — an empty arena would cause a
+    /// division-by-zero in `acquire()`.
     pub fn new(count: usize) -> Self {
+        assert!(count > 0, "PreSignedPayloadArena::new: count must be > 0");
         let buffers = (0..count).map(|_| PayloadBuffer::new()).collect();
         Self {
             buffers,
@@ -171,8 +177,16 @@ impl PreSignedPayloadArena {
     /// Gets the next available buffer (round-robin).
     ///
     /// The caller should call `clear()` before reusing.
+    ///
+    /// # Safety
+    ///
+    /// This is a simple round-robin allocator with no checkout tracking.
+    /// Callers must use buffers sequentially within a single thread —
+    /// acquiring a new buffer while still referencing a previously
+    /// acquired one (on a wrap-around) will overwrite its contents.
     #[inline]
     pub fn acquire(&self) -> &PayloadBuffer {
+        debug_assert!(!self.buffers.is_empty(), "arena must not be empty");
         let idx = self.next_index.get();
         let buf = &self.buffers[idx % self.buffers.len()];
         self.next_index.set(idx + 1);

@@ -76,13 +76,18 @@ impl EngineCircuitBreaker {
     }
 
     /// Resets the breaker, allowing trading to resume.
-    /// Returns true if the system was actually frozen (and is now unfrozen).
-    /// Clears stale trip metadata (reason, timestamp) on reset.
+    /// Returns true if the system was actually frozen (regardless of whether
+    /// the reset was accepted). Returns false if the system was not frozen.
+    /// Clears stale trip metadata (reason, timestamp) on successful reset.
     ///
     /// # Safety
     /// This method refuses to clear `REASON_BALANCE_CORRUPTION` and
     /// `REASON_MANUAL_KILL` trips, since those require explicit operator
     /// acknowledgment.  Use `reset_forced()` to bypass this guard.
+    ///
+    /// FIX-M3-4: Callers should check `is_frozen()` after calling `reset()`
+    /// if they need to distinguish "was frozen and is now unfrozen" from
+    /// "was frozen and reset was refused".
     pub fn reset(&self) -> bool {
         let reason = self.trip_reason.load(Ordering::Acquire);
         if matches!(reason, REASON_BALANCE_CORRUPTION | REASON_MANUAL_KILL) {
@@ -201,6 +206,27 @@ impl EngineCircuitBreaker {
     #[inline(always)]
     pub fn rejected_count(&self) -> u64 {
         self.rejected_count.load(Ordering::Acquire)
+    }
+
+    /// FIX-M3-4: Compute the rejection (failure) rate safely.
+    ///
+    /// Returns `rejected_count / (rejected_count + trip_count)` as an f64 in
+    /// `[0.0, 1.0]`.  When no trips have occurred (zero denominator),
+    /// returns `0.0` instead of dividing by zero.
+    ///
+    /// This is useful for monitoring dashboards that want to display how
+    /// aggressive the circuit breaker has been.
+    #[inline]
+    pub fn failure_rate(&self) -> f64 {
+        let rejected = self.rejected_count.load(Ordering::Acquire) as f64;
+        let trips = self.trip_count.load(Ordering::Acquire) as f64;
+        // FIX-M3-4: Guard against division by zero when no trips have occurred.
+        // Even with trips, if both are 0 (shouldn't happen but defensively), return 0.
+        let total = rejected + trips;
+        if total <= 0.0 {
+            return 0.0;
+        }
+        rejected / total
     }
 }
 
