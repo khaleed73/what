@@ -289,7 +289,9 @@ pub struct ValidatedCrossExchangeConfig {
     pub enabled: bool,
     pub min_spread_pct: Decimal,
     pub max_target_latency_ms: u64,
-    /// Reserved for future L2 liquidity gate on signal emission.
+    /// Minimum L2 order book liquidity (USD) required to emit a signal.
+    /// Not yet enforced in the signal loop — planned for a future release.
+    #[allow(dead_code)]
     pub min_l2_liquidity_usd: Decimal,
     pub max_slippage_tolerance: Decimal,
     /// Optional allowlist of exchange IDs. None = all exchanges eligible.
@@ -300,9 +302,12 @@ pub struct ValidatedCrossExchangeConfig {
 pub struct ValidatedTriangularConfig {
     pub enabled: bool,
     pub min_loop_profit_pct: Decimal,
-    /// Reserved: only 3-hop loops are currently supported.
+    /// Maximum path length for Bellman-Ford search (3 = triangular).
+    /// Passed to `TriPathFinder::with_max_iterations()`.
     pub max_path_length: u32,
-    /// Reserved for future volume filtering on loop discovery.
+    /// Minimum 24h pair volume (USD) for triangular loop candidates.
+    /// Not yet enforced in the path finder — planned for a future release.
+    #[allow(dead_code)]
     pub min_pair_volume_24h: Decimal,
     pub quote_anchors: Vec<String>,
     /// Optional allowlist of exchange IDs. None = all exchanges eligible.

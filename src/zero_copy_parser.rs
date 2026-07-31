@@ -32,9 +32,16 @@ pub struct FastParsedOrderBook {
     /// Token/pair symbol.
     pub symbol: String,
     /// Best bid price.
-    // TODO: Should be Decimal. f64 has ~15 significant digits.
+    ///
+    /// # Precision Note
+    /// f64 (~15 significant digits) for zero-copy parsing speed.
+    /// The downstream signal arena uses fixed-point i64 (1e8), so this
+    /// f64 is converted immediately and never used for financial arithmetic.
     pub bid: f64,
     /// Best ask price.
+    ///
+    /// # Precision Note
+    /// Same f64 precision trade-off as `bid`.
     pub ask: f64,
 }
 
@@ -44,6 +51,9 @@ pub struct FastParsedExecutionReport {
     /// Token/pair symbol.
     pub symbol: String,
     /// New balance (if present).
+    ///
+    /// # Precision Note
+    /// f64 for zero-copy speed. Convert to Decimal for ledger use.
     pub balance: f64,
     /// Order status.
     pub status: String,

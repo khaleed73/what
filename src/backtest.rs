@@ -56,8 +56,10 @@ pub struct BacktestConfig {
     /// Maximum fraction of capital to deploy in a single trade. Default: 0.15.
     pub max_position_pct: Decimal,
     /// Taker fee in basis points. Default: 10 (0.10%).
-    // TODO: Support tiered/volume-based fee models for more realistic
-    // backtesting. Currently uses a flat taker fee.
+    ///
+    /// # Future Enhancement
+    /// Exchange fee tiers (maker/taker, volume-based) would improve
+    /// backtest realism. Currently uses a flat taker fee for simplicity.
     pub taker_fee_bps: u64,
     /// Minimum spread in basis points to act on. Default: 15 (0.15%).
     pub min_spread_bps: u64,

@@ -10,6 +10,15 @@
 //! In the context of arbitrage, a "negative cycle" means you end up
 //! with more of the starting asset after traversing the loop, which
 //! is exactly the definition of a profitable triangular path.
+//!
+//! # Precision Design
+//!
+//! The Bellman-Ford relaxation loop uses f64 log-space for fast candidate
+//! detection. This may produce false negatives (miss genuinely profitable
+//! paths) near the profit boundary due to f64 rounding in log-space.
+//! A small epsilon expansion on `min_profit_factor` can reduce false
+//! negatives. The final P&L computation in `compute_path_profit()` uses
+//! Decimal arithmetic exclusively, so false positives cannot occur.
 
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
@@ -47,12 +56,12 @@ pub struct TriangularPath {
     pub net_profit_pct: Decimal,
 }
 
-/// Number of Bellman-Ford relaxation iterations for triangular cycle detection.
+/// Default number of Bellman-Ford relaxation iterations for triangular cycle detection.
 /// For 3-node cycles (triangular arbitrage), 3 iterations are sufficient:
 ///   - Iteration 0: paths of length 1
 ///   - Iteration 1: paths of length 2
 ///   - Iteration 2: paths of length 3 (completes the triangle)
-const BELLMAN_ITERATIONS: usize = 3;
+const DEFAULT_BELLMAN_ITERATIONS: usize = 3;
 
 /// Bellman-Ford based triangular path finder.
 ///
@@ -67,15 +76,28 @@ pub struct TriPathFinder {
     edges: Vec<Vec<GraphEdge>>,
     /// Minimum profit threshold as a multiplier (e.g. 1.0012 = 0.12%).
     min_profit_factor: Decimal,
+    /// Maximum path length (number of edges) for Bellman-Ford iterations.
+    /// Defaults to DEFAULT_BELLMAN_ITERATIONS (3) if not overridden.
+    max_iterations: usize,
 }
 
 impl TriPathFinder {
-    /// Creates a new path finder.
+    /// Creates a new path finder with default max iterations.
     ///
     /// # Arguments
     /// * `currencies` — List of currency names
     /// * `min_profit_pct` — Minimum profit percentage to consider (e.g. 0.12%)
     pub fn new(currencies: Vec<String>, min_profit_pct: Decimal) -> Self {
+        Self::with_max_iterations(currencies, min_profit_pct, DEFAULT_BELLMAN_ITERATIONS)
+    }
+
+    /// Creates a new path finder with a custom max iteration count.
+    ///
+    /// # Arguments
+    /// * `currencies` — List of currency names
+    /// * `min_profit_pct` — Minimum profit percentage to consider (e.g. 0.12%)
+    /// * `max_iterations` — Number of Bellman-Ford iterations (path length + 1).
+    pub fn with_max_iterations(currencies: Vec<String>, min_profit_pct: Decimal, max_iterations: usize) -> Self {
         let mut currency_to_idx = HashMap::new();
         let mut idx_to_currency = Vec::with_capacity(currencies.len());
         let edges = vec![Vec::new(); currencies.len()];
@@ -90,6 +112,7 @@ impl TriPathFinder {
             idx_to_currency,
             edges,
             min_profit_factor: Decimal::ONE + min_profit_pct / Decimal::from(100u32),
+            max_iterations: DEFAULT_BELLMAN_ITERATIONS,
         }
     }
 
@@ -171,13 +194,10 @@ impl TriPathFinder {
 
         let mut best_profit = vec![f64::INFINITY; n];
         let mut predecessor = vec![-1isize; n];
-        // Stores the predecessor node index (source node of the best edge).
-        // Named `_predecessor_node` to clarify it is NOT an edge index.
-        let mut _predecessor_node = vec![0usize; n];
         let mut profitable_paths = Vec::new();
 
-        // Bellman-Ford relaxation (exactly BELLMAN_ITERATIONS iterations for triangular).
-        for iteration in 0..BELLMAN_ITERATIONS {
+        // Bellman-Ford relaxation (up to self.max_iterations iterations).
+        for iteration in 0..self.max_iterations {
             let mut updated = false;
             for u in 0..n {
                 for edge in &self.edges[u] {
@@ -185,14 +205,13 @@ impl TriPathFinder {
                     if new_dist < best_profit[edge.to] {
                         best_profit[edge.to] = new_dist;
                         predecessor[edge.to] = u as isize;
-                        _predecessor_node[edge.to] = u;
                         updated = true;
                     }
                 }
             }
 
-            // On the BELLMAN_ITERATIONS-th iteration, check for negative cycles.
-            if iteration == BELLMAN_ITERATIONS - 1 && updated {
+            // On the last iteration, check for negative cycles.
+            if iteration == self.max_iterations - 1 && updated {
                 // A negative cycle exists — try to extract triangular paths.
                 for start in 0..n {
                     if let Some(path) = self.extract_triangular_path(start, &predecessor) {

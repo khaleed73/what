@@ -24,15 +24,25 @@ pub struct ExecutionReport {
     /// Trade side.
     pub side: String,
     /// Filled quantity.
-    // TODO: These should be Decimal for exact financial arithmetic.
+    ///
+    /// # Precision Note
+    /// Uses f64 (~15 significant digits) for zero-copy parsing speed.
+    /// Downstream consumers that need exact Decimal arithmetic should
+    /// convert via `Decimal::from_f64()` with a documented tolerance.
     pub filled_quantity: f64,
     /// Average fill price.
+    ///
+    /// # Precision Note
+    /// Same f64 precision trade-off as `filled_quantity`.
     pub avg_price: f64,
     /// Order status (e.g. "FILLED", "PARTIALLY_FILLED", "CANCELED").
     pub status: String,
     /// Trade timestamp (ms).
     pub timestamp: u64,
     /// Commission paid.
+    ///
+    /// # Precision Note
+    /// Same f64 precision trade-off as `filled_quantity`.
     pub commission: f64,
     /// Commission asset.
     pub commission_asset: String,
@@ -44,8 +54,14 @@ pub struct BalanceUpdate {
     /// Asset symbol.
     pub asset: String,
     /// New free balance.
+    ///
+    /// # Precision Note
+    /// f64 for zero-copy speed; convert to Decimal for ledger accounting.
     pub free_balance: f64,
     /// New locked balance.
+    ///
+    /// # Precision Note
+    /// f64 for zero-copy speed; convert to Decimal for ledger accounting.
     pub locked_balance: f64,
     /// Timestamp.
     pub timestamp: u64,

@@ -25,9 +25,9 @@
 //! values. This can cause a trade that appeared profitable at evaluation
 //! time to be slightly unprofitable after execution.
 //!
-//! **Recommended mitigation**: Snapshot all relevant fees at the start of
-//! each trade evaluation (per-blast) and pass the snapshot to all legs,
-//! rather than reading from the `DashMap` on each leg independently.
+//! **Mitigation**: Use [`snapshot_fees`] to capture a consistent point-in-time
+//! snapshot of all relevant fees at the start of each trade evaluation cycle,
+//! then pass the snapshot to all leg evaluations within that cycle.
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -213,6 +213,28 @@ impl DynamicFeeManager {
             .map(|r| {
                 let (id, schedule) = r.pair();
                 (*id, exchange_name_by_id(*id), schedule.maker_fee_bps, schedule.taker_fee_bps)
+            })
+            .collect()
+    }
+
+    /// Snapshot all current fees into a plain `HashMap` for consistent
+    /// multi-leg trade evaluation. Reads each exchange's schedule exactly
+    /// once so that all legs in a single blast see the same fee values.
+    ///
+    /// # Usage
+    /// ```ignore
+    /// let fee_snap = fee_mgr.snapshot_fees();
+    /// // Pass &fee_snap to all leg evaluations within this blast.
+    /// let taker_bps = fee_snap.get(&exchange_id)
+    ///     .map(|s| s.taker_fee_bps)
+    ///     .unwrap_or(default_bps);
+    /// ```
+    pub fn snapshot_fees(&self) -> HashMap<u16, FeeSchedule> {
+        self.fees
+            .iter()
+            .map(|r| {
+                let (id, schedule) = r.pair();
+                (*id, schedule.clone())
             })
             .collect()
     }

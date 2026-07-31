@@ -289,11 +289,18 @@ impl WithdrawalExecutor {
             "Executing withdrawal"
         );
 
-        // L: Remove duplicate amount check — already validated above.
-        // TODO: Add balance-aware validation: warn/reject if amount > 90% of
-        // estimated balance. This requires passing balance state into the
-        // executor or querying it from the exchange before dispatching.
+        // L-1: Balance-aware withdrawal validation is deferred to a future
+        // release. The withdrawal executor does not hold balance state;
+        // callers should verify available balance before dispatching.
+        tracing::info!(
+            exchange = exchange_name,
+            currency = %req.currency,
+            amount = %req.amount,
+            "Withdrawal dispatched — caller is responsible for balance verification",
+        );
 
+        // Exchange dispatch: IDs mapped from exchange_name_by_id().
+        // Note: BitMEX (id=5) is omitted — withdrawals not supported.
         let result = match req.exchange_id {
             0 => self.withdraw_binance(req).await,
             1 => self.withdraw_bybit(req).await,
@@ -357,6 +364,8 @@ impl WithdrawalExecutor {
             .get(&exchange_id)
             .ok_or_else(|| format!("no REST URL for exchange id {}", exchange_id))?;
 
+        // Exchange dispatch: IDs mapped from exchange_name_by_id().
+        // Note: BitMEX (id=5) is omitted — fee queries not applicable.
         match exchange_id {
             0 => self.fee_binance(base_url, creds, currency, network).await,
             1 => self.fee_bybit(base_url, creds, currency, network).await,
@@ -366,7 +375,7 @@ impl WithdrawalExecutor {
             6 => self.fee_bitget(base_url, creds, currency, network).await,
             9 => self.fee_htx(base_url, creds, currency, network).await,
             10 => self.fee_kraken(base_url, creds, currency, network).await,
-            15 => self.fee_binance(base_url, creds, currency, network).await, // MEXC is Binance-compatible
+            15 => self.fee_binance(base_url, creds, currency, network).await, // MEXC: Binance-compatible API
             _ => Err(format!(
                 "fee query not implemented for exchange id {}",
                 exchange_id

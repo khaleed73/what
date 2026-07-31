@@ -15,9 +15,13 @@ use crate::exchange::types::*;
 use anyhow::Result;
 
 /// Kraken exchange client with monotonic nonce generator and rate limiting.
-//
-// TODO: Sync nonce with Kraken's server nonce at startup
-// to prevent rejected orders from nonce too-low.
+///
+/// # Nonce Synchronization
+/// The local nonce counter starts from a config value or timestamp. If the
+/// Kraken server's expected nonce is higher (e.g. after a restart), orders
+/// will be rejected with "nonce too-low." A future enhancement should query
+/// Kraken's `Time` or `OpenOrders` endpoint at startup and set the local
+/// counter to `max(local, server) + 1`.
 pub struct KrakenClient {
     name: String,
     config: ExchangeConfig,

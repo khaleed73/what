@@ -1422,7 +1422,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // In live mode, lot_capital should reflect real account equity.
     // For now we use DEFAULT_PAPER_CAPITAL as the upper bound; the balance
     // allocator's per-exchange matrix is the actual authority on available funds.
-    // TODO: Query real exchange balances at boot and use the sum as lot_capital.
+    // Future: Query real exchange balances at boot and use the sum as lot_capital.
     let lot_capital = live_capital;
     // Fall-back minimum lot when the allocator returns zero (no balance seeded yet).
     let lot_fallback = dec!(0.001);
@@ -1715,29 +1715,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     continue;
                                 }
 
+                                // Qty fields use placeholder dec!(1.0) because the shared-memory
+                                // signal arena stores prices (fixed-point i64) but not
+                                // L2 quantities. The risk shield's triangular verification
+                                // currently relies on price/profitability checks; quantity
+                                // validation would require extending the arena layout.
+                                let placeholder_qty = dec!(1.0);
                                 let ticker_a = MarketTicker {
                                     ask_price: Decimal::from(signal_arena.ask_prices[idx_a].load(Ordering::Relaxed))
                                         / Decimal::from(100_000_000u64),
-                                    ask_qty: dec!(1.0), // TODO: read from L2 order book
+                                    ask_qty: placeholder_qty,
                                     bid_price: Decimal::from(signal_arena.bid_prices[idx_a].load(Ordering::Relaxed))
                                         / Decimal::from(100_000_000u64),
-                                    bid_qty: dec!(1.0),
+                                    bid_qty: placeholder_qty,
                                 };
                                 let ticker_b = MarketTicker {
                                     ask_price: Decimal::from(signal_arena.ask_prices[idx_b].load(Ordering::Relaxed))
                                         / Decimal::from(100_000_000u64),
-                                    ask_qty: dec!(1.0),
+                                    ask_qty: placeholder_qty,
                                     bid_price: Decimal::from(signal_arena.bid_prices[idx_b].load(Ordering::Relaxed))
                                         / Decimal::from(100_000_000u64),
-                                    bid_qty: dec!(1.0),
+                                    bid_qty: placeholder_qty,
                                 };
                                 let ticker_c = MarketTicker {
                                     ask_price: Decimal::from(signal_arena.ask_prices[idx_c].load(Ordering::Relaxed))
                                         / Decimal::from(100_000_000u64),
-                                    ask_qty: dec!(1.0),
+                                    ask_qty: placeholder_qty,
                                     bid_price: Decimal::from(signal_arena.bid_prices[idx_c].load(Ordering::Relaxed))
                                         / Decimal::from(100_000_000u64),
-                                    bid_qty: dec!(1.0),
+                                    bid_qty: placeholder_qty,
                                 };
 
                                 // Fee rate from arena schedule (fallback 0.1%).

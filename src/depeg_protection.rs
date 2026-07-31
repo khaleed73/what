@@ -255,6 +255,13 @@ impl StablecoinProtectionCircuit {
     /// * `multiplier` — A float where 1.0 means no change, 2.0 doubles the
     ///   threshold (more lenient), 0.5 halves it (more sensitive).
     ///   Stored internally as fixed-point (10000 = 1.0x).
+    ///
+    /// # Precision Note
+    /// Accepts f64 for API convenience; internally stored as fixed-point u64.
+    /// The quantization step is `(multiplier * 10000.0).round() as u64`, giving
+    /// ~4 decimal places of multiplier precision (sufficient for threshold
+    /// scaling). The effective threshold computation in `effective_threshold()`
+    /// uses Decimal arithmetic throughout.
     #[inline]
     pub fn update_volatility_multiplier(&self, multiplier: f64) {
         if !(0.1..=10.0).contains(&multiplier) {

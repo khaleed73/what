@@ -326,8 +326,16 @@ pub async fn parse_exchange_response(
 /// can corrupt P&L calculations.
 ///
 /// Tries, in order: string → i64 → f64. Returns `Decimal::ZERO` on any
-/// failure. For balance/price paths where silent zero is dangerous, prefer
-/// [`parse_json_decimal_verbose`] instead.
+/// failure.
+///
+/// # Precision Note
+/// When the JSON value is a float number (not a string), `serde_json` has
+/// already parsed it to f64 (~15 significant digits). The `from_f64`
+/// conversion then quantizes to Decimal. This is inherent to JSON's number
+/// representation and is acceptable for price/balance data from exchange
+/// REST APIs, which rarely exceed 15 significant digits of precision.
+/// For values already encoded as JSON strings (e.g. Binance balances),
+/// the string→Decimal path preserves full precision.
 #[must_use]
 pub fn parse_json_decimal(v: &Value) -> Decimal {
     parse_json_decimal_inner(v, None)

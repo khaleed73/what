@@ -512,13 +512,13 @@ impl SubAccountManager {
 
         warn!(
             "Bybit V5 API does not expose withdrawal permission in balance response; \
-             assuming can_withdraw=true (unsafe) — verify key permissions manually"
+             defaulting can_withdraw=false (safe) — enable via config if needed"
         );
 
         Ok(ApiKeyPermission {
             can_read: true,
             can_trade,
-            can_withdraw: true, // unsafe default — Bybit V5 doesn't expose this in balance response
+            can_withdraw: false, // safe default — Bybit V5 doesn't expose this; require explicit opt-in
             can_deposit: false,
             ip_restricted: false,
             allowed_ips: Vec::new(),
