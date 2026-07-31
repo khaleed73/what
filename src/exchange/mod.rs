@@ -36,7 +36,7 @@ pub mod okx;
 
 // Exchange name mapping (extends the one in crate::exchanges)
 //
-// IMPORTANT: The u64 bitmask system used in strategies.rs and market_arena.rs
+// IMPORTANT: The u64 bitmask system used in strategies.rs
 // can represent at most 64 exchanges (bits 0..63).  If new exchanges are added
 // beyond index 63, the bitmask will silently overflow.  Validate that the
 // number of registered exchanges never exceeds 64.

@@ -55,8 +55,11 @@ mod private_ws_feed;
 mod volatility_guard;
 mod tcp_optimizer;
 mod tri_path_finder;
+mod triangular_executor;
 mod production_risk_shield;
-mod market_arena;
+// mod market_arena; — REMOVED: dead code. The live signal path uses
+// strategies::MarketArena (lock-free atomics).  This RwLock-based duplicate
+// was never referenced by any live code path.
 mod zero_copy_parser;
 mod cpu_pinning;
 mod dead_mans_switch;
@@ -109,6 +112,13 @@ const DEFAULT_PAPER_CAPITAL: Decimal = dec!(100_000.0);
 
 /// Fixed-point scale used by risk manager and balance allocator.
 const FP_SCALE: u64 = 1_000_000;
+
+/// Fixed-point scale used by the shared-memory signal arena.
+/// The datafeed normalizes all prices to 9 decimal places (nanodollars)
+/// via `parse_u64_skip_dot(TARGET_DECIMALS=9)`.  Every conversion from
+/// arena u64 → Decimal must divide by this constant.  Using the wrong
+/// divisor (e.g. 100_000_000) causes a 10× pricing error.
+const ARENA_FP_SCALE: u64 = 1_000_000_000;
 
 /// Key patterns that indicate "no real API key configured".
 const PLACEHOLDER_PATTERNS: &[&str] = &[
@@ -1480,7 +1490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let ask_fp = signal_arena.ask_prices[idx].load(Ordering::Relaxed);
                     if bid_fp > 0 && ask_fp > 0 {
                         let mid = Decimal::from((bid_fp + ask_fp) / 2)
-                            / Decimal::from(100_000_000u64);
+                            / Decimal::from(ARENA_FP_SCALE);
                         signal_depeg.update_price(sym, mid, "arena").await;
                     }
                 }
@@ -1530,7 +1540,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 let buy_price = Decimal::from(
                                     signal_arena.ask_prices[buy_idx].load(Ordering::Relaxed),
-                                ) / Decimal::from(100_000_000u64);
+                                ) / Decimal::from(ARENA_FP_SCALE);
                                 let sell_idx = signal_arena.get_index(sell_exchange as usize, tid as usize);
                                 if sell_idx >= signal_arena.bid_prices.len() {
                                     tracing::warn!(exchange = sell_exchange, token = tid, "arena index out of bounds (sell), skipping");
@@ -1538,7 +1548,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 let sell_price = Decimal::from(
                                     signal_arena.bid_prices[sell_idx].load(Ordering::Relaxed),
-                                ) / Decimal::from(100_000_000u64);
+                                ) / Decimal::from(ARENA_FP_SCALE);
 
                                 // Dynamic lot sizing via the balance allocator.
                                 // NOTE: In live mode, the balance matrix is refreshed every 60s
@@ -1564,122 +1574,259 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     continue;
                                 }
 
-                                // CRITICAL FIX #5: Use CrossExchangeExecutor for
-                                // true parallel dispatch with rollback-on-failure,
-                                // replacing the old sequential blast_arbitrage_legs().
-                                let buy_order = CrossExchangeOrder {
-                                    exchange_name: format!("exchange_{}", buy_exchange),
-                                    exchange_id: buy_exchange,
-                                    symbol: symbol.clone(),
-                                    side: "BUY".to_string(),
-                                    price: buy_price,
-                                    quantity: qty.clone(),
-                                    order_type: "LIMIT".to_string(),
-                                    time_in_force: "IOC".to_string(),
-                                };
-                                let sell_order = CrossExchangeOrder {
-                                    exchange_name: format!("exchange_{}", sell_exchange),
-                                    exchange_id: sell_exchange,
-                                    symbol: sell_symbol.clone(),
-                                    side: "SELL".to_string(),
-                                    price: sell_price,
-                                    quantity: qty.clone(),
-                                    order_type: "LIMIT".to_string(),
-                                    time_in_force: "IOC".to_string(),
-                                };
+                                // CRITICAL FIX #11: Balance pre-check before dispatch.
+                                // Reject the signal if the buy exchange doesn't
+                                // have enough USDT (token 0) to cover the
+                                // estimated notional.  Prevents rejected orders
+                                // and wasted API quota from stale balance data.
+                                let buy_usdt = signal_allocator.get_balance_atomic(buy_exchange as usize, 0);
+                                let required_notional = buy_price * qty.clone();
+                                if buy_usdt < required_notional {
+                                    tracing::debug!(
+                                        exchange = buy_exchange,
+                                        available = %buy_usdt,
+                                        required = %required_notional,
+                                        "cross-exchange signal skipped: insufficient USDT on buy exchange"
+                                    );
+                                    continue;
+                                }
 
-                                // Determine fee rates from arena fee schedule.
-                                let fee_buy = Decimal::from(
-                                    signal_arena.fee_schedule.read()
-                                        .map(|f| f.get_taker(buy_exchange as usize).unwrap_or(10))
-                                        .unwrap_or(10),
-                                ) / Decimal::from(10_000u64);
-                                let fee_sell = Decimal::from(
-                                    signal_arena.fee_schedule.read()
-                                        .map(|f| f.get_taker(sell_exchange as usize).unwrap_or(10))
-                                        .unwrap_or(10),
-                                ) / Decimal::from(10_000u64);
+                                // Verify sell exchange has the asset to sell.
+                                let sell_asset = signal_allocator.get_balance_atomic(sell_exchange as usize, tid as usize);
+                                if sell_asset < qty {
+                                    tracing::debug!(
+                                        exchange = sell_exchange,
+                                        token = tid,
+                                        available = %sell_asset,
+                                        required = %qty,
+                                        "cross-exchange signal skipped: insufficient asset on sell exchange"
+                                    );
+                                    continue;
+                                }
 
-                                tracing::info!(
-                                    tick = tick_counter,
-                                    buy_ex = buy_exchange,
-                                    sell_ex = sell_exchange,
-                                    token = tid,
-                                    spread_bps = spread_bps,
-                                    "CROSS-EXCHANGE signal → CrossExchangeExecutor parallel dispatch"
-                                );
+                                // Size-slice the order to avoid market impact
+                                // on thin books.  Uses $1000 max / $5 min
+                                // notional per slice (default SizeSlicer config).
+                                let slicer = size_slicer::SizeSlicer::new();
+                                let slices = slicer.slice_order(qty.clone(), buy_price);
 
-                                let cx_result = CrossExchangeExecutor::execute_simultaneous_trades(
-                                    &buy_order,
-                                    &sell_order,
-                                    fee_buy,
-                                    fee_sell,
-                                    |order| {
-                                        let intent = OrderIntent {
-                                            exchange_id: order.exchange_id,
-                                            token_id: tid,
-                                            qty: order.quantity,
-                                            price: order.price,
-                                            is_buy: order.side == "BUY",
-                                            symbol: order.symbol.clone(),
-                                        };
-                                        let pipeline = if intent.is_buy {
-                                            Arc::clone(&signal_engine.paper_pipeline)
-                                        } else {
-                                            Arc::clone(&signal_engine.real_pipeline)
-                                        };
-                                        async move {
-                                            match pipeline.execute_order(&intent).await {
-                                                Ok(res) => cross_exchange_executor::LegResult {
-                                                    exchange_name: order.exchange_name,
-                                                    exchange_id: order.exchange_id,
-                                                    success: res.success,
-                                                    order_id: res.order_id,
-                                                    filled_quantity: res.filled_qty,
-                                                    filled_price: res.avg_price,
-                                                    error_message: res.error,
-                                                    execution_time_us: 0,
-                                                },
-                                                Err(e) => cross_exchange_executor::LegResult {
-                                                    exchange_name: order.exchange_name,
-                                                    exchange_id: order.exchange_id,
-                                                    success: false,
-                                                    order_id: None,
-                                                    filled_quantity: Decimal::ZERO,
-                                                    filled_price: Decimal::ZERO,
-                                                    error_message: Some(e),
-                                                    execution_time_us: 0,
-                                                },
+                                for slice in &slices {
+                                    // CRITICAL FIX #5: Use CrossExchangeExecutor for
+                                    // true parallel dispatch with rollback-on-failure,
+                                    // replacing the old sequential blast_arbitrage_legs().
+                                    let buy_order = CrossExchangeOrder {
+                                        exchange_name: format!("exchange_{}", buy_exchange),
+                                        exchange_id: buy_exchange,
+                                        symbol: symbol.clone(),
+                                        side: "BUY".to_string(),
+                                        price: buy_price,
+                                        quantity: slice.quantity,
+                                        order_type: "LIMIT".to_string(),
+                                        time_in_force: "IOC".to_string(),
+                                    };
+                                    let sell_order = CrossExchangeOrder {
+                                        exchange_name: format!("exchange_{}", sell_exchange),
+                                        exchange_id: sell_exchange,
+                                        symbol: sell_symbol.clone(),
+                                        side: "SELL".to_string(),
+                                        price: sell_price,
+                                        quantity: slice.quantity,
+                                        order_type: "LIMIT".to_string(),
+                                        time_in_force: "IOC".to_string(),
+                                    };
+    
+                                    // Determine fee rates from arena fee schedule.
+                                    let fee_buy = Decimal::from(
+                                        signal_arena.fee_schedule.read()
+                                            .map(|f| f.get_taker(buy_exchange as usize).unwrap_or(10))
+                                            .unwrap_or(10),
+                                    ) / Decimal::from(10_000u64);
+                                    let fee_sell = Decimal::from(
+                                        signal_arena.fee_schedule.read()
+                                            .map(|f| f.get_taker(sell_exchange as usize).unwrap_or(10))
+                                            .unwrap_or(10),
+                                    ) / Decimal::from(10_000u64);
+    
+                                    tracing::info!(
+                                        tick = tick_counter,
+                                        buy_ex = buy_exchange,
+                                        sell_ex = sell_exchange,
+                                        token = tid,
+                                        spread_bps = spread_bps,
+                                        "CROSS-EXCHANGE signal → CrossExchangeExecutor parallel dispatch"
+                                    );
+    
+                                    let cx_result = CrossExchangeExecutor::execute_simultaneous_trades(
+                                        &buy_order,
+                                        &sell_order,
+                                        fee_buy,
+                                        fee_sell,
+                                        |order| {
+                                            let intent = OrderIntent {
+                                                exchange_id: order.exchange_id,
+                                                token_id: tid,
+                                                qty: order.quantity,
+                                                price: order.price,
+                                                is_buy: order.side == "BUY",
+                                                symbol: order.symbol.clone(),
+                                            };
+                                            // CRITICAL FIX #9: Select pipeline based on engine's
+                                            // is_paper_mode flag, NOT per-order-side.  The
+                                            // previous buy->paper/sell->real routing caused
+                                            // naked short selling in live mode (phantom buys
+                                            // + real sells).
+                                            let is_paper = signal_engine.is_paper_mode.load(Ordering::Acquire);
+                                            let pipeline = if is_paper {
+                                                Arc::clone(&signal_engine.paper_pipeline)
+                                            } else {
+                                                Arc::clone(&signal_engine.real_pipeline)
+                                            };
+                                            async move {
+                                                match pipeline.execute_order(&intent).await {
+                                                    Ok(res) => cross_exchange_executor::LegResult {
+                                                        exchange_name: order.exchange_name,
+                                                        exchange_id: order.exchange_id,
+                                                        success: res.success,
+                                                        order_id: res.order_id,
+                                                        filled_quantity: res.filled_qty,
+                                                        filled_price: res.avg_price,
+                                                        error_message: res.error,
+                                                        execution_time_us: 0,
+                                                    },
+                                                    Err(e) => cross_exchange_executor::LegResult {
+                                                        exchange_name: order.exchange_name,
+                                                        exchange_id: order.exchange_id,
+                                                        success: false,
+                                                        order_id: None,
+                                                        filled_quantity: Decimal::ZERO,
+                                                        filled_price: Decimal::ZERO,
+                                                        error_message: Some(e),
+                                                        execution_time_us: 0,
+                                                    },
+                                                }
+                                            }
+                                        },
+                                    ).await;
+    
+                                    if cx_result.both_succeeded {
+                                        signal_health.record_trade_success();
+                                        tracing::info!(
+                                            profit = ?cx_result.total_profit,
+                                            rollback = cx_result.rollback_required,
+                                            "cross-exchange execution complete"
+                                        );
+    
+                                        // CRITICAL FIX #10: Fire counter-orders on
+                                        // asymmetric fills instead of just logging.
+                                        // Previously detected quantity mismatches but
+                                        // only logged them — leaving one leg exposed.
+                                        if cx_result.rollback_required {
+                                            tracing::error!(
+                                                buy_filled = %cx_result.buy_leg.filled_quantity,
+                                                sell_filled = %cx_result.sell_leg.filled_quantity,
+                                                "ASYMMETRIC FILL — firing counter-orders"
+                                            );
+                                            // Determine which pipeline to use for
+                                            // counter-orders (must match the original
+                                            // execution pipeline).
+                                            let counter_pipeline = if signal_engine.is_paper_mode.load(Ordering::Acquire) {
+                                                Arc::clone(&signal_engine.paper_pipeline)
+                                            } else {
+                                                Arc::clone(&signal_engine.real_pipeline)
+                                            };
+    
+                                            // Counter-order for the buy leg: if buy filled
+                                            // but sell didn't, sell back what we bought.
+                                            if cx_result.buy_leg.success
+                                                && cx_result.buy_leg.filled_quantity > Decimal::ZERO
+                                            {
+                                                let buy_fill_price = if cx_result.buy_leg.filled_price > Decimal::ZERO {
+                                                    cx_result.buy_leg.filled_price
+                                                } else {
+                                                    buy_price.clone()
+                                                };
+                                                let buy_counter = OrderIntent {
+                                                    exchange_id: buy_exchange,
+                                                    token_id: tid,
+                                                    qty: cx_result.buy_leg.filled_quantity,
+                                                    // Nudge DOWN 0.5% to guarantee fill
+                                                    price: buy_fill_price * dec!(0.995),
+                                                    is_buy: false,
+                                                    symbol: symbol.clone(),
+                                                };
+                                                match tokio::time::timeout(
+                                                    std::time::Duration::from_millis(100),
+                                                    counter_pipeline.execute_order(&buy_counter),
+                                                ).await {
+                                                    Ok(Ok(r)) => tracing::info!(
+                                                        order_id = ?r.order_id,
+                                                        filled = %r.filled_qty,
+                                                        "counter-order executed on buy exchange"
+                                                    ),
+                                                    Ok(Err(e)) => tracing::error!(%e, "counter-order FAILED on buy exchange"),
+                                                    Err(_) => tracing::error!("counter-order TIMEOUT on buy exchange"),
+                                                }
+                                            }
+    
+                                            // Counter-order for the sell leg: if sell
+                                            // filled but buy didn't, buy back what
+                                            // we sold (cover the short).
+                                            if cx_result.sell_leg.success
+                                                && cx_result.sell_leg.filled_quantity > Decimal::ZERO
+                                            {
+                                                let sell_fill_price = if cx_result.sell_leg.filled_price > Decimal::ZERO {
+                                                    cx_result.sell_leg.filled_price
+                                                } else {
+                                                    sell_price.clone()
+                                                };
+                                                let sell_counter = OrderIntent {
+                                                    exchange_id: sell_exchange,
+                                                    token_id: tid,
+                                                    qty: cx_result.sell_leg.filled_quantity,
+                                                    // Nudge UP 0.5% to guarantee fill
+                                                    price: sell_fill_price * dec!(1.005),
+                                                    is_buy: true,
+                                                    symbol: sell_symbol.clone(),
+                                                };
+                                                match tokio::time::timeout(
+                                                    std::time::Duration::from_millis(100),
+                                                    counter_pipeline.execute_order(&sell_counter),
+                                                ).await {
+                                                    Ok(Ok(r)) => tracing::info!(
+                                                        order_id = ?r.order_id,
+                                                        filled = %r.filled_qty,
+                                                        "counter-order executed on sell exchange"
+                                                    ),
+                                                    Ok(Err(e)) => tracing::error!(%e, "counter-order FAILED on sell exchange"),
+                                                    Err(_) => tracing::error!("counter-order TIMEOUT on sell exchange"),
+                                                }
                                             }
                                         }
-                                    },
-                                ).await;
-
-                                if cx_result.both_succeeded {
-                                    signal_health.record_trade_success();
-                                    tracing::info!(
-                                        profit = ?cx_result.total_profit,
-                                        rollback = cx_result.rollback_required,
-                                        "cross-exchange execution complete"
-                                    );
-                                    // CRITICAL FIX #5: If rollback required (asymmetric fill),
-                                    // log it for manual intervention.
-                                    if cx_result.rollback_required {
-                                        tracing::error!(
-                                            buy_filled = %cx_result.buy_leg.filled_quantity,
-                                            sell_filled = %cx_result.sell_leg.filled_quantity,
-                                            "ASYMMETRIC FILL — rollback may be needed"
+    
+                                        // Post-trade settlement: schedule rebalance
+                                        // to move the purchased asset from the buy
+                                        // exchange back toward the sell exchange.
+                                        // The rebalancer runs asynchronously and
+                                        // respects withdrawal fees/cooldowns.
+                                        if let Err(e) = signal_rebalance_tx.try_send(rebalancer::RebalanceRequest {
+                                            from_exchange_id: buy_exchange,
+                                            to_exchange_id: sell_exchange,
+                                            token_id: tid,
+                                            amount: slice.quantity,
+                                            token_symbol: base_sym.clone(),
+                                        }) {
+                                            tracing::debug!(%e, "post-trade rebalance request dropped (channel full)");
+                                        }
+                                    } else {
+                                        signal_health.record_trade_error();
+                                        tracing::warn!(
+                                            buy_ok = cx_result.buy_leg.success,
+                                            sell_ok = cx_result.sell_leg.success,
+                                            rollback = cx_result.rollback_required,
+                                            "cross-exchange execution had failures"
                                         );
                                     }
-                                } else {
-                                    signal_health.record_trade_error();
-                                    tracing::warn!(
-                                        buy_ok = cx_result.buy_leg.success,
-                                        sell_ok = cx_result.sell_leg.success,
-                                        rollback = cx_result.rollback_required,
-                                        "cross-exchange execution had failures"
-                                    );
-                                }
+                                } // end for slice in &slices
                             }
 
                             ArbitrageSignal::Triangular {
@@ -2029,7 +2176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let btc_price = rust_decimal::Decimal::from(btc_fp)
-                    / rust_decimal::Decimal::from(100_000_000u64);
+                    / rust_decimal::Decimal::from(ARENA_FP_SCALE);
 
                 if last_btc_price > rust_decimal::Decimal::ZERO {
                     let deviation = if btc_price > last_btc_price {
@@ -2164,8 +2311,8 @@ async fn run_integration_test(
     // --- Step 1: Inject synthetic prices into the arena ---
     // Simulate BTC trading at $50,000 on Exchange 0 and $50,100 on Exchange 1
     // (a 20 bps spread = 0.20%)
-    arena.update_price(0, 10, 50_000_000_000, 50_001_000_000); // Ex0: bid=50000, ask=50001 (2-decimal fp)
-    arena.update_price(1, 10, 50_099_000_000, 50_100_000_000); // Ex1: bid=50099, ask=50100
+    arena.update_price(0, 10, 50_000_000_000_000u64, 50_001_000_000_000u64); // Ex0: bid=$50000, ask=$50001 (9-decimal fp)
+    arena.update_price(1, 10, 50_099_000_000_000u64, 50_100_000_000_000u64); // Ex1: bid=$50099, ask=$50100
 
     println!("Injected synthetic BTC prices:");
     println!("  Exchange 0: bid=50000.00 ask=50001.00");
@@ -2300,8 +2447,15 @@ async fn run_integration_test(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a `Decimal` dollar value to fixed-point u64 (dollars * 1_000_000).
-/// Clamps negative values to 0 (with a warning) rather than silently zeroizing.
+/// Convert a fixed-point u64 (dollars * 1_000_000) back to Decimal.
+/// Inverse of `decimal_to_fp`.  Kept as a utility pair even if
+/// currently unused — most callers use `get_balance_atomic()` which
+/// already returns Decimal.
+#[allow(dead_code)]
+fn fp_to_decimal(fp: u64) -> Decimal {
+    Decimal::from(fp) / Decimal::from(FP_SCALE)
+}
+
 fn decimal_to_fp(d: Decimal) -> u64 {
     if d < Decimal::ZERO {
         tracing::warn!(value = %d, "main decimal_to_fp: negative value clamped to 0");

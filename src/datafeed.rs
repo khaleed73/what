@@ -26,9 +26,9 @@ const WS_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// Returns `Some((token_id, bid_price, ask_price))` on success or `None` if
 /// any required field is missing / malformed.
 ///
-/// Price values (`"b"`, `"a"`) are parsed as fixed-point integers: decimal
-/// points in the JSON are simply skipped so that e.g. `"50000.50"` becomes
-/// `5000050u64`.
+/// Price values (`"b"`, `"a"`) are parsed via `parse_u64_skip_dot` which normalizes
+/// to 9-decimal fixed-point (nanodollars).  For example, `"50000.50"` becomes
+/// `50000500000000u64` (i.e. `50000.50 * 10^9`).
 #[inline]
 pub fn parse_raw_bytes_fast(payload: &[u8]) -> Option<(u16, u64, u64)> {
     let mut token_id: Option<u16> = None;
