@@ -1326,26 +1326,23 @@ impl HighFrequencyExecutionEngine {
         }
         if buy_notional > Decimal::ZERO || sell_notional > Decimal::ZERO {
             // Per-leg taker fee: use fee_schedule if available, else 10 bps fallback.
-            let fee_bps_per_leg: u64 = self.fee_schedule_bps
-                .as_ref()
-                .map(|s| {
-                    // For triangular arb all legs are typically on the same exchange,
-                    // but use per-leg exchange_id if they differ.
-                    let exch = legs[0].exchange_id as usize;
-                    s.taker_fees.get(exch).copied().unwrap_or_else(|| {
-                        warn!("fee_schedule_bps missing for exchange {} — falling back to 10 bps", exch);
-                        10
-                    })
-                })
-                .unwrap_or_else(|| {
-                    warn!("fee_schedule_bps not set — falling back to hardcoded 10 bps per-leg fee");
-                    10
-                });
-            let fee_bps = Decimal::from(fee_bps_per_leg);
+            // M-32 fix: Compute per-leg fees using each leg's own exchange_id,
+            // not just legs[0]. This matters for cross-exchange triangular arb.
             let mut total_fee = Decimal::ZERO;
-            for result in total_result.iter() {
+            for (i, result) in total_result.iter().enumerate() {
                 if result.success && result.filled_qty > Decimal::ZERO {
                     let notional = result.filled_qty * result.avg_price;
+                    let fee_bps_per_leg: u64 = self.fee_schedule_bps
+                        .as_ref()
+                        .map(|s| {
+                            let exch = legs[i].exchange_id as usize;
+                            s.taker_fees.get(exch).copied().unwrap_or_else(|| {
+                                warn!("fee_schedule_bps missing for exchange {} — falling back to 10 bps", exch);
+                                10
+                            })
+                        })
+                        .unwrap_or(10);
+                    let fee_bps = Decimal::from(fee_bps_per_leg);
                     total_fee += notional * fee_bps / Decimal::from(10_000u64);
                 }
             }

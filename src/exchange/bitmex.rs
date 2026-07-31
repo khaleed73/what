@@ -14,6 +14,20 @@ use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
 
+/// H-63 fix: Replace "BTC" prefix with "XBT" only when BTC appears at the
+/// start of the symbol AND is followed by a non-letter (or end of string).
+/// This prevents WBTC→WXBT, BTCDOM→XBTDOM, etc.
+#[inline]
+fn replace_btc_prefix_xbt(s: &str) -> String {
+    if s.starts_with("BTC") {
+        let rest = &s[3..];
+        if rest.is_empty() || !rest.as_bytes()[0].is_ascii_alphabetic() {
+            return format!("XBT{}", rest);
+        }
+    }
+    s.to_string()
+}
+
 /// BitMEX exchange client with rate limiting.
 pub struct BitmexClient {
     name: String,
@@ -95,9 +109,13 @@ impl BitmexClient {
 
     /// Build the BitMEX symbol format (e.g. "XBTUSD").
     /// BitMEX uses XBT prefix for Bitcoin, not BTC.
+    /// H-63 fix: Only replace "BTC" at the START of the symbol when
+    /// followed by a non-letter (or end of string), so that WBTC, BTCDOM
+    /// and other BTC-containing symbols are left untouched.
     #[inline]
     fn bitmex_symbol(symbol: &str) -> String {
-        symbol.replace('/', "").to_uppercase().replace("BTC", "XBT")
+        let normalized = symbol.replace('/', "").to_uppercase();
+        replace_btc_prefix_xbt(&normalized)
     }
 
     /// BitMEX order signature expires (seconds from now). Must be > current time.

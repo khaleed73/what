@@ -380,11 +380,26 @@ impl Exchange for LbankClient {
             .body(signed_body)
             .send()
             .await?;
-        // TODO: Validate exchange API response for error codes before
-        // assuming success. A 200 with an error body would cause
-        // silent order loss.
-        let json: serde_json::Value = resp.json().await?;
-        let order = &json["data"][0];
+        // M-30 fix: Validate response for error codes before parsing.
+        let resp_text = resp.text().await?;
+        let json: serde_json::Value = serde_json::from_str(&resp_text)
+            .map_err(|e| anyhow::anyhow!("LBank order response JSON parse error: {}", e))?;
+        // LBank returns HTTP 200 with {"result_code": -1, "msg": "..."} on errors.
+        if let Some(code) = json["result_code"].as_i64() {
+            if code != 0 {
+                let msg = json["msg"].as_str().unwrap_or("unknown LBank error");
+                anyhow::bail!(
+                    "LBank order API error (result_code {}): {} (order_id={})",
+                    code, msg, order_id
+                );
+            }
+        }
+        let data_arr = json["data"].as_array().ok_or_else(|| {
+            anyhow::anyhow!("LBank order response missing 'data' array (order_id={})", order_id)
+        })?;
+        let order = data_arr.first().ok_or_else(|| {
+            anyhow::anyhow!("LBank order response 'data' array is empty (order_id={})", order_id)
+        })?;
         let filled_qty = parse_json_decimal(&order["dealQuantity"]);
         let avg_price = parse_json_decimal(&order["avgPrice"]);
         let fee = parse_json_decimal(if order["dealFee"].as_str().is_some() {

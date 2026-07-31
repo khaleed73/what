@@ -1374,11 +1374,16 @@ pub mod bitmex {
 
         /// Convert "BTC/USD" to BitMEX symbol format "XBTUSD".
         /// BitMEX uses XBT instead of BTC.
+        /// H-63 fix: Only replace "BTC" prefix when followed by non-letter.
         fn bitmex_symbol(symbol: &str) -> String {
-            symbol
-                .replace('/', "")
-                .to_uppercase()
-                .replace("BTC", "XBT")
+            let normalized = symbol.replace('/', "").to_uppercase();
+            if normalized.starts_with("BTC") {
+                let rest = &normalized[3..];
+                if rest.is_empty() || !rest.as_bytes()[0].is_ascii_alphabetic() {
+                    return format!("XBT{}", rest);
+                }
+            }
+            normalized
         }
     }
 

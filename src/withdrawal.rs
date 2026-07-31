@@ -1109,8 +1109,12 @@ impl WithdrawalExecutor {
         let method = "GET";
         let path = format!("/v2/reference/currencies/{}", currency);
         // H-45: HTX signing preimage format: {method}\n{host}\n{path}\n{query}
+        // GET request with no query string: the last field is empty.
         let host = extract_host(base_url);
         let preimage = format!("{}\n{}\n{}\n", method, host, path);
+        // NOTE: HTX v2 GET endpoints have no query/body. The trailing \n with
+        // empty query is correct per HTX authentication docs. If the request
+        // had query params, they would appear after the last \n.
         let signature = hmac_hex(&creds.api_secret, &preimage);
 
         let url = format!("{}{}", base_url, path);
@@ -1183,11 +1187,15 @@ impl WithdrawalExecutor {
             .collect::<Vec<_>>()
             .join("&");
 
-        // H-48: Kraken signing preimage format: {nonce}{path}{body} with HMAC-SHA512
+        // H-48: Kraken signing preimage format: {nonce}{path}{body} with HMAC-SHA512.
+        // The API secret must be base64-decoded before use as the HMAC key.
         let sign_path = "/0/private/Withdraw";
         let preimage = format!("{}{}{}", nonce, sign_path, form_body);
+        let key_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&creds.api_secret)
+            .map_err(|e| format!("Kraken withdrawal: failed to decode API secret: {}", e))?;
         let signature_bytes = {
-            let key = hmac::Key::new(hmac::HMAC_SHA512, creds.api_secret.as_bytes());
+            let key = hmac::Key::new(hmac::HMAC_SHA512, &key_bytes);
             hmac::sign(&key, preimage.as_bytes())
         };
         let signature = base64::engine::general_purpose::STANDARD.encode(signature_bytes.as_ref());

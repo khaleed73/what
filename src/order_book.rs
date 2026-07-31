@@ -802,9 +802,19 @@ fn symbol_to_bitfinex(sym: &str) -> String {
 }
 
 /// `"BTCUSDT"` → `"XBTUSDT"` (BTC → XBT for BitMEX)
+/// H-63 fix: Only replace "BTC" at START when followed by non-letter,
+/// so WBTC, BTCDOM, etc. are left untouched.
 fn symbol_to_bitmex(sym: &str) -> String {
-    sym.replace("BTCUSDT", "XBTUSDT")
-        .replace("BTC", "XBT")
+    if sym.starts_with("BTCUSDT") {
+        return "XBTUSDT".to_string();
+    }
+    if sym.starts_with("BTC") {
+        let rest = &sym[3..];
+        if rest.is_empty() || !rest.as_bytes()[0].is_ascii_alphabetic() {
+            return format!("XBT{}", rest);
+        }
+    }
+    sym.to_string()
 }
 
 /// `"BTCUSDT"` → `"BTC-USDT"`

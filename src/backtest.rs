@@ -582,6 +582,9 @@ const SAMPLE_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
                 .copied()
                 .collect();
 
+        // Track previous prices per symbol for accumulated random walk.
+        let mut prev_prices: HashMap<String, Decimal> = HashMap::new();
+
         // Simple pseudo-random using a linear congruential generator.
         let mut seed: u64 = LCG_SEED;
         let mut next_rand = move || -> f64 {
@@ -599,16 +602,19 @@ const SAMPLE_SYMBOLS: [&str; 2] = ["BTCUSDT", "ETHUSDT"];
             let exchange_id = SAMPLE_EXCHANGE_IDS[ex_idx];
             let symbol = SAMPLE_SYMBOLS[sym_idx];
 
-            let base = base_prices[symbol];
+            let static_base = base_prices[symbol];
 
             // Random walk: ±0.05% per tick with mean reversion.
             let noise = (next_rand() - 0.5) * 0.001;
-            // H-2 / L-5 fix: Use per-symbol base price for mean reversion.
-            let base_ref_price = base_prices.get(symbol).copied().unwrap_or_else(|| Decimal::from(43000u64));
-            let mean_reversion = (base - base_ref_price)
+            // Mean reversion towards the static base price (prevents unbounded drift).
+            // prev_prices tracks the last generated price per symbol so the random
+            // walk accumulates across iterations instead of always resetting.
+            let prev_price = prev_prices.get(symbol).copied().unwrap_or(static_base);
+            let mean_reversion = (prev_price - static_base)
                 * Decimal::from_str_radix("0.0001", 10).unwrap_or(Decimal::ZERO);
             let adj_noise = Decimal::from_f64_retain(noise).unwrap_or(Decimal::ZERO);
-            let price = base * (Decimal::ONE + adj_noise) + mean_reversion;
+            let price = prev_price * (Decimal::ONE + adj_noise) - mean_reversion;
+            prev_prices.insert(symbol.to_string(), price);
 
             // Normal bid-ask spread: ~1-2 bps.
             let normal_spread_bps = 1.0 + next_rand() * 1.0;

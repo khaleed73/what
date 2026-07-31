@@ -251,9 +251,11 @@ impl Exchange for KrakenClient {
         let mut balances = HashMap::new();
         if let Some(result) = json["result"].as_object() {
             for (asset, val) in result {
+                // M-26 fix: Use parse_balance_f64 as the primary parser, falling
+                // back to direct str parse. The old code discarded parse_balance_f64's
+                // return value (bound to `_`).
                 let free: f64 = val.as_str().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    let _ = parse_balance_f64(val, "kraken", asset);
-                    0.0
+                    parse_balance_f64(val, "kraken", asset)
                 });
                 if free > 0.0 {
                     balances.insert(asset.to_string(), free);

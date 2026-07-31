@@ -7,6 +7,7 @@
 //! The `SharedMarketFrame` is a `#[repr(C)]` struct placed in shared memory
 //! that WebSocket writers update and strategy readers consume.
 
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum symbol length in bytes (null-terminated).
@@ -17,15 +18,12 @@ pub const MAX_SYMBOL_LEN: usize = 12;
 /// This is the spec-mandated `SharedMarketFrame` — a `#[repr(C)]` struct
 /// with fixed-size fields for lock-free IPC between processes.
 ///
-/// **H-66 safety note**: The `symbol` field is accessed through raw pointer
-/// writes (in `write()`) and non-atomic byte reads (in `symbol_str()`). This
-/// is safe ONLY under the single-writer + sequence-lock protocol documented
-/// below. Wrapping `symbol` in `UnsafeCell` would change the `#[repr(C)]`
-/// layout and break ABI compatibility with C/FFI consumers. The current
-/// approach is sound because: (1) only one writer task exists, (2) readers
-/// use the sequence-lock retry pattern, and (3) `compiler_fence(Ordering::Release)`
-/// prevents reordering. Miri may still flag these accesses — this is a known
-/// limitation of lock-free IPC patterns in safe Rust.
+/// **H-66 fix**: The `symbol` field is wrapped in `UnsafeCell` to satisfy
+/// Rust's aliasing rules. `UnsafeCell<[u8; 12]>` has the same size and
+/// alignment as `[u8; 12]`, so `#[repr(C)]` layout is preserved. Interior
+/// mutability is safe under the single-writer + sequence-lock protocol:
+/// (1) only one writer task exists, (2) readers use the sequence-lock retry
+/// pattern, and (3) `compiler_fence(Ordering::Release)` prevents reordering.
 ///
 /// Layout:
 /// ```text
@@ -37,7 +35,8 @@ pub struct SharedMarketFrame {
     /// Monotonically increasing sequence number for change detection.
     pub sequence_id: AtomicU64,
     /// Null-terminated ASCII symbol (e.g. "SOLUSDT\0\0\0\0\0").
-    pub symbol: [u8; MAX_SYMBOL_LEN],
+    /// Wrapped in UnsafeCell for interior mutability (H-66 fix).
+    pub symbol: UnsafeCell<[u8; MAX_SYMBOL_LEN]>,
     /// Best bid price as fixed-point u64 (9 decimal places).
     /// Value = price * 1_000_000_000
     pub best_bid: AtomicU64,
@@ -52,7 +51,7 @@ impl SharedMarketFrame {
     pub fn zeroed() -> Self {
         Self {
             sequence_id: AtomicU64::new(0),
-            symbol: [0u8; MAX_SYMBOL_LEN],
+            symbol: UnsafeCell::new([0u8; MAX_SYMBOL_LEN]),
             best_bid: AtomicU64::new(0),
             best_ask: AtomicU64::new(0),
             timestamp: AtomicU64::new(0),
@@ -89,7 +88,7 @@ impl SharedMarketFrame {
         // - Reader: detects in-progress writes via odd sequence number
         // - Symbol is ASCII, so byte-level writes are safe for ASCII readers
         unsafe {
-            let dst = self.symbol.as_ptr() as *mut u8;
+            let dst = self.symbol.get().as_mut_ptr();
             // Zero the field first to avoid stale data from longer symbols.
             std::ptr::write_bytes(dst, 0, MAX_SYMBOL_LEN);
             std::ptr::copy_nonoverlapping(sym_bytes.as_ptr(), dst, len);
@@ -145,9 +144,12 @@ impl SharedMarketFrame {
     ///
     /// The returned string has a lifetime tied to `&self` to avoid allocation.
     pub fn symbol_str(&self) -> &str {
-        let end = self.symbol.iter().position(|&b| b == 0).unwrap_or(MAX_SYMBOL_LEN);
+        // Safety: We only read through this reference when the sequence-lock
+        // protocol guarantees no concurrent write is in progress.
+        let sym_bytes = unsafe { &*self.symbol.get() };
+        let end = sym_bytes.iter().position(|&b| b == 0).unwrap_or(MAX_SYMBOL_LEN);
         // Safety: symbol bytes are ASCII (exchange symbols).
-        std::str::from_utf8(&self.symbol[..end]).unwrap_or_else(|e| {
+        std::str::from_utf8(&sym_bytes[..end]).unwrap_or_else(|e| {
             tracing::warn!(invalid_bytes = ?e, "SharedMemoryFrame: non-UTF8 symbol bytes");
             ""
         })

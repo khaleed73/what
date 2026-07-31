@@ -26,28 +26,9 @@ pub struct CoinbaseClient {
 impl CoinbaseClient {
     pub fn new(name: String, config: ExchangeConfig) -> Result<Self> {
         let timeout_secs = config.http_timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
-        // TODO: This builds a custom HTTP client instead of using the shared
-        // build_http_client() from common.rs. Consider switching to
-        // build_http_client(timeout_secs)? for consistent settings (pool size,
-        // TLS config, TCP nodelay) across all exchange clients.
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .connect_timeout(Duration::from_secs(timeout_secs.min(10)))
-            .pool_max_idle_per_host(4)
-            .default_headers({
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert(
-                    reqwest::header::USER_AGENT,
-                    reqwest::header::HeaderValue::from_static("rust-hft-arb/1.0"),
-                );
-                headers.insert(
-                    reqwest::header::ACCEPT,
-                    reqwest::header::HeaderValue::from_static("application/json"),
-                );
-                headers
-            })
-            .build()
-            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {}", e))?;
+        // M-31 fix: Use shared build_http_client() for consistent TLS pinning,
+        // pool size, TCP keepalive, and nodelay across all exchange clients.
+        let http = build_http_client(timeout_secs)?;
         Ok(Self {
             name,
             config,
