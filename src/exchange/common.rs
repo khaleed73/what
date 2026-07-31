@@ -111,6 +111,7 @@ impl Default for KrakenNonce {
 }
 
 impl KrakenNonce {
+    /// Creates a new nonce generator starting from the current Unix timestamp in milliseconds.
     pub fn new() -> Self {
         let initial = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -121,11 +122,35 @@ impl KrakenNonce {
         }
     }
 
+    /// Returns the next monotonic nonce value, incrementing by 1 each call.
     pub fn next(&self) -> u64 {
         // Poisoned mutex is unrecoverable in a nonce generator — use
         // unwrap_or_else to recover the counter and keep monotonicity.
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         *last = last.saturating_add(1);
+        *last
+    }
+
+    /// Synchronizes the local nonce with a server-side value.
+    /// If `server_nonce` is higher than the local counter, advances
+    /// the counter to `server_nonce + 1` to prevent "nonce too-low" rejections.
+    ///
+    /// # Arguments
+    /// * `server_nonce` — The server's expected next nonce value.
+    ///
+    /// # Returns
+    /// The new local nonce value (which will be returned by the next `next()` call).
+    pub fn sync_to(&self, server_nonce: u64) -> u64 {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if server_nonce >= *last {
+            *last = server_nonce + 1;
+        }
+        *last
+    }
+
+    /// Returns the current nonce value without incrementing (for diagnostics).
+    pub fn current(&self) -> u64 {
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         *last
     }
 }
@@ -597,5 +622,55 @@ pub fn sign_lbank_hmac(secret: &str, payload: &str) -> anyhow::Result<String> {
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
     let sig = hmac::sign(&key, payload.as_bytes());
     Ok(hex::encode(sig.as_ref()))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kraken_nonce_monotonic() {
+        let nonce = KrakenNonce::new();
+        let a = nonce.next();
+        let b = nonce.next();
+        assert!(b > a, "nonce should be monotonically increasing");
+    }
+
+    #[test]
+    fn test_kraken_nonce_sync_forward() {
+        let nonce = KrakenNonce::new();
+        let _ = nonce.next(); // 1
+        let _ = nonce.next(); // 2
+        let _ = nonce.next(); // 3
+        // Server says nonce should be at 100
+        let new_val = nonce.sync_to(100);
+        assert_eq!(new_val, 101);
+        let next = nonce.next();
+        assert_eq!(next, 102);
+    }
+
+    #[test]
+    fn test_kraken_nonce_sync_backward_ignored() {
+        let nonce = KrakenNonce::new();
+        let _ = nonce.next(); // 1
+        let _ = nonce.next(); // 2
+        // Server says nonce is 1, but local is already at 2
+        let new_val = nonce.sync_to(1);
+        assert_eq!(new_val, 2, "sync_to should not go backward");
+    }
+
+    #[test]
+    fn test_kraken_nonce_current_no_increment() {
+        let nonce = KrakenNonce::new();
+        let a = nonce.next();
+        let current = nonce.current();
+        assert_eq!(a, current, "current() should return last issued nonce");
+        let b = nonce.next();
+        assert_eq!(b, current + 1);
+    }
 }
 

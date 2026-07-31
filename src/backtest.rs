@@ -48,6 +48,18 @@ pub struct PriceBar {
 //  BacktestConfig
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// A per-exchange fee schedule for backtesting.
+/// When provided, overrides the flat `taker_fee_bps` for the specified exchange.
+#[derive(Debug, Clone)]
+pub struct ExchangeFeeTier {
+    /// Exchange ID (see `exchange_name_by_id`).
+    pub exchange_id: u16,
+    /// Maker fee in basis points. Default: same as taker.
+    pub maker_fee_bps: Option<u64>,
+    /// Taker fee in basis points.
+    pub taker_fee_bps: u64,
+}
+
 /// Configuration for the backtesting engine.
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
@@ -55,12 +67,12 @@ pub struct BacktestConfig {
     pub initial_capital: Decimal,
     /// Maximum fraction of capital to deploy in a single trade. Default: 0.15.
     pub max_position_pct: Decimal,
-    /// Taker fee in basis points. Default: 10 (0.10%).
-    ///
-    /// # Future Enhancement
-    /// Exchange fee tiers (maker/taker, volume-based) would improve
-    /// backtest realism. Currently uses a flat taker fee for simplicity.
+    /// Default taker fee in basis points (used when no per-exchange tier is set).
+    /// Default: 10 (0.10%).
     pub taker_fee_bps: u64,
+    /// Optional per-exchange fee tiers. If set, overrides `taker_fee_bps`
+    /// for the specified exchanges during backtest execution.
+    pub exchange_fee_tiers: Vec<ExchangeFeeTier>,
     /// Minimum spread in basis points to act on. Default: 15 (0.15%).
     pub min_spread_bps: u64,
     /// Path to CSV file containing historical price bars.
@@ -73,6 +85,7 @@ impl Default for BacktestConfig {
             initial_capital: Decimal::from(100_000u64),
             max_position_pct: Decimal::from_str_radix("0.15", 10).unwrap_or(Decimal::new(15, 2)),
             taker_fee_bps: 10,
+            exchange_fee_tiers: Vec::new(),
             min_spread_bps: 15,
             data_file: String::new(),
         }
@@ -169,11 +182,14 @@ pub struct BacktestEngine {
     exchange_balances: HashMap<u16, Decimal>,
     /// Loaded price bars (populated by `load_data`).
     bars: Vec<PriceBar>,
+    /// Precomputed: exchange_id → taker fee as Decimal fraction.
+    fee_cache: HashMap<u16, Decimal>,
 }
 
 impl BacktestEngine {
     /// Create a new backtest engine with the given configuration.
     pub fn new(config: BacktestConfig) -> Self {
+        let fee_cache = Self::build_fee_cache(&config);
         Self {
             capital: config.initial_capital,
             positions: HashMap::new(),
@@ -181,7 +197,27 @@ impl BacktestEngine {
             exchange_balances: HashMap::new(),
             bars: Vec::new(),
             config,
+            fee_cache,
         }
+    }
+
+    /// Build a lookup table: exchange_id → taker fee as Decimal fraction.
+    /// Uses per-exchange tiers if set, otherwise falls back to the flat default.
+    fn build_fee_cache(config: &BacktestConfig) -> HashMap<u16, Decimal> {
+        let mut map = HashMap::new();
+        for tier in &config.exchange_fee_tiers {
+            map.insert(tier.exchange_id, Decimal::from(tier.taker_fee_bps) / Decimal::from(10_000u64));
+        }
+        map
+    }
+
+    /// Returns the taker fee fraction for the given exchange.
+    /// Checks per-exchange tiers first, then falls back to the flat default.
+    fn fee_for_exchange(&self, exchange_id: u16) -> Decimal {
+        self.fee_cache
+            .get(&exchange_id)
+            .copied()
+            .unwrap_or_else(|| Decimal::from(self.config.taker_fee_bps) / Decimal::from(10_000u64))
     }
 
     /// Load price bars from a CSV file.
@@ -295,7 +331,7 @@ impl BacktestEngine {
         let mut timestamps: Vec<i64> = time_groups.keys().copied().collect();
         timestamps.sort();
 
-        let fee_fraction = Decimal::from(self.config.taker_fee_bps) / Decimal::from(10_000u64);
+        // Per-exchange fee lookup is done inline via self.fee_for_exchange().
         let _min_spread_decimal =
             Decimal::from(self.config.min_spread_bps) / Decimal::from(10_000u64);
 
@@ -382,8 +418,8 @@ impl BacktestEngine {
 
                                 let buy_cost = qty * buy_price;
                                 let sell_proceeds = qty * sell_price;
-                                let buy_fee = buy_cost * fee_fraction;
-                                let sell_fee = sell_proceeds * fee_fraction;
+                                let buy_fee = buy_cost * self.fee_for_exchange(ex_a);
+                                let sell_fee = sell_proceeds * self.fee_for_exchange(ex_b);
                                 let total_fees = buy_fee + sell_fee;
                                 let gross_pnl = sell_proceeds - buy_cost;
                                 let net_pnl = gross_pnl - total_fees;
@@ -450,8 +486,8 @@ impl BacktestEngine {
 
                                 let buy_cost = qty * buy_price;
                                 let sell_proceeds = qty * sell_price;
-                                let buy_fee = buy_cost * fee_fraction;
-                                let sell_fee = sell_proceeds * fee_fraction;
+                                let buy_fee = buy_cost * self.fee_for_exchange(ex_b);
+                                let sell_fee = sell_proceeds * self.fee_for_exchange(ex_a);
                                 let total_fees = buy_fee + sell_fee;
                                 let gross_pnl = sell_proceeds - buy_cost;
                                 let net_pnl = gross_pnl - total_fees;
@@ -868,4 +904,61 @@ fn decimal_sqrt(value: Decimal, iterations: usize) -> Decimal {
 /// requiring the macro crate.
 fn dec(value: f64) -> Decimal {
     Decimal::from_f64_retain(value).unwrap_or(Decimal::ZERO)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn make_engine_with_tiers(tiers: Vec<ExchangeFeeTier>) -> BacktestEngine {
+        let config = BacktestConfig {
+            exchange_fee_tiers: tiers,
+            ..BacktestConfig::default()
+        };
+        BacktestEngine::new(config)
+    }
+
+    #[test]
+    fn test_fee_cache_flat_default() {
+        let engine = BacktestEngine::new(BacktestConfig::default());
+        // No tiers set — should use flat default of 10 bps = 0.001
+        let fee = engine.fee_for_exchange(0);
+        assert_eq!(fee, Decimal::from_str("0.001").unwrap());
+    }
+
+    #[test]
+    fn test_fee_cache_per_exchange_tier() {
+        let tiers = vec![
+            ExchangeFeeTier { exchange_id: 0, maker_fee_bps: Some(5), taker_fee_bps: 10 },
+            ExchangeFeeTier { exchange_id: 1, maker_fee_bps: None, taker_fee_bps: 15 },
+        ];
+        let engine = make_engine_with_tiers(tiers);
+        assert_eq!(engine.fee_for_exchange(0), Decimal::from_str("0.001").unwrap());
+        assert_eq!(engine.fee_for_exchange(1), Decimal::from_str("0.0015").unwrap());
+        // Exchange 2 has no tier — falls back to flat default
+        assert_eq!(engine.fee_for_exchange(2), Decimal::from_str("0.001").unwrap());
+    }
+
+    #[test]
+    fn test_exchange_fee_tier_struct() {
+        let tier = ExchangeFeeTier {
+            exchange_id: 5,
+            maker_fee_bps: Some(2),
+            taker_fee_bps: 8,
+        };
+        assert_eq!(tier.exchange_id, 5);
+        assert_eq!(tier.maker_fee_bps, Some(2));
+        assert_eq!(tier.taker_fee_bps, 8);
+    }
+
+    #[test]
+    fn test_backtest_config_default_has_empty_tiers() {
+        let config = BacktestConfig::default();
+        assert!(config.exchange_fee_tiers.is_empty());
+    }
 }

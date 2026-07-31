@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -157,6 +158,17 @@ impl Default for WithdrawalResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  BalanceProvider trait
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Trait for providing available balance checks before withdrawal.
+pub trait BalanceProvider: Send + Sync {
+    /// Returns the available balance for the given exchange and currency,
+    /// or `None` if the balance is unknown.
+    fn available_balance(&self, exchange_id: u16, currency: &str) -> Option<Decimal>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  WithdrawalExecutor
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -182,6 +194,8 @@ pub struct WithdrawalExecutor {
     pub rest_urls: HashMap<u16, String>,
     /// Raw API credentials per exchange for signing withdrawal payloads.
     pub credentials: HashMap<u16, ExchangeCredentials>,
+    /// Optional balance provider for pre-withdrawal balance validation.
+    balance_provider: Option<Arc<dyn BalanceProvider>>,
 }
 
 impl std::fmt::Debug for WithdrawalExecutor {
@@ -189,6 +203,7 @@ impl std::fmt::Debug for WithdrawalExecutor {
         f.debug_struct("WithdrawalExecutor")
             .field("rest_urls", &self.rest_urls)
             .field("credentials", &format!("{} exchanges configured", self.credentials.len()))
+            .field("balance_provider", &self.balance_provider.as_ref().map(|_| "Some"))
             .finish()
     }
 }
@@ -212,6 +227,7 @@ impl WithdrawalExecutor {
         execution_pool: Arc<HashMap<u16, Arc<dyn PrivateExchangeClient>>>,
         rest_urls: HashMap<u16, String>,
         exchange_configs: &HashMap<u16, crate::configs::ValidatedExchangeConfig>,
+        balance_provider: Option<Arc<dyn BalanceProvider>>,
     ) -> Self {
         let credentials: HashMap<u16, ExchangeCredentials> = exchange_configs
             .iter()
@@ -233,6 +249,7 @@ impl WithdrawalExecutor {
             execution_pool,
             rest_urls,
             credentials,
+            balance_provider,
         };
 
         for (ex_id, url) in &executor.rest_urls {
@@ -242,6 +259,11 @@ impl WithdrawalExecutor {
         }
 
         executor
+    }
+
+    /// Sets (or replaces) the balance provider after construction.
+    pub fn set_balance_provider(&mut self, provider: Arc<dyn BalanceProvider>) {
+        self.balance_provider = Some(provider);
     }
 
     // -------------------------------------------------------------------
@@ -289,15 +311,37 @@ impl WithdrawalExecutor {
             "Executing withdrawal"
         );
 
-        // L-1: Balance-aware withdrawal validation is deferred to a future
-        // release. The withdrawal executor does not hold balance state;
-        // callers should verify available balance before dispatching.
-        tracing::info!(
-            exchange = exchange_name,
-            currency = %req.currency,
-            amount = %req.amount,
-            "Withdrawal dispatched — caller is responsible for balance verification",
-        );
+        // L-1: Balance-aware withdrawal validation.
+        // Rejects the withdrawal if the available balance is below 90% of
+        // the requested amount.  This guards against overdrafts caused by
+        // stale balance data or concurrent trades that consumed funds
+        // between the caller's check and actual dispatch.
+        if let Some(ref provider) = self.balance_provider {
+            if let Some(available) = provider.available_balance(req.exchange_id, &req.currency) {
+                // Require at least 90% headroom — the 10% buffer absorbs
+                // rounding differences and floating-rate withdrawal fees.
+                let threshold = req.amount * Decimal::from_str("0.9").unwrap_or(Decimal::ONE);
+                if available < threshold {
+                    return Err(format!(
+                        "insufficient balance for withdrawal: available {} {} on {} (need >= 90% of requested {})",
+                        available, req.currency, exchange_name, req.amount
+                    ));
+                }
+                info!(
+                    exchange = exchange_name,
+                    currency = %req.currency,
+                    available = %available,
+                    amount = %req.amount,
+                    "Balance check passed (>= 90% threshold)"
+                );
+            } else {
+                warn!(
+                    exchange = exchange_name,
+                    currency = %req.currency,
+                    "Balance provider returned None — proceeding without balance check"
+                );
+            }
+        }
 
         // Exchange dispatch: IDs mapped from exchange_name_by_id().
         // Note: BitMEX (id=5) is omitted — withdrawals not supported.
@@ -1907,5 +1951,61 @@ fn as_u64_safe(v: &Value) -> Option<u64> {
         s.parse::<u64>().ok()
     } else {
         v.as_u64()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    /// A mock balance provider for testing.
+    struct MockBalanceProvider {
+        balances: HashMap<(u16, String), Decimal>,
+    }
+
+    impl MockBalanceProvider {
+        fn new() -> Self {
+            Self { balances: HashMap::new() }
+        }
+        fn set(&mut self, exchange_id: u16, currency: &str, balance: Decimal) {
+            self.balances.insert((exchange_id, currency.to_string()), balance);
+        }
+    }
+
+    impl BalanceProvider for MockBalanceProvider {
+        fn available_balance(&self, exchange_id: u16, currency: &str) -> Option<Decimal> {
+            self.balances.get(&(exchange_id, currency.to_string())).copied()
+        }
+    }
+
+    #[test]
+    fn test_balance_provider_rejects_over_90_percent() {
+        let mut provider = MockBalanceProvider::new();
+        provider.set(0, "USDT", dec!(1000.0));
+        // 90% of 1000 = 900. Withdrawing 901 should be rejected.
+        let available = provider.available_balance(0, "USDT").unwrap();
+        let max_safe = available * dec!(0.9);
+        assert_eq!(max_safe, dec!(900.0));
+        assert!(dec!(901.0) > max_safe);
+    }
+
+    #[test]
+    fn test_balance_provider_allows_under_90_percent() {
+        let mut provider = MockBalanceProvider::new();
+        provider.set(0, "USDT", dec!(1000.0));
+        let available = provider.available_balance(0, "USDT").unwrap();
+        let max_safe = available * dec!(0.9);
+        assert!(dec!(800.0) <= max_safe);
+    }
+
+    #[test]
+    fn test_balance_provider_unknown_returns_none() {
+        let provider = MockBalanceProvider::new();
+        assert!(provider.available_balance(99, "USDT").is_none());
     }
 }

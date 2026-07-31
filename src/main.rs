@@ -331,7 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let finder_config = CoinFinderConfig {
         quote_anchors: finder_anchors.clone(),
         allowed_categories: 0, // accept all categories — risk manager handles exposure
-        min_volume_usd: None,  // volume filtering can be added later
+        min_volume_usd: Some(config.strategies.cross_exchange.min_l2_liquidity_usd.to_f64().unwrap_or(0.0)),
     };
 
     let coin_finder = CoinFinder::new(
@@ -1239,6 +1239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&execution_pool),
         rest_urls.clone(),
         &config.exchanges,
+        None, // balance_provider — set later via set_balance_provider() if needed
     );
     println!("Withdrawal executor initialized — rebalancer can now execute on-chain transfers");
     println!("  ⚠️  Withdrawals require real API keys with withdrawal permission");
@@ -1419,10 +1420,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Lot-sizing parameters derived from config.
     let lot_max_pct = config.risk.max_single_position_pct;
-    // In live mode, lot_capital should reflect real account equity.
-    // For now we use DEFAULT_PAPER_CAPITAL as the upper bound; the balance
-    // allocator's per-exchange matrix is the actual authority on available funds.
-    // Future: Query real exchange balances at boot and use the sum as lot_capital.
+    // Boot balance is already queried via balance_sync::boot_sync (line 824)
+    // and stored in `live_capital`.  The balance allocator's per-exchange matrix
+    // is the final authority on available funds, but lot_capital provides the
+    // global upper bound used by the signal engine for max position sizing.
+    tracing::info!(%live_capital, "lot_capital sourced from boot_sync balance");
     let lot_capital = live_capital;
     // Fall-back minimum lot when the allocator returns zero (no balance seeded yet).
     let lot_fallback = dec!(0.001);

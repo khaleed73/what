@@ -357,4 +357,46 @@ mod tests {
         // With 0.3% total fees on 3 legs, need > 0.3% profit.
         // These balanced prices shouldn't produce profit.
     }
+
+    #[test]
+    fn test_with_max_iterations_configurable() {
+        // Default: 3 iterations (triangular)
+        let finder = TriPathFinder::new(
+            vec!["USDT".to_string(), "BTC".to_string(), "ETH".to_string()],
+            dec!(0.01),
+        );
+        assert_eq!(finder.max_iterations, DEFAULT_BELLMAN_ITERATIONS);
+
+        // Custom: 4 iterations (4-hop paths)
+        let finder4 = TriPathFinder::with_max_iterations(
+            vec!["USDT".to_string(), "BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
+            dec!(0.01),
+            4,
+        );
+        assert_eq!(finder4.max_iterations, 4);
+        assert_eq!(finder4.currency_count(), 4);
+    }
+
+    #[test]
+    fn test_default_vs_custom_iterations_same_result() {
+        // For 3 currencies, default (3) and custom (3) should behave identically.
+        let mut f1 = TriPathFinder::new(
+            vec!["USDT".to_string(), "BTC".to_string(), "ETH".to_string()],
+            dec!(0.01),
+        );
+        let mut f2 = TriPathFinder::with_max_iterations(
+            vec!["USDT".to_string(), "BTC".to_string(), "ETH".to_string()],
+            dec!(0.01),
+            3,
+        );
+        // Add same pairs to both
+        for finder in &mut [&mut f1, &mut f2] {
+            finder.add_pair("BTCUSDT", "BTC", "USDT", dec!(50000), dec!(0.001));
+            finder.add_pair("ETHBTC", "ETH", "BTC", dec!(0.065), dec!(0.001));
+            finder.add_pair("ETHUSDT", "ETH", "USDT", dec!(3250), dec!(0.001));
+        }
+        let p1 = f1.find_profitable_paths();
+        let p2 = f2.find_profitable_paths();
+        assert_eq!(p1.len(), p2.len());
+    }
 }

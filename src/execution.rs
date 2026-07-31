@@ -1357,7 +1357,7 @@ impl HighFrequencyExecutionEngine {
             }
             let profit = sell_notional - buy_notional - total_fee;
             let profit_cents = (profit * Decimal::from(100u64))
-                .trunc()
+                .round()
                 .to_i64()
                 .unwrap_or(0);
             self.record_daily_pnl(profit_cents);

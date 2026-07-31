@@ -290,8 +290,7 @@ pub struct ValidatedCrossExchangeConfig {
     pub min_spread_pct: Decimal,
     pub max_target_latency_ms: u64,
     /// Minimum L2 order book liquidity (USD) required to emit a signal.
-    /// Not yet enforced in the signal loop — planned for a future release.
-    #[allow(dead_code)]
+    /// Used by CoinFinder as the minimum volume filter for pair discovery.
     pub min_l2_liquidity_usd: Decimal,
     pub max_slippage_tolerance: Decimal,
     /// Optional allowlist of exchange IDs. None = all exchanges eligible.
@@ -306,8 +305,7 @@ pub struct ValidatedTriangularConfig {
     /// Passed to `TriPathFinder::with_max_iterations()`.
     pub max_path_length: u32,
     /// Minimum 24h pair volume (USD) for triangular loop candidates.
-    /// Not yet enforced in the path finder — planned for a future release.
-    #[allow(dead_code)]
+    /// Used by the triangular path finder for candidate filtering.
     pub min_pair_volume_24h: Decimal,
     pub quote_anchors: Vec<String>,
     /// Optional allowlist of exchange IDs. None = all exchanges eligible.

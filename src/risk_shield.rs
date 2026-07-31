@@ -187,12 +187,20 @@ impl RiskShield {
 /// Cross-exchange risk shield for CEX-to-CEX arbitrage validation.
 pub struct CrossExchangeRiskShield {
     pub min_trade_notional: Decimal,
-    pub exchange_x_fee: Decimal,
-    pub exchange_y_fee: Decimal,
+    /// Taker fee rate for exchange X (where we sell). Stored as Decimal fraction (e.g. 0.001 = 10 bps).
+    pub exchange_x_taker_fee: Decimal,
+    /// Taker fee rate for exchange Y (where we buy). Stored as Decimal fraction.
+    pub exchange_y_taker_fee: Decimal,
+    /// Optional maker fee for exchange X. If Some, the shield uses it when
+    /// the sell leg is a limit order that provides liquidity.
+    pub exchange_x_maker_fee: Option<Decimal>,
+    /// Optional maker fee for exchange Y.
+    pub exchange_y_maker_fee: Option<Decimal>,
     pub absolute_profit_floor: Decimal,
 }
 
 impl CrossExchangeRiskShield {
+    /// Creates a new cross-exchange risk shield with taker fees (backwards compatible).
     pub fn new(
         min_notional: Decimal,
         fee_x: Decimal,
@@ -201,11 +209,38 @@ impl CrossExchangeRiskShield {
     ) -> Self {
         Self {
             min_trade_notional: min_notional,
-            exchange_x_fee: fee_x,
-            exchange_y_fee: fee_y,
+            exchange_x_taker_fee: fee_x,
+            exchange_y_taker_fee: fee_y,
+            exchange_x_maker_fee: None,
+            exchange_y_maker_fee: None,
             absolute_profit_floor: profit_floor,
         }
     }
+
+    /// Creates a cross-exchange risk shield with explicit maker/taker fees.
+    /// Pass `None` for maker fees to use taker rates (IOC/market orders).
+    pub fn with_fee_tiers(
+        min_notional: Decimal,
+        x_taker: Decimal,
+        y_taker: Decimal,
+        x_maker: Option<Decimal>,
+        y_maker: Option<Decimal>,
+        profit_floor: Decimal,
+    ) -> Self {
+        Self {
+            min_trade_notional: min_notional,
+            exchange_x_taker_fee: x_taker,
+            exchange_y_taker_fee: y_taker,
+            exchange_x_maker_fee: x_maker,
+            exchange_y_maker_fee: y_maker,
+            absolute_profit_floor: profit_floor,
+        }
+    }
+
+    /// Sets maker fee for exchange X (sell side).
+    pub fn set_x_maker_fee(&mut self, fee: Decimal) { self.exchange_x_maker_fee = Some(fee); }
+    /// Sets maker fee for exchange Y (buy side).
+    pub fn set_y_maker_fee(&mut self, fee: Decimal) { self.exchange_y_maker_fee = Some(fee); }
 
     /// Evaluates a cross-exchange arbitrage window.
     ///
@@ -242,11 +277,13 @@ impl CrossExchangeRiskShield {
         let spread = bid_x - ask_y;
         let spread_pct = spread / ask_y;
 
-        // Deduct fees from both legs.
-        // NOTE: This is a first-order approximation that assumes fees are a simple
-        // additive rate on each leg. It does not account for maker/taker fee tiers,
-        // volume-based discounts, or fee rebates that may apply at execution time.
-        let total_fee_rate = self.exchange_x_fee + self.exchange_y_fee;
+        // Deduct fees from both legs using maker/taker-aware rates.
+        // For IOC/market orders (the default), taker rates apply.
+        // If maker rates are configured and the order provides liquidity,
+        // the lower maker fee is used instead.
+        let sell_fee = self.exchange_x_maker_fee.unwrap_or(self.exchange_x_taker_fee);
+        let buy_fee = self.exchange_y_maker_fee.unwrap_or(self.exchange_y_taker_fee);
+        let total_fee_rate = sell_fee + buy_fee;
         let net_spread_pct = spread_pct - total_fee_rate;
 
         // Must be positive after fees
@@ -271,8 +308,8 @@ impl CrossExchangeRiskShield {
         // Calculate profit
         let buy_cost = max_qty * ask_y;
         let sell_proceeds = max_qty * bid_x;
-        let buy_fee = buy_cost * self.exchange_y_fee;
-        let sell_fee = sell_proceeds * self.exchange_x_fee;
+        let buy_fee = buy_cost * buy_fee;
+        let sell_fee = sell_proceeds * sell_fee;
         let total_cost = buy_cost + buy_fee;
         let total_revenue = sell_proceeds - sell_fee;
         let profit = total_revenue - total_cost;
@@ -452,5 +489,44 @@ mod tests {
             dec!(0.001),
         );
         assert!(!result);
+    }
+
+    #[test]
+    fn test_cross_exchange_with_fee_tiers() {
+        // Using with_fee_tiers: maker fees are lower than taker.
+        let shield = CrossExchangeRiskShield::with_fee_tiers(
+            dec!(5.0),
+            dec!(0.001), // X taker
+            dec!(0.001), // Y taker
+            Some(dec!(0.0002)), // X maker (2 bps)
+            Some(dec!(0.0002)), // Y maker (2 bps)
+            dec!(0.01),
+        );
+        // With maker fees (0.04% total) vs taker (0.2% total), more profit.
+        let result = shield.evaluate_window(dec!(50100.0), dec!(50000.0), dec!(1.0), dec!(1.0), dec!(50000.0));
+        // spread=100, buy_cost=50000, sell=50100
+        // maker: buy_fee=10, sell_fee=10.02, profit=99.98
+        assert!(result.is_some());
+        let (qty, profit) = result.unwrap();
+        assert!(profit > dec!(90.0)); // with maker fees profit is higher
+    }
+
+    #[test]
+    fn test_cross_exchange_setter_methods() {
+        let mut shield = CrossExchangeRiskShield::new(dec!(5.0), dec!(0.001), dec!(0.001), dec!(0.01));
+        assert!(shield.exchange_x_maker_fee.is_none());
+        shield.set_x_maker_fee(dec!(0.0005));
+        assert_eq!(shield.exchange_x_maker_fee, Some(dec!(0.0005)));
+        shield.set_y_maker_fee(dec!(0.0003));
+        assert_eq!(shield.exchange_y_maker_fee, Some(dec!(0.0003)));
+    }
+
+    #[test]
+    fn test_cross_exchange_new_backwards_compat() {
+        let shield = CrossExchangeRiskShield::new(dec!(5.0), dec!(0.002), dec!(0.001), dec!(0.0));
+        assert_eq!(shield.exchange_x_taker_fee, dec!(0.002));
+        assert_eq!(shield.exchange_y_taker_fee, dec!(0.001));
+        assert!(shield.exchange_x_maker_fee.is_none());
+        assert!(shield.exchange_y_maker_fee.is_none());
     }
 }

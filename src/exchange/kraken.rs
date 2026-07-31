@@ -17,11 +17,9 @@ use anyhow::Result;
 /// Kraken exchange client with monotonic nonce generator and rate limiting.
 ///
 /// # Nonce Synchronization
-/// The local nonce counter starts from a config value or timestamp. If the
-/// Kraken server's expected nonce is higher (e.g. after a restart), orders
-/// will be rejected with "nonce too-low." A future enhancement should query
-/// Kraken's `Time` or `OpenOrders` endpoint at startup and set the local
-/// counter to `max(local, server) + 1`.
+/// After construction, call [`sync_nonce()`](KrakenClient::sync_nonce) to query
+/// Kraken's server time and advance the local counter if needed. This prevents
+/// "nonce too-low" rejections after bot restarts.
 pub struct KrakenClient {
     name: String,
     config: ExchangeConfig,
@@ -41,6 +39,34 @@ impl KrakenClient {
             nonce: KrakenNonce::new(),
             rate_limiter: RateLimiter::new(100),
         })
+    }
+
+    /// Synchronizes the local nonce with Kraken's server time.
+    /// Queries the public `/0/public/Time` endpoint and, if the server's
+    /// Unix time (milliseconds) exceeds the local nonce counter, advances
+    /// the counter to prevent "nonce too-low" order rejections.
+    pub async fn sync_nonce(&self) -> Result<()> {
+        let url = format!("{}/0/public/Time", self.config.base_url);
+        let resp = self.http.get(&url).send().await?;
+        let json: serde_json::Value = resp.json().await?;
+
+        // Kraken returns {"result":{"unixtime":1234567890,"rfc1123":"..."}}
+        let server_time_ms = json["result"]["unixtime"]
+            .as_i64()
+            .map(|t| (t as u64).saturating_mul(1000))
+            .or_else(|| json["result"]["unixtime"].as_f64().map(|f| (f * 1000.0) as u64));
+
+        if let Some(st) = server_time_ms {
+            let new_nonce = self.nonce.sync_to(st);
+            tracing::info!(
+                server_time_ms = st,
+                local_nonce = new_nonce,
+                "Kraken nonce synced with server time"
+            );
+        } else {
+            tracing::warn!("Kraken Time response missing unixtime — nonce not synced");
+        }
+        Ok(())
     }
 
     /// Handle exchange response with rate limit detection and backoff.
