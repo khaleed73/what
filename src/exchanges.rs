@@ -1368,8 +1368,9 @@ pub mod bitmex {
         }
 
         /// Get current timestamp as unix seconds, plus a 60-second expiry window.
+        /// M-24 fix: Use max(0) to handle pre-epoch clocks (NTP misconfiguration).
         fn expires() -> u64 {
-            Utc::now().timestamp() as u64 + BITMEX_EXPIRE_WINDOW_SECS
+            Utc::now().timestamp().max(0) as u64 + BITMEX_EXPIRE_WINDOW_SECS
         }
 
         /// Convert "BTC/USD" to BitMEX symbol format "XBTUSD".

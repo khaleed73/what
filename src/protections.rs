@@ -339,6 +339,8 @@ impl RiskManager {
     /// # Errors
     ///
     /// Returns the **first** layer that fails as a [`TradeRejection`].
+    /// L-25: #[must_use] — ignoring the Err causes trades to bypass risk checks.
+    #[must_use = "ignoring pre_trade_check result bypasses risk checks"]
     #[inline]
     pub fn pre_trade_check(
         &self,

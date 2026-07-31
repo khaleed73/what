@@ -4,6 +4,10 @@
 //! benchmark binaries, and the E2E pipeline test). This is the **library**
 //! crate; the binary target lives in `src/main.rs`.
 
+// L-23: Crate-level dead_code allow is retained because many items are used
+// only from main.rs (separate binary crate) or are public API for integration
+// tests. When the codebase stabilizes, replace with #![warn(dead_code)] and
+// add per-module #[allow(dead_code)] where truly needed.
 #![allow(dead_code)]
 
 pub mod exchange;

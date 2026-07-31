@@ -172,9 +172,9 @@ pub struct MarketArena {
     /// Dynamically-discovered tokens that have passed all filters.
     /// Written by the coin finder's cold path (1-second intervals).
     /// Read by the signal loop via try_lock() for lock-free iteration.
-    // NOTE: std::sync::Mutex used because get_active_token_ids() is called
-    // from non-async test contexts. If this is ever called from an async
-    // context, switch to tokio::sync::Mutex.
+    // M-28 fix: std::sync::Mutex is safe here because all async call sites
+    // use try_lock() (non-blocking). The only blocking lock() is in
+    // get_active_token_ids() which is reserved for non-async test contexts.
     pub active_tokens: std::sync::Mutex<Vec<u16>>,
 
     /// Hot-path toggles.
@@ -258,10 +258,10 @@ impl MarketArena {
     /// Register a token as actively discovered by the coin finder.
     ///
     /// Called from the coin finder's cold path when a token passes all filters.
-    /// Uses `try_lock()` for non-blocking insertion on the hot path.
+    /// M-28: Uses `try_lock()` to avoid blocking the async runtime.
     #[inline]
     pub fn register_active_token(&self, token_id: u16) {
-        if let Ok(mut tokens) = self.active_tokens.lock() {
+        if let Ok(mut tokens) = self.active_tokens.try_lock() {
             if !tokens.contains(&token_id) {
                 tokens.push(token_id);
             }

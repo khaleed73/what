@@ -132,6 +132,8 @@ impl EngineCircuitBreaker {
     /// drift) after a 60-second cooldown period.
     /// For non-transient reasons (MANUAL_KILL, BALANCE_CORRUPTION, etc.),
     /// auto-recovery is intentionally blocked.
+    /// L-25: #[must_use] — ignoring this sends orders to a frozen system.
+    #[must_use = "ignoring check_and_reject result sends orders while system is frozen"]
     pub fn check_and_reject(&self) -> Result<(), CircuitBreakerError> {
         if self.is_frozen() {
             let reason = self.trip_reason.load(Ordering::Acquire);

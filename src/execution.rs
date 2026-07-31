@@ -260,7 +260,8 @@ where
                     } else {
                         MAX_BACKOFF_MS as f64
                     };
-                    let d = (base_d * (0.75 + 0.5 * rand::thread_rng().gen::<f64>())) as u64;
+                    let d = (base_d * (0.75 + 0.5 * rand::thread_rng().gen::<f64>()))
+                        .min(u64::MAX as f64) as u64;
                     warn!(
                         attempt = attempt + 1,
                         max_retries,
@@ -729,7 +730,15 @@ impl HighFrequencyExecutionEngine {
     #[inline]
     fn record_daily_pnl(&self, profit_cents: i64) {
         if profit_cents >= 0 {
-            self.daily_profit_cents.fetch_add(profit_cents as u64, Ordering::Release);
+            // M-27 fix: Use i128 widening to avoid u64 wrap on large profits.
+            let val = profit_cents as u128;
+            let val = if val > u64::MAX as u128 {
+                tracing::warn!(raw_cents = val, "record_daily_pnl: profit exceeds u64::MAX — capping");
+                u64::MAX
+            } else {
+                val as u64
+            };
+            self.daily_profit_cents.fetch_add(val, Ordering::Release);
         } else {
             let abs = (profit_cents as i128).unsigned_abs();
             let abs = if abs > u64::MAX as u128 {
