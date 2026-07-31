@@ -14,6 +14,11 @@ use crate::exchange::exchange_trait::*;
 use crate::exchange::types::*;
 use anyhow::Result;
 
+/// L-15: Counter for generating unique client order IDs without UUID
+/// overhead on the hot path. Atomic u64 is sufficient — even at 1000
+/// orders/sec, u64 wraps in 584 million years.
+static BITGET_CID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Bitget exchange client with rate limiting.
 pub struct BitgetClient {
     name: String,
@@ -129,10 +134,12 @@ fn bitget_symbol(symbol: &str) -> String {
             "orderType": order_type,
             "force": force,
             "quantity": order.quantity.to_string(),
-            // TODO: UUID generation on the hot path — consider pre-generating
-            // a pool of UUIDs at construction time to reduce per-order overhead.
+            // L-15 fix: Use atomic counter instead of UUID for faster hot-path
+            // client order ID generation. Format: "bg-{timestamp}-{counter}".
             "clientOid": if client_oid.is_empty() {
-                uuid::Uuid::new_v4().to_string()
+                let ctr = BITGET_CID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let ts = chrono::Utc::now().timestamp_millis();
+                format!("bg-{}-{}", ts, ctr)
             } else {
                 client_oid.to_string()
             },

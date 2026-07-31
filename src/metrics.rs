@@ -27,11 +27,11 @@ pub struct MetricsConfig {
 
 impl Default for MetricsConfig {
     fn default() -> Self {
-        // TODO: Make metrics bind address configurable via CLI/env.
+        // L-10: Read from env var METRICS_BIND_ADDR, falling back to default.
         // In production, bind to 127.0.0.1:9090 and use a reverse proxy.
-        Self {
-            bind_addr: "127.0.0.1:9090".to_string(),
-        }
+        let bind_addr = std::env::var("METRICS_BIND_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:9090".to_string());
+        Self { bind_addr }
     }
 }
 

@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use crate::exchange::config::ExchangeConfig;
 use crate::exchange::common::*;
@@ -25,6 +26,11 @@ pub struct OkxClient {
     config: ExchangeConfig,
     http: reqwest::Client,
     rate_limiter: RateLimiter,
+    /// L-14: Monotonic counter to disambiguate requests within the same
+    /// millisecond (OKX timestamps have ms precision).
+    request_counter: std::sync::atomic::AtomicU64,
+    /// Last timestamp string sent, to detect same-ms collisions.
+    last_timestamp_ms: std::sync::atomic::AtomicU64,
 }
 
 impl OkxClient {
@@ -55,6 +61,8 @@ impl OkxClient {
             config,
             http,
             rate_limiter: RateLimiter::new(OKX_RATE_LIMIT),
+            request_counter: std::sync::atomic::AtomicU64::new(0),
+            last_timestamp_ms: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -86,11 +94,24 @@ impl OkxClient {
 
     /// Common OKX order-signing and sending logic.
     async fn send_okx_order(&self, body: serde_json::Value) -> Result<serde_json::Value> {
-        // TODO: Add monotonic counter to prevent nonce collisions within the
-        // same millisecond on rapid successive requests.
-        let timestamp = chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string();
+        // L-14 fix: Append monotonic counter suffix when multiple requests
+        // hit within the same millisecond to prevent nonce collisions.
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let prev_ms = self.last_timestamp_ms.load(Ordering::Acquire);
+        let ctr = if now_ms == prev_ms {
+            self.request_counter.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            self.last_timestamp_ms.store(now_ms, Ordering::Release);
+            self.request_counter.store(0, Ordering::Release);
+            0
+        };
+        let timestamp = if ctr == 0 {
+            chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string()
+        } else {
+            format!("{}.{:03}Z", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3f").to_string().trim_end_matches('Z'), ctr % 1000)
+        };
         let body_str = serde_json::to_string(&body)?;
         let sign_str = format!("{}POST/api/v5/trade/order{}", timestamp, body_str);
         let signature =

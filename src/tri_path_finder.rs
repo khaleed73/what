@@ -27,6 +27,11 @@ struct GraphEdge {
     log_fee_factor: f64,
     /// The actual pair symbol for reference.
     pair_symbol: String,
+    /// M-29 fix: Store original Decimal rate and fee factor for exact
+    /// profit computation. The f64 log-space is used for fast Bellman-Ford
+    /// candidate detection, but the final P&L uses these Decimal values.
+    decimal_rate: Decimal,
+    decimal_fee_factor: Decimal,
 }
 
 /// A detected profitable triangular path.
@@ -113,8 +118,9 @@ impl TriPathFinder {
             None => return,
         };
 
-        // f64 introduces precision loss in fee calculations.
-        // Consider using Decimal arithmetic.
+        // M-29: f64 log-space is used for fast Bellman-Ford candidate
+        // detection. Decimal values are stored alongside for exact profit
+        // computation in compute_path_profit().
         let log_fee = ((Decimal::ONE - fee).to_f64().unwrap_or_else(|| {
             tracing::warn!(%fee, "tri_path_finder: fee->f64 conversion failed, using 0.99");
             0.99
@@ -123,30 +129,34 @@ impl TriPathFinder {
             tracing::warn!(%price, "tri_path_finder: price->f64 conversion failed, using 1.0");
             1.0
         });
+        let fee_f = fee.to_f64().unwrap_or(0.001);
+        let decimal_fee_factor = Decimal::ONE - fee;
 
         // Edge: sell base → get quote (rate = price)
-        // In log-space: weight = -ln(price * (1-fee))
-        let fee_f = fee.to_f64().unwrap_or(0.001);
         let log_rate_sell = -(price_f * (1.0 - fee_f)).ln();
-        // f64 introduces precision loss in fee calculations.
-        // Consider using Decimal arithmetic.
         self.edges[base_idx].push(GraphEdge {
             to: quote_idx,
             log_rate: log_rate_sell,
             log_fee_factor: log_fee,
             pair_symbol: pair_symbol.to_string(),
+            decimal_rate: price,
+            decimal_fee_factor,
         });
 
         // Edge: buy base with quote (rate = 1/price)
-        // In log-space: weight = -ln((1/price) * (1-fee))
         let log_rate_buy = -((1.0 / price_f) * (1.0 - fee_f)).ln();
-        // f64 introduces precision loss in fee calculations.
-        // Consider using Decimal arithmetic.
+        let inv_price = if price > Decimal::ZERO {
+            Decimal::ONE / price
+        } else {
+            Decimal::ZERO
+        };
         self.edges[quote_idx].push(GraphEdge {
             to: base_idx,
             log_rate: log_rate_buy,
             log_fee_factor: log_fee,
             pair_symbol: pair_symbol.to_string(),
+            decimal_rate: inv_price,
+            decimal_fee_factor,
         });
     }
 
@@ -228,7 +238,9 @@ impl TriPathFinder {
         None
     }
 
-    /// Compute the profit factor for a given path.
+    /// Compute the profit factor for a given path using Decimal arithmetic.
+    /// M-29 fix: Uses stored Decimal rate/fee values instead of f64 exp()
+    /// for exact financial precision in the final P&L calculation.
     fn compute_path_profit(&self, path: &[usize]) -> Option<TriangularPath> {
         if path.len() != 3 {
             return None;
@@ -236,31 +248,32 @@ impl TriPathFinder {
 
         // Try to find edges that connect the path nodes.
         let mut pairs = Vec::with_capacity(3);
-        let mut profit_factor = 1.0;
+        let mut profit_factor = Decimal::ONE;
 
         // A → B
         {
             let edge = self.edges[path[0]].iter().find(|e| e.to == path[1])?;
             pairs.push(edge.pair_symbol.clone());
-            profit_factor *= edge.log_rate.exp();
+            // M-29: rate * (1 - fee) in Decimal — no f64 precision loss.
+            profit_factor *= edge.decimal_rate * edge.decimal_fee_factor;
         }
 
         // B → C
         {
             let edge = self.edges[path[1]].iter().find(|e| e.to == path[2])?;
             pairs.push(edge.pair_symbol.clone());
-            profit_factor *= edge.log_rate.exp();
+            profit_factor *= edge.decimal_rate * edge.decimal_fee_factor;
         }
 
         // C → A
         {
             let edge = self.edges[path[2]].iter().find(|e| e.to == path[0])?;
             pairs.push(edge.pair_symbol.clone());
-            profit_factor *= edge.log_rate.exp();
+            profit_factor *= edge.decimal_rate * edge.decimal_fee_factor;
         }
 
         let currencies: Vec<String> = path.iter().map(|&i| self.idx_to_currency[i].clone()).collect();
-        let net_profit_factor = Decimal::from_f64_retain(profit_factor).unwrap_or(Decimal::ONE);
+        let net_profit_factor = profit_factor;
         let net_profit_pct = (net_profit_factor - Decimal::ONE) * Decimal::from(100u32);
 
         Some(TriangularPath {

@@ -261,7 +261,10 @@ impl StablecoinProtectionCircuit {
             tracing::warn!(multiplier, "volatility_multiplier out of range [0.1, 10.0] \u{2014} ignoring");
             return;
         }
-        let fp = (multiplier * 10_000.0).round() as u64;
+        // M-22 fix: Clamp to valid u64 range before cast. The range guard above
+        // ensures multiplier in [0.1, 10.0], so fp is in [1000, 100000] — well
+        // within u64. The clamp is a defensive measure against NaN/Inf.
+        let fp = (multiplier * 10_000.0).round().clamp(1.0, 1_000_000.0) as u64;
         self.volatility_multiplier.store(fp.max(1), Ordering::SeqCst);
     }
 
