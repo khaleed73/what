@@ -5,6 +5,7 @@
 //! configuration, wires every subsystem together, and either starts live
 //! WebSocket feeds or runs the built-in integration smoke-test.
 
+mod asset_inventory;
 mod balance_allocator;
 mod backtest;
 mod coin_finder;
@@ -344,12 +345,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         min_volume_usd: Some(config.strategies.cross_exchange.min_l2_liquidity_usd.to_f64().unwrap_or(0.0)),
     };
 
+    let asset_inventory = Arc::new(asset_inventory::AssetInventory::new());
+
     let coin_finder = CoinFinder::new(
         finder_rest_urls,
         finder_config,
         Arc::clone(&allocator_arc),
         Arc::clone(&arena),
         100, // start token IDs at 100 (0–99 reserved for manual registration)
+        Arc::clone(&asset_inventory),
     )?;
 
     let coin_finder_handle = tokio::spawn(async move {

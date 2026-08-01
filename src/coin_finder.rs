@@ -48,6 +48,7 @@ use reqwest::Client;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info};
 
+use crate::asset_inventory::AssetInventory;
 use crate::balance_allocator::{
     LocalCapitalAllocator, CAT_ALTCOIN, CAT_LAYER1, CAT_MAJOR,
     CAT_MEMECOIN, CAT_NONE,
@@ -1035,6 +1036,8 @@ pub struct CoinFinder {
     /// symbol (e.g. "BTCUSDT"), value is the list of exchange IDs
     /// where this pair should be registered.
     custom_mappings: tokio::sync::Mutex<HashMap<String, Vec<u16>>>,
+    /// Queryable asset inventory populated after each scan cycle.
+    inventory: Arc<AssetInventory>,
 }
 
 impl CoinFinder {
@@ -1048,6 +1051,7 @@ impl CoinFinder {
         allocator: Arc<LocalCapitalAllocator>,
         arena: Arc<MarketArena>,
         start_token_id: u16,
+        inventory: Arc<AssetInventory>,
     ) -> Result<Self, String> {
         let http = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -1065,6 +1069,7 @@ impl CoinFinder {
             global_symbol_map: tokio::sync::Mutex::new(HashMap::new()),
             token_categories: tokio::sync::Mutex::new(HashMap::new()),
             custom_mappings: tokio::sync::Mutex::new(HashMap::new()),
+            inventory,
         })
     }
 
@@ -1144,7 +1149,7 @@ impl CoinFinder {
     /// Run a single scan cycle across all configured exchanges.
     ///
     /// Returns the number of newly discovered tokens and total active pairs.
-    async fn scan_cycle(&self) -> (usize, usize) {
+    async fn scan_cycle(&self, cycle: u64) -> (usize, usize) {
         // Fire all exchange scans in parallel
         let mut handles = Vec::new();
 
@@ -1365,6 +1370,21 @@ impl CoinFinder {
         self.arena.build_cross_exchange_targets().await;
         self.arena.build_triangular_loops(&tri_pair_map).await;
 
+        // Populate the queryable asset inventory snapshot.
+        let symbol_map = self.global_symbol_map.lock().await;
+        let categories = self.token_categories.lock().await;
+        self.inventory.update(
+            &exchange_pairs,
+            &token_exchange_presence,
+            &symbol_map,
+            &categories,
+            &tri_pair_map,
+            new_tokens,
+            total_pairs,
+            cycle,
+        ).await;
+        // symbol_map and categories locks released here.
+
         (new_tokens, total_pairs)
     }
 
@@ -1383,9 +1403,13 @@ impl CoinFinder {
             ticker.tick().await;
             cycle = cycle.saturating_add(1);
 
-            let (new_tokens, total_pairs) = self.scan_cycle().await;
+            let (new_tokens, total_pairs) = self.scan_cycle(cycle).await;
 
+            // Log full inventory summary on cycle 1 and every 60 cycles.
             if cycle == 1 || cycle.is_multiple_of(60) {
+                if let Some(snap) = self.inventory.snapshot() {
+                    AssetInventory::log_summary(&snap);
+                }
                 info!(
                     cycle,
                     new_tokens,
