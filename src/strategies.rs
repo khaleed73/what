@@ -268,6 +268,36 @@ impl MarketArena {
         }
     }
 
+    /// Remove a token from the active token list.
+    ///
+    /// Called when a token is no longer available on any exchange (delisted,
+    /// removed, or failed to appear for N consecutive scan cycles). This
+    /// prevents the signal loop from wasting CPU cycles evaluating dead tokens.
+    ///
+    /// Uses `try_lock()` to avoid blocking the async runtime.
+    pub fn unregister_active_token(&self, token_id: u16) {
+        if let Ok(mut tokens) = self.active_tokens.try_lock() {
+            tokens.retain(|&t| t != token_id);
+        }
+    }
+
+    /// Zeros out all prices for a given token across every exchange,
+    /// preventing stale data usage after the token is delisted or removed.
+    ///
+    /// This complements `invalidate_exchange()` — where that zeros an entire
+    /// exchange row, this zeros an entire token column.
+    #[inline]
+    pub fn invalidate_token(&self, token_id: usize) {
+        if token_id >= self.total_tokens {
+            return;
+        }
+        for exch_id in 0..self.total_exchanges {
+            let idx = self.get_index(exch_id, token_id);
+            self.bid_prices[idx].store(0, Ordering::Release);
+            self.ask_prices[idx].store(0, Ordering::Release);
+        }
+    }
+
     /// Returns a snapshot of all currently active token IDs.
     ///
     /// Uses a blocking `lock()` — do **not** call this from a hot-path
@@ -496,13 +526,18 @@ impl MarketArena {
                             if bid_j > ask_i && ask_i > 0 {
                                 let raw_spread_bps = (bid_j - ask_i).saturating_mul(BPS_SCALE) / ask_i;
 
+                                // Data anomaly guard: reject near-zero-ask phantom spreads.
+                                if raw_spread_bps >= BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER {
+                                    continue;
+                                }
+
                                 // Fee-aware: deduct round-trip taker fees.
                                 let net_spread_bps = if self.fee_aware_enabled.load(Ordering::Relaxed) {
                                     if let Ok(fees) = self.fee_schedule.try_read() {
                                         let fee_deduction = fees.round_trip_taker_bps(exch_i, exch_j);
                                         raw_spread_bps.saturating_sub(fee_deduction)
                                     } else {
-                                        raw_spread_bps // skip fee check rather than block
+                                        continue // fail-closed: skip signal if fee schedule unavailable
                                     }
                                 } else {
                                     raw_spread_bps
@@ -527,12 +562,17 @@ impl MarketArena {
                             if bid_i > ask_j && ask_j > 0 {
                                 let raw_spread_bps = (bid_i - ask_j).saturating_mul(BPS_SCALE) / ask_j;
 
+                                // Data anomaly guard: reject near-zero-ask phantom spreads.
+                                if raw_spread_bps >= BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER {
+                                    continue;
+                                }
+
                                 let net_spread_bps = if self.fee_aware_enabled.load(Ordering::Relaxed) {
                                     if let Ok(fees) = self.fee_schedule.try_read() {
                                         let fee_deduction = fees.round_trip_taker_bps(exch_j, exch_i);
                                         raw_spread_bps.saturating_sub(fee_deduction)
                                     } else {
-                                        raw_spread_bps
+                                        continue // fail-closed: skip signal if fee schedule unavailable
                                     }
                                 } else {
                                     raw_spread_bps
@@ -616,7 +656,11 @@ impl MarketArena {
 
                     // Guard: reject if any step produced an unreasonable ratio (>100x),
                     // which indicates a data anomaly (e.g., near-zero ask price).
-                    if step1 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER || step3 > BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER {
+                    // Use >= to reject the exact boundary value as well — prevents
+                    // exploitation via saturating_mul overflow (step2 could produce
+                    // exactly 100× even when step1 and step3 appear normal).
+                    let max_ratio = BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER;
+                    if step1 >= max_ratio || step2 >= max_ratio || step3 >= max_ratio {
                         continue;
                     }
 
@@ -626,10 +670,19 @@ impl MarketArena {
                         // Fee-aware: deduct three-leg taker fees.
                         let net_profit_bps = if self.fee_aware_enabled.load(Ordering::Relaxed) {
                             if let Ok(fees) = self.fee_schedule.try_read() {
+                                // Compounded fee correction: the additive approximation
+                                // (profit - 3f) overstates profit by ~3f*profit/BPS_SCALE.
+                                // Apply second-order correction: net ≈ step3*(1-f/1e4)^3 - BPS_SCALE.
+                                // For simplicity and safety, we use the conservative
+                                // additive model but add a 2nd-order safety margin.
                                 let fee_deduction = fees.tri_leg_taker_bps(updated_exch);
-                                raw_profit_bps.saturating_sub(fee_deduction)
+                                // Second-order correction: add back ~3*f*raw_profit/BPS_SCALE
+                                // overstatement. Using saturating arithmetic for safety.
+                                let taker_fee = fees.taker_fees.get(updated_exch).copied().unwrap_or(DEFAULT_TAKER_FEE_BPS);
+                                let correction = 3u64.saturating_mul(taker_fee).saturating_mul(raw_profit_bps) / BPS_SCALE;
+                                raw_profit_bps.saturating_sub(fee_deduction).saturating_sub(correction)
                             } else {
-                                raw_profit_bps
+                                continue // fail-closed: skip signal if fee schedule unavailable
                             }
                         } else {
                             raw_profit_bps
@@ -945,13 +998,15 @@ mod tests {
         pairs.insert(0, vec![(0, 1), (1, 2), (2, 0)]);
         arena.build_triangular_loops(&pairs).await;
 
-        // Fee-aware ON (default).  Net = 3310 - 30 = 3280 bps.
-        // Threshold comparison is strict (>), so use 3279 to allow 3280 > 3279.
-        let signals = arena.evaluate_tick(0, 0, 0, 3279);
+        // Fee-aware ON (default).  Additive: 3310 - 30 = 3280 bps.
+        // With 2nd-order correction: correction = 3*10*3310/10000 = 9 bps.
+        // Net = 3280 - 9 = 3271 bps.
+        // Threshold comparison is strict (>), so use 3270 to allow 3271 > 3270.
+        let signals = arena.evaluate_tick(0, 0, 0, 3270);
         assert_eq!(signals.len(), 1);
 
-        // With threshold at net profit, signal blocked (3280 > 3280 is false).
-        let signals_blocked = arena.evaluate_tick(0, 0, 0, 3280);
+        // With threshold at net profit, signal blocked (3271 > 3271 is false).
+        let signals_blocked = arena.evaluate_tick(0, 0, 0, 3271);
         assert!(signals_blocked.is_empty());
     }
 

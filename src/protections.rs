@@ -613,7 +613,40 @@ impl RiskManager {
 
     /// Overwrite total open exposure in fixed-point dollars (layer 7 bookkeeping).
     pub fn set_total_exposure(&self, exposure_fp: u64) {
-        self.total_exposure.store(exposure_fp, Ordering::Relaxed);
+        self.total_exposure.store(exposure_fp, Ordering::Release);
+    }
+
+    /// Release previously reserved exposure (call when a trade that passed
+    /// Layer 7 is later rejected by a higher layer 8-14, or when a
+    /// position is closed).
+    ///
+    /// This fixes the exposure leak where Layer 7's CAS reservation was
+    /// never rolled back on subsequent-layer rejection, causing cumulative
+    /// exposure inflation and eventual denial-of-service.
+    ///
+    /// Uses a CAS loop (same pattern as try_reserve_exposure) to prevent
+    /// unsigned underflow when concurrent releases race with the current
+    /// total. Plain fetch_sub on an AtomicU64 would wrap around to a huge
+    /// value on underflow, permanently blocking all trades.
+    pub fn release_exposure(&self, size_fp: u64) {
+        const MAX_CAS_ITERATIONS: u32 = 100;
+        for _ in 0..MAX_CAS_ITERATIONS {
+            let current = self.total_exposure.load(Ordering::Acquire);
+            let new_total = current.saturating_sub(size_fp);
+            match self.total_exposure.compare_exchange_weak(
+                current,
+                new_total,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(_) => continue,
+            }
+        }
+        tracing::warn!(
+            "release_exposure CAS loop exceeded max iterations — \
+             exposure may be slightly inaccurate"
+        );
     }
 }
 
@@ -630,16 +663,16 @@ fn current_time_millis() -> i64 {
 /// Convert a `Decimal` percentage (e.g. `0.05` for 5 %) to basis points.
 ///
 /// Converts percentage to basis points, returning a u64.
+/// Negative inputs are clamped to 0 (a negative percentage threshold makes
+/// no sense and would cause wrapping_neg to produce a huge u64).
 fn pct_to_bps(pct: Decimal) -> u64 {
     if pct < Decimal::ZERO {
         tracing::error!(%pct, "pct_to_bps: negative percentage passed — clamping to 0");
         return 0;
     }
     let bps = pct * Decimal::from(BPS_SCALE);
-    let neg = bps < Decimal::ZERO;
-    let abs = if neg { -bps } else { bps };
-    let val: u64 = abs.to_u64().unwrap_or(0);
-    if neg { val.wrapping_neg() } else { val }
+    // bps is now non-negative Decimal; convert to u64.
+    bps.to_u64().unwrap_or(0)
 }
 
 /// Convert a `Decimal` dollar amount to cents (truncated toward zero).
@@ -669,12 +702,22 @@ fn bps_of_capital_fp(bps: u64, capital_fp: u64) -> u64 {
 /// Derivation: bps_fraction × capital_dollars × 100
 ///           = (bps / 10_000) × (capital_fp / 1_000_000) × 100
 ///           = bps × capital_fp / 100_000_000
+///
+/// FIX: Use u128 intermediate (same as bps_of_capital_fp) instead of
+/// i128. Two u64 values multiplied in u128 never overflow since
+/// (2^64-1)^2 < 2^128, whereas i128 halves the safe range.
 #[inline(always)]
 fn bps_of_capital_cents(bps: u64, capital_fp: u64) -> i64 {
     if capital_fp == 0 {
         return 0;
     }
-    ((bps as i128) * (capital_fp as i128) / 100_000_000) as i64
+    let result = (bps as u128) * (capital_fp as u128) / 100_000_000u128;
+    // Clamp to i64 range for safety.
+    if result > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        result as i64
+    }
 }
 
 // ===========================================================================

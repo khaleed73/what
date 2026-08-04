@@ -124,6 +124,19 @@ impl PaperExecutionPipeline {
 #[async_trait]
 impl OrderPipeline for PaperExecutionPipeline {
     async fn execute_order(&self, intent: &OrderIntent) -> Result<OrderResult, String> {
+        // Guard: reject zero or negative prices — a zero-price fill would
+        // create phantom assets in paper mode, masking upstream bugs.
+        if intent.price <= Decimal::ZERO {
+            return Ok(OrderResult {
+                success: false,
+                filled_qty: Decimal::ZERO,
+                avg_price: Decimal::ZERO,
+                order_id: Some(String::from("rejected-zero-price")),
+                error: Some("zero price rejected".to_string()),
+                slippage_bps: None,
+            });
+        }
+
         // --- slippage simulation ------------------------------------------------
         // 0.01 % base slippage + a tiny pseudo-random component derived from
         // the current nanosecond clock so fills are not perfectly deterministic.
@@ -843,6 +856,14 @@ impl HighFrequencyExecutionEngine {
             .pre_trade_check(profit_bps, size_fp, capital_fp, leg_a.exchange_id)
             .map_err(|rejection| format!("pre-trade risk rejection: {}", rejection))?;
 
+        // 1b. If any subsequent check fails, release the exposure reserved
+        // by Layer 7 inside pre_trade_check. Without this, every post-Layer-7
+        // rejection (depeg, slippage, execution failure) permanently inflates
+        // the exposure counter, eventually causing denial-of-service.
+        let exposure_guard = scopeguard::guard((), |_| {
+            self.risk_manager.release_exposure(size_fp);
+        });
+
         // 2. Stablecoin depeg circuit-breaker.
         if self.depeg_circuit.is_depeg_active().await {
             return Err(format!(
@@ -1079,24 +1100,39 @@ impl HighFrequencyExecutionEngine {
             };
             let buy_notional = buy_result.filled_qty * buy_result.avg_price;
             let sell_notional = sell_result.filled_qty * sell_result.avg_price;
-            let fee_bps = Decimal::from(
-                self.fee_schedule_bps
-                    .as_ref()
-                    .map(|s| s.round_trip_taker_bps(leg_a_original.exchange_id as usize, leg_b_original.exchange_id as usize))
-                    .unwrap_or_else(|| {
-                        warn!("fee_schedule_bps not set — falling back to hardcoded 10 bps round-trip fee");
-                        10
-                    }),
-            );
-            let buy_fee = buy_notional * fee_bps / Decimal::from(10_000u64);
-            let sell_fee = sell_notional * fee_bps / Decimal::from(10_000u64);
+            // FIX: Use per-exchange taker fees, not round_trip_taker_bps (which
+            // already sums both legs). Applying round_trip to each leg
+            // double-counts fees, making P&L 2x too pessimistic and causing
+            // premature daily-loss-limit trips.
+            let (buy_fee_bps, sell_fee_bps) = if let Some(ref s) = self.fee_schedule_bps {
+                let buy_exch = leg_a_original.exchange_id as usize;
+                let sell_exch = leg_b_original.exchange_id as usize;
+                // Determine which exchange is buy-side and which is sell-side.
+                let (buy_exch_id, sell_exch_id) = if leg_a_original.is_buy {
+                    (buy_exch, sell_exch)
+                } else {
+                    (sell_exch, buy_exch)
+                };
+                (s.taker_fees.get(buy_exch_id).copied().unwrap_or(10),
+                 s.taker_fees.get(sell_exch_id).copied().unwrap_or(10))
+            } else {
+                warn!("fee_schedule_bps not set — falling back to 10 bps per leg");
+                (10, 10)
+            };
+            let buy_fee = buy_notional * Decimal::from(buy_fee_bps) / Decimal::from(10_000u64);
+            let sell_fee = sell_notional * Decimal::from(sell_fee_bps) / Decimal::from(10_000u64);
             let profit = sell_notional - buy_notional - buy_fee - sell_fee;
             let profit_cents = (profit * Decimal::from(100u64))
-                .trunc()
+                .round()
                 .to_i64()
                 .unwrap_or(0);
             self.record_daily_pnl(profit_cents);
         }
+
+        // Trade succeeded — dismiss the exposure release guard so the
+        // reserved exposure stays allocated (it will be released when
+        // the position is closed or on the next balance sync).
+        scopeguard::ScopeGuard::into_inner(exposure_guard);
 
         Ok(total_result)
     }

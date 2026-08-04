@@ -96,13 +96,17 @@ impl TriangularExecutor {
 
         let all_succeeded = r0.success && r1.success && r2.success;
 
-        // Detect partial fills: if any leg's filled_quantity differs
-        // from the others, we have an asymmetric position.
-        let q0 = r0.filled_quantity;
-        let q1 = r1.filled_quantity;
-        let q2 = r2.filled_quantity;
-        let rollback_required = all_succeeded
-            && (q0 != q1 || q1 != q2 || q0 != q2);
+        // Detect rollback: (a) any leg failed → partial position, or
+        // (b) any leg's fill qty differs from intent → asymmetric position.
+        // NOTE: we compare each leg's filled qty against its OWN intent qty
+        // — NOT against other legs' quantities (which are in different units).
+        // Original bug: leading `all_succeeded &&` meant that when any leg
+        // failed (all_succeeded = false), rollback was NEVER triggered,
+        // leaving open positions on the successful legs.
+        let rollback_required = !all_succeeded
+            || r0.filled_quantity != legs[0].quantity
+                || r1.filled_quantity != legs[1].quantity
+                || r2.filled_quantity != legs[2].quantity;
 
         TriangularResult {
             legs: [r0, r1, r2],
@@ -181,23 +185,36 @@ impl TriangularExecutor {
 
     /// Computes the minimum sell price for a triangular loop to break even.
     ///
-    /// For a 3-leg loop: buy A, sell A→B, sell B→USDT.
-    /// The final leg must cover all three taker fees.
+    /// For a 3-leg loop: buy A with USDT, sell A→B, sell B→USDT.
+    /// Each leg incurs a taker fee at `per_leg_fee_rate`.
+    ///
+    /// Derivation (starting with `capital` in USDT):
+    ///   Leg 1: buy A at price P → receive capital*(1-f)/P units of A
+    ///   Leg 2: sell A→B at rate R → receive capital*(1-f)/P * R*(1-f) units of B
+    ///   Leg 3: sell B→USDT at price X → receive capital*(1-f)³ * R * X / P
+    ///
+    /// Breakeven when leg-3 proceeds = capital:
+    ///   (1-f)³ * R * X / P = 1
+    ///   X = P / (R * (1-f)³)
+    ///
+    /// # Arguments
+    /// * `leg1_price` — Price of leg 1 (P in the derivation above).
+    /// * `leg2_rate`   — Exchange rate of leg 2 (R in the derivation above).
+    /// * `per_leg_fee_rate` — Taker fee rate per leg (f), e.g. 0.001 for 0.1%.
+    ///
+    /// Returns `Decimal::MAX` if the divisor is zero or negative.
     pub fn breakeven_final_price(
         leg1_price: Decimal,
         leg2_rate: Decimal,
-        total_fee_rate: Decimal,
+        per_leg_fee_rate: Decimal,
     ) -> Decimal {
-        // After leg1: qty_a = capital / leg1_price
-        // After leg2: qty_b = qty_a * leg2_rate
-        // Leg3 breakeven: qty_b * final_price * (1 - fee) = capital * (1 + fee_per_leg)
-        // Simplified for 3 equal fees:
-        //   final_price = leg1_price / (leg2_rate * (1 - total_fee_rate)) * (1 + total_fee_rate)
-        let divisor = leg2_rate * (Decimal::ONE - total_fee_rate);
+        let fee_factor = (Decimal::ONE - per_leg_fee_rate)
+            .powi(3); // compound all 3 legs' fees
+        let divisor = leg2_rate * fee_factor;
         if divisor <= Decimal::ZERO {
             return Decimal::MAX;
         }
-        leg1_price * (Decimal::ONE + total_fee_rate) / divisor
+        leg1_price / divisor
     }
 }
 
@@ -290,12 +307,19 @@ mod tests {
 
     #[test]
     fn test_breakeven_final_price() {
+        // P=50000, R=1.0, f=0.001 (0.1% per leg)
+        // Correct: X = 50000 / (1.0 * 0.999^3) = 50000 / 0.997002999
+        //        = 50150.45...
         let be = TriangularExecutor::breakeven_final_price(
-            dec!(50000.0), dec!(1.0), dec!(0.003),
+            dec!(50000.0), dec!(1.0), dec!(0.001),
         );
         // Should be slightly above 50000 due to fees
-        assert!(be > dec!(50000.0));
-        assert!(be < dec!(51000.0));
+        assert!(be > dec!(50000.0), "breakeven {} should be > 50000", be);
+        assert!(be < dec!(50200.0), "breakeven {} should be < 50200", be);
+
+        // Verify with known value: 50000 / 0.999^3 ≈ 50150.45
+        let expected = dec!(50000.0) / (dec!(0.999).powi(3));
+        assert_eq!(be, expected);
     }
 
 }
