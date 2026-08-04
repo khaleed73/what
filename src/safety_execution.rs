@@ -282,9 +282,18 @@ impl SafetyExecutionEngine {
             ));
         }
 
-        // Check slippage
+        // Check slippage — use directional logic so that favorable fills
+        // (buy below limit, sell above limit) are NOT rejected.
         if payload.price > Decimal::ZERO {
-            let price_diff = (result.average_price - payload.price).abs();
+            let (price_diff, _direction) = if payload.is_buy {
+                // For buys, only adverse slippage is when fill > limit.
+                let diff = result.average_price.saturating_sub(payload.price);
+                (diff, "buy")
+            } else {
+                // For sells, only adverse slippage is when fill < limit.
+                let diff = payload.price.saturating_sub(result.average_price);
+                (diff, "sell")
+            };
             let slippage_bps = (price_diff / payload.price) * dec!(10000.0);
             let max_allowed = Decimal::from(max_slippage_bps);
             if slippage_bps > max_allowed {

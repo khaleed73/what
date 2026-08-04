@@ -424,8 +424,9 @@ impl BacktestEngine {
                                 let gross_pnl = sell_proceeds - buy_cost;
                                 let net_pnl = gross_pnl - total_fees;
 
-                                // Only execute if net P&L is positive and both sides have sufficient balance.
-                                if net_pnl > Decimal::ZERO && buy_cost <= bal_a && sell_fee <= bal_b {
+                                // Only execute if net P&L is positive, buy-side has capital,
+                                // and sell proceeds cover the sell fee.
+                                if net_pnl > Decimal::ZERO && buy_cost <= bal_a && sell_fee <= sell_proceeds {
                                     let trade = BacktestTrade {
                                         entry_time: ts,
                                         exit_time: ts,
@@ -492,7 +493,7 @@ impl BacktestEngine {
                                 let gross_pnl = sell_proceeds - buy_cost;
                                 let net_pnl = gross_pnl - total_fees;
 
-                                if net_pnl > Decimal::ZERO && buy_cost <= bal_b && sell_fee <= bal_a {
+                                if net_pnl > Decimal::ZERO && buy_cost <= bal_b && sell_fee <= sell_proceeds {
                                     let trade = BacktestTrade {
                                         entry_time: ts,
                                         exit_time: ts,

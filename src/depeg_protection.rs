@@ -343,7 +343,10 @@ mod tests {
         circuit.update_price(dec!(0.993));
         assert!(!circuit.check_safety());
 
-        circuit.update_price(dec!(0.999)); // back within 0.5%
+        // Recovery requires 10 consecutive in-range ticks.
+        for _ in 0..10 {
+            circuit.update_price(dec!(0.999));
+        }
         assert!(circuit.check_safety());
     }
 

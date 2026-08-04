@@ -112,7 +112,7 @@ impl TriPathFinder {
             idx_to_currency,
             edges,
             min_profit_factor: Decimal::ONE + min_profit_pct / Decimal::from(100u32),
-            max_iterations: DEFAULT_BELLMAN_ITERATIONS,
+            max_iterations,
         }
     }
 

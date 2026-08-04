@@ -1181,6 +1181,16 @@ impl HighFrequencyExecutionEngine {
                 .map_err(|rejection| format!("pre-trade risk rejection (ex={}): {}", leg.exchange_id, rejection))?;
         }
 
+        // CRITICAL: pre_trade_check above reserved exposure 3 times via Layer 7.
+        // If any subsequent check fails (depeg, pipeline error, etc.), we must
+        // release all 3 reservations or the exposure counter permanently inflates,
+        // eventually blocking ALL trades (denial-of-service).
+        let exposure_guard = scopeguard::guard((), |_| {
+            for _ in 0..3 {
+                self.risk_manager.release_exposure(size_fp);
+            }
+        });
+
         // 2. Stablecoin depeg circuit-breaker.
         if self.depeg_circuit.is_depeg_active().await {
             return Err(format!(
@@ -1398,6 +1408,11 @@ impl HighFrequencyExecutionEngine {
                 .unwrap_or(0);
             self.record_daily_pnl(profit_cents);
         }
+
+        // Trade succeeded — dismiss the 3x exposure release guard so the
+        // reserved exposure stays allocated (it will be released when
+        // the position is closed or on the next balance sync).
+        scopeguard::ScopeGuard::into_inner(exposure_guard);
 
         Ok(total_result)
     }

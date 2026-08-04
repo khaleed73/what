@@ -30,6 +30,7 @@ dotenvy = "0.15"
 secrecy = "0.8"
 dashmap = "5"
 rand = "0.8"
+scopeguard = "1.2"
 
 [profile.release]
 opt-level = 3

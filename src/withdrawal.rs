@@ -312,18 +312,15 @@ impl WithdrawalExecutor {
         );
 
         // L-1: Balance-aware withdrawal validation.
-        // Rejects the withdrawal if the available balance is below 90% of
+        // Rejects the withdrawal if the available balance is below
         // the requested amount.  This guards against overdrafts caused by
         // stale balance data or concurrent trades that consumed funds
         // between the caller's check and actual dispatch.
         if let Some(ref provider) = self.balance_provider {
             if let Some(available) = provider.available_balance(req.exchange_id, &req.currency) {
-                // Require at least 90% headroom — the 10% buffer absorbs
-                // rounding differences and floating-rate withdrawal fees.
-                let threshold = req.amount * Decimal::from_str("0.9").unwrap_or(Decimal::ONE);
-                if available < threshold {
+                if available < req.amount {
                     return Err(format!(
-                        "insufficient balance for withdrawal: available {} {} on {} (need >= 90% of requested {})",
+                        "insufficient balance for withdrawal: available {} {} on {} (requested {})",
                         available, req.currency, exchange_name, req.amount
                     ));
                 }
@@ -1285,11 +1282,17 @@ impl WithdrawalExecutor {
         let nonce = epoch_millis().to_string();
         let form_body = format!("nonce={}&asset={}", nonce, currency);
 
-        // H-48: Kraken signing preimage format: {nonce}{path}{body} with HMAC-SHA512
+        // H-48: Kraken signing preimage format: {nonce}{path}{body} with HMAC-SHA512.
+        // FIX: API secret must be base64-decoded before use as HMAC key
+        // (Kraken stores the secret in base64-encoded form). Using raw
+        // bytes produces wrong signatures and every fee query fails.
+        let secret_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&creds.api_secret)
+            .map_err(|e| format!("failed to decode Kraken API secret: {}", e))?;
         let sign_path = "/0/private/WithdrawInfo";
         let preimage = format!("{}{}{}", nonce, sign_path, form_body);
         let signature_bytes = {
-            let key = hmac::Key::new(hmac::HMAC_SHA512, creds.api_secret.as_bytes());
+            let key = hmac::Key::new(hmac::HMAC_SHA512, &secret_bytes);
             hmac::sign(&key, preimage.as_bytes())
         };
         let signature = base64::engine::general_purpose::STANDARD.encode(signature_bytes.as_ref());

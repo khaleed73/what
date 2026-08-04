@@ -1001,6 +1001,15 @@ pub struct CoinFinderConfig {
     /// Minimum 24h volume in USD for a pair to be considered (optional).
     /// Pairs with no volume data are always kept.
     pub min_volume_usd: Option<f64>,
+    /// Number of consecutive scan cycles a token must be missing from
+    /// ALL exchanges before it is auto-removed from the active list.
+    /// Default: 60 (60 seconds at 1s scan interval). Set to 0 to disable.
+    pub cross_arb_removal_cycles: u32,
+    /// Number of consecutive scan cycles a token must be missing from
+    /// a given exchange's pair list before its triangular loop eligibility
+    /// on that exchange is revoked. Default: 30 (30 seconds). Set to 0
+    /// to disable.
+    pub tri_arb_removal_cycles: u32,
 }
 
 impl Default for CoinFinderConfig {
@@ -1009,6 +1018,8 @@ impl Default for CoinFinderConfig {
             quote_anchors: vec!["USDT".to_string()],
             allowed_categories: 0, // accept all
             min_volume_usd: None,
+            cross_arb_removal_cycles: 60,
+            tri_arb_removal_cycles: 30,
         }
     }
 }
@@ -1038,6 +1049,19 @@ pub struct CoinFinder {
     custom_mappings: tokio::sync::Mutex<HashMap<String, Vec<u16>>>,
     /// Queryable asset inventory populated after each scan cycle.
     inventory: Arc<AssetInventory>,
+    /// Per-token consecutive-missing counter for cross-exchange eligibility.
+    /// Incremented every cycle the token is absent from ALL exchanges;
+    /// reset to 0 when the token re-appears on at least one exchange.
+    /// When the counter reaches `cross_arb_removal_cycles`, the token is
+    /// removed from the active list and its arena prices are zeroed.
+    token_missing_counts: tokio::sync::Mutex<HashMap<u16, u32>>,
+    /// Per-(token, exchange) consecutive-missing counter for triangular
+    /// eligibility. Incremented when a token is absent from a specific
+    /// exchange's pair list; reset to 0 when it re-appears. When the
+    /// counter reaches `tri_arb_removal_cycles`, the token's prices on
+    /// that exchange are zeroed (effectively removing it from tri loops
+    /// on that exchange at the next rebuild).
+    token_exchange_missing_counts: tokio::sync::Mutex<HashMap<(u16, u16), u32>>,
 }
 
 impl CoinFinder {
@@ -1070,6 +1094,8 @@ impl CoinFinder {
             token_categories: tokio::sync::Mutex::new(HashMap::new()),
             custom_mappings: tokio::sync::Mutex::new(HashMap::new()),
             inventory,
+            token_missing_counts: tokio::sync::Mutex::new(HashMap::new()),
+            token_exchange_missing_counts: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -1144,6 +1170,230 @@ impl CoinFinder {
         self.arena.register_active_token(id);
 
         Some((id, true))
+    }
+
+    /// Prune tokens that have been missing for too many consecutive cycles.
+    ///
+    /// Two independent pruners run:
+    ///
+    /// 1. **Cross-exchange pruner** — For each token in `active_tokens`, check
+    ///    if it appeared in this cycle's `token_exchange_presence`. If missing
+    ///    from ALL exchanges for `cross_arb_removal_cycles` consecutive cycles,
+    ///    the token is fully removed:
+    ///      - Removed from `arena.active_tokens` (stops signal loop evaluation)
+    ///      - All arena prices zeroed via `arena.invalidate_token()`
+    ///      - Entry cleaned from `global_symbol_map` and `token_categories`
+    ///
+    /// 2. **Triangular pruner** — For each token, check per-exchange presence.
+    ///    If a token has been missing from a specific exchange for
+    ///    `tri_arb_removal_cycles` consecutive cycles, its prices on that
+    ///    exchange are zeroed. This causes `build_triangular_loops()` (called
+    ///    on the next cycle) to naturally exclude loops involving that
+    ///    (token, exchange) pair, since the adjacency list won't contain the
+    ///    edge.
+    ///
+    /// Returns `(cross_removed, tri_invalidated)` counts.
+    async fn prune_stale_tokens(
+        &self,
+        token_exchange_presence: &HashMap<u16, HashSet<u16>>,
+    ) -> (usize, usize) {
+        let cross_threshold = self.config.cross_arb_removal_cycles;
+        let tri_threshold = self.config.tri_arb_removal_cycles;
+
+        // If both thresholds are 0, auto-removal is disabled.
+        if cross_threshold == 0 && tri_threshold == 0 {
+            return (0, 0);
+        }
+
+        // Gather current active token IDs (snapshot).
+        let active_tokens_snapshot: Vec<u16> = {
+            match self.arena.active_tokens.try_lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => return (0, 0),
+            }
+        };
+
+        // Collect all exchange IDs we scan.
+        let all_exchange_ids: Vec<u16> = self.exchange_rest_urls.keys().copied().collect();
+
+        // Build a set of tokens seen in this cycle for O(1) lookup.
+        let seen_tokens: HashSet<u16> = token_exchange_presence.keys().copied().collect();
+
+        // Build per-exchange token presence sets for tri pruner.
+        let mut exch_token_seen: HashMap<u16, HashSet<u16>> = HashMap::new();
+        for (&exch_id, pairs) in token_exchange_presence {
+            for &token_id in pairs {
+                exch_token_seen.entry(exch_id).or_default().insert(token_id);
+            }
+        }
+
+        let mut cross_removed: usize = 0;
+        let mut tri_invalidated: usize = 0;
+
+        // Collect tokens to remove to avoid mutating while iterating.
+        let mut tokens_to_fully_remove: Vec<u16> = Vec::new();
+        // Collect (token, exchange) pairs to invalidate for tri.
+        let mut tri_pairs_to_invalidate: Vec<(u16, u16)> = Vec::new();
+
+        // -----------------------------------------------------------------
+        // Phase 1: Cross-exchange staleness check
+        // -----------------------------------------------------------------
+        if cross_threshold > 0 {
+            let mut missing_counts = self.token_missing_counts.lock().await;
+
+            for &token_id in &active_tokens_snapshot {
+                // Skip pre-registered tokens (IDs < 100 are hardcoded).
+                if token_id < 100 {
+                    continue;
+                }
+
+                if seen_tokens.contains(&token_id) {
+                    // Token re-appeared — reset its counter.
+                    missing_counts.insert(token_id, 0);
+                } else {
+                    // Token missing from all exchanges this cycle.
+                    let count = missing_counts.entry(token_id).or_insert(0);
+                    *count += 1;
+
+                    if *count >= cross_threshold {
+                        tokens_to_fully_remove.push(token_id);
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Phase 2: Triangular per-exchange staleness check
+        // -----------------------------------------------------------------
+        if tri_threshold > 0 {
+            let mut exch_missing_counts = self.token_exchange_missing_counts.lock().await;
+
+            for &token_id in &active_tokens_snapshot {
+                // Skip pre-registered tokens.
+                if token_id < 100 {
+                    continue;
+                }
+
+                for &exch_id in &all_exchange_ids {
+                    let is_present = exch_token_seen
+                        .get(&exch_id)
+                        .map(|s| s.contains(&token_id))
+                        .unwrap_or(false);
+
+                    if is_present {
+                        // Token present on this exchange — reset counter.
+                        exch_missing_counts.insert((token_id, exch_id), 0);
+                    } else {
+                        // Token missing from this exchange.
+                        let count = exch_missing_counts.entry((token_id, exch_id)).or_insert(0);
+                        *count += 1;
+
+                        if *count >= tri_threshold {
+                            tri_pairs_to_invalidate.push((token_id, exch_id));
+                        }
+                    }
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // Phase 3: Execute cross-removals
+        // -----------------------------------------------------------------
+        for &token_id in &tokens_to_fully_remove {
+            // Zero all prices for this token across every exchange.
+            self.arena.invalidate_token(token_id as usize);
+
+            // Remove from active tokens list.
+            self.arena.unregister_active_token(token_id);
+
+            // Clean up tracking maps.
+            if let Ok(mut mc) = self.token_missing_counts.try_lock() {
+                mc.remove(&token_id);
+            }
+            if let Ok(mut emc) = self.token_exchange_missing_counts.try_lock() {
+                // Remove all entries for this token across all exchanges.
+                emc.retain(|&(tid, _), _| tid != token_id);
+            }
+
+            // Look up the symbol for logging.
+            let symbol = self.allocator.get_symbol(token_id)
+                .unwrap_or_else(|| format!("id:{}", token_id));
+
+            // Remove from global registries.
+            {
+                let mut sym_map = self.global_symbol_map.lock().await;
+                sym_map.remove(&symbol);
+            }
+            {
+                let mut cats = self.token_categories.lock().await;
+                cats.remove(&token_id);
+            }
+
+            cross_removed += 1;
+            info!(
+                token_id,
+                symbol = %symbol,
+                missing_cycles = cross_threshold,
+                "auto-removed token: no longer available on any exchange (cross-arb pruner)"
+            );
+        }
+
+        // -----------------------------------------------------------------
+        // Phase 4: Execute triangular per-exchange price invalidations
+        // -----------------------------------------------------------------
+        for (token_id, exch_id) in &tri_pairs_to_invalidate {
+            // Skip if this token was already fully removed.
+            if tokens_to_fully_remove.contains(token_id) {
+                continue;
+            }
+
+            // Zero prices for this (token, exchange) pair only.
+            let exch_usize = *exch_id as usize;
+            let token_usize = *token_id as usize;
+            if exch_usize >= self.arena.total_exchanges || token_usize >= self.arena.total_tokens {
+                tracing::warn!(
+                    exchange_id = *exch_id,
+                    token_id = *token_id,
+                    total_exchanges = self.arena.total_exchanges,
+                    total_tokens = self.arena.total_tokens,
+                    "tri pruner: (exchange, token) out of bounds — skipping"
+                );
+                continue;
+            }
+            let idx = self.arena.get_index(exch_usize, token_usize);
+            self.arena.bid_prices[idx].store(0, Ordering::Release);
+            self.arena.ask_prices[idx].store(0, Ordering::Release);
+
+            // Reset the counter so we don't re-invalidate every cycle.
+            if let Ok(mut emc) = self.token_exchange_missing_counts.try_lock() {
+                // Set to threshold (not 0) so it won't re-trigger until
+                // the token re-appears and then goes missing again.
+                emc.insert((*token_id, *exch_id), tri_threshold);
+            }
+
+            let symbol = self.allocator.get_symbol(*token_id)
+                .unwrap_or_else(|| format!("id:{}", token_id));
+
+            tri_invalidated += 1;
+            info!(
+                token_id,
+                symbol = %symbol,
+                exchange_id = *exch_id,
+                missing_cycles = tri_threshold,
+                "invalidated token prices on exchange: no longer eligible for tri-arb"
+            );
+        }
+
+        // Rebuild targets if anything was removed — this ensures cross_targets
+        // and tri_loops reflect the newly-zeroed prices immediately rather
+        // than waiting for the next scan cycle.
+        if cross_removed > 0 || tri_invalidated > 0 {
+            self.arena.build_cross_exchange_targets().await;
+            // tri_loops will be rebuilt at the top of the next scan_cycle
+            // since build_triangular_loops() receives fresh pair data.
+        }
+
+        (cross_removed, tri_invalidated)
     }
 
     /// Run a single scan cycle across all configured exchanges.
@@ -1384,6 +1634,22 @@ impl CoinFinder {
             cycle,
         ).await;
         // symbol_map and categories locks released here.
+
+        // ---------------------------------------------------------------
+        // Auto-remove stale tokens (post-build, so zeroed prices take effect)
+        // ---------------------------------------------------------------
+        let (cross_removed, tri_invalidated) =
+            self.prune_stale_tokens(&token_exchange_presence).await;
+
+        if cross_removed > 0 || tri_invalidated > 0 {
+            info!(
+                cycle,
+                cross_removed,
+                tri_invalidated,
+                active_tokens = self.arena.active_tokens.try_lock().map(|g| g.len()).unwrap_or(0),
+                "stale token pruning complete"
+            );
+        }
 
         (new_tokens, total_pairs)
     }

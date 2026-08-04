@@ -343,6 +343,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         quote_anchors: finder_anchors.clone(),
         allowed_categories: 0, // accept all categories — risk manager handles exposure
         min_volume_usd: Some(config.strategies.cross_exchange.min_l2_liquidity_usd.to_f64().unwrap_or(0.0)),
+        cross_arb_removal_cycles: 60, // remove token after 60s absent from all exchanges
+        tri_arb_removal_cycles: 30,   // invalidate on exchange after 30s absence
     };
 
     let asset_inventory = Arc::new(asset_inventory::AssetInventory::new());
