@@ -106,7 +106,9 @@ impl RiskShield {
         }
 
         // Safety Guard 4: Verify sufficient order book depth for leg 1
-        if leg1_qty > leg1.ask_qty {
+        // CRITICAL: Use pre-fee quantity — the exchange fills pre-fee units,
+        // so the book depth must cover the full amount including what fees consume.
+        if leg1_qty_before_fee > leg1.ask_qty {
             return None;
         }
 
@@ -121,7 +123,8 @@ impl RiskShield {
         }
 
         // Safety Guard 5: Verify sufficient order book depth for leg 2
-        if leg2_qty > leg2.ask_qty {
+        // CRITICAL: Use pre-fee quantity — same rationale as Guard 4.
+        if leg2_qty_before_fee > leg2.ask_qty {
             return None;
         }
 

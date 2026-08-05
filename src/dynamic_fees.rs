@@ -515,12 +515,13 @@ impl DynamicFeeManager {
                         }
                     }
                 }
-                // Fallback to known Kraken defaults.
-                Some((25, 40))
+                // Parse failed — let config/default fallback handle it.
+                warn!(exchange = "Kraken", "Failed to parse Kraken fee response; falling back to config");
+                None
             }
             Err(e) => {
-                warn!(exchange = "Kraken", error = %e, "Failed to fetch Kraken fees; using defaults");
-                Some((25, 40))
+                warn!(exchange = "Kraken", error = %e, "Failed to fetch Kraken fees; falling back to config");
+                None
             }
         }
     }
@@ -619,30 +620,36 @@ impl DynamicFeeManager {
 fn bps_from_fraction_str(s: &str) -> u64 {
     let trimmed = s.trim();
 
-    // Handle percentage format: "0.10%"
+    // Handle percentage format: "0.10%" → 10 bps
     if let Some(pct_str) = trimmed.strip_suffix('%') {
-        if let Ok(pct) = pct_str.parse::<f64>() {
-            let bps = (pct * 100.0).round() as i64;
-            return bps.max(0) as u64;
+        // Use Decimal for precision — avoids f64 rounding errors.
+        if let Ok(pct) = Decimal::from_str(pct_str) {
+            let bps_decimal = pct * Decimal::from(100u64); // 0.10% → 10.0
+            if bps_decimal < Decimal::ZERO {
+                warn!(input = trimmed, "Negative fee percentage clamped to 0 bps");
+                return 0;
+            }
+            return bps_decimal.trunc().to_u64().unwrap_or(0);
         }
     }
 
     // Handle fraction format: "0.001" = 0.1% = 10 bps
-    if let Ok(frac) = trimmed.parse::<f64>() {
-        let bps = (frac * 10_000.0).round() as i64;
-        return bps.max(0) as u64;
-    }
-
-    // Also try Decimal parsing for precision.
+    // Use Decimal parsing first for precision (f64 fallback for unusual formats).
     if let Ok(frac) = Decimal::from_str(trimmed) {
         let bps_decimal = frac * Decimal::from(10_000u64);
         if bps_decimal < Decimal::ZERO {
             warn!(input = trimmed, "Negative fee value clamped to 0 bps");
             return 0;
         }
-        if let Some(rounded) = bps_decimal.to_u64() {
+        if let Some(rounded) = bps_decimal.trunc().to_u64() {
             return rounded;
         }
+    }
+
+    // f64 fallback for unusual formats that Decimal can't parse.
+    if let Ok(frac) = trimmed.parse::<f64>() {
+        let bps = (frac * 10_000.0).round().max(0.0) as u64;
+        return bps;
     }
 
     warn!(input = trimmed, "Failed to parse fee string; defaulting to 10 bps");

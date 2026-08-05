@@ -122,16 +122,21 @@ impl SizeSlicer {
 
         // Per-slice quantity (evenly distributed).
         let base_qty = quantity / Decimal::from(num_slices);
-        let remainder_units = (quantity - base_qty * Decimal::from(num_slices)).to_u64().unwrap_or(0) as usize;
+        // Use Decimal remainder directly to avoid u64 truncation losing sub-unit precision.
+        let remainder_decimal = quantity - base_qty * Decimal::from(num_slices);
 
         let mut slices = Vec::with_capacity(num_slices);
         let mut allocated = Decimal::ZERO;
         let mut merged_qty = Decimal::ZERO;
 
         for i in 0..num_slices {
-            // Distribute one unit of remainder across first N slices.
-            let extra = if i < remainder_units {
+            // Distribute remainder across slices (one unit per slice for the
+            // integer part, plus the fractional remainder on the last slice).
+            let extra = if i < remainder_decimal.to_u64().unwrap_or(0) as usize {
                 Decimal::ONE
+            } else if i == num_slices - 1 {
+                // Last slice gets any fractional remainder
+                remainder_decimal - Decimal::from(remainder_decimal.to_u64().unwrap_or(0))
             } else {
                 Decimal::ZERO
             };
@@ -157,6 +162,14 @@ impl SizeSlicer {
 
             allocated += slice_qty;
         }
+
+        // Consistency check: total allocated should equal the original quantity
+        // (within Decimal precision).  This catches merge logic errors.
+        debug_assert!(
+            (allocated - quantity).abs() < Decimal::from("0.000001"),
+            "size_slicer: allocated ({}) != quantity ({}) — merge logic error",
+            allocated, quantity,
+        );
 
         // If all slices were merged below min, just create one slice.
         // NOTE: This fallback slice may exceed max_slice_usd; this is intentional

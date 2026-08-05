@@ -124,9 +124,11 @@ impl Default for MarketExecutionRules {
 ///
 /// Provides discrete VWAP slippage calculation and execution safety validation.
 pub struct ProductionRiskShield {
-    /// Total taker fee across all legs (combined).
+    /// Total taker fee across all legs (combined), as a decimal fraction
+    /// (e.g. 0.002 = 0.2%).
     pub total_taker_fee: Decimal,
-    /// Minimum net profit margin as Decimal (e.g. 0.0012 = 0.12%).
+    /// Minimum net profit margin in **percentage** form (e.g. 0.12 = 0.12%).
+    /// Compared directly against `expected_profit_pct` in `validate_execution_safety`.
     pub net_profit_floor: Decimal,
     /// Exchange execution rules.
     pub rules: MarketExecutionRules,
@@ -134,10 +136,16 @@ pub struct ProductionRiskShield {
 
 impl ProductionRiskShield {
     /// Creates a new production risk shield.
-    pub fn new(total_taker_fee: Decimal, net_profit_floor: Decimal, rules: MarketExecutionRules) -> Self {
+    ///
+    /// # Arguments
+    /// * `total_taker_fee` — Combined taker fee across all legs (e.g. 0.002 = 0.2%)
+    /// * `net_profit_floor_pct` — Minimum profit margin in **percentage** form
+    ///   (e.g. 0.12 for 0.12%).  This matches `expected_profit_pct`.
+    /// * `rules` — Exchange execution rules.
+    pub fn new(total_taker_fee: Decimal, net_profit_floor_pct: Decimal, rules: MarketExecutionRules) -> Self {
         Self {
             total_taker_fee,
-            net_profit_floor,
+            net_profit_floor: net_profit_floor_pct,
             rules,
         }
     }
@@ -146,7 +154,7 @@ impl ProductionRiskShield {
     pub fn with_defaults() -> Self {
         Self::new(
             dec!(0.002),  // 0.2% total taker fee
-            dec!(0.0012), // 0.12% profit floor
+            dec!(0.12),   // 0.12% profit floor (percentage form, consistent with validate_execution_safety)
             MarketExecutionRules::default(),
         )
     }
@@ -243,10 +251,12 @@ impl ProductionRiskShield {
         }
 
         // Check profit margin floor.
-        if expected_profit_pct < self.net_profit_floor * Decimal::from(100u32) {
+        // Both expected_profit_pct and net_profit_floor are in percentage form
+        // (e.g. 0.12 = 0.12%), so they can be compared directly.
+        if expected_profit_pct < self.net_profit_floor {
             tracing::debug!(
                 profit_pct = %expected_profit_pct,
-                min_profit = %(self.net_profit_floor * Decimal::from(100u32)),
+                min_profit = %self.net_profit_floor,
                 "Rejected: below profit floor"
             );
             return false;

@@ -105,8 +105,8 @@ impl TriangularExecutor {
         // leaving open positions on the successful legs.
         let rollback_required = !all_succeeded
             || r0.filled_quantity != legs[0].quantity
-                || r1.filled_quantity != legs[1].quantity
-                || r2.filled_quantity != legs[2].quantity;
+            || r1.filled_quantity != legs[1].quantity
+            || r2.filled_quantity != legs[2].quantity;
 
         TriangularResult {
             legs: [r0, r1, r2],

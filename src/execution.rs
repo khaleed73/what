@@ -1174,7 +1174,12 @@ impl HighFrequencyExecutionEngine {
         // M6 FIX: Check ALL legs' exchanges, not just legs[0].  Previously
         // only legs[0].exchange_id was validated — if legs[1] or legs[2]
         // targeted a risk-paused exchange, the trade proceeded anyway.
-        let size_fp = decimal_to_fp(legs[0].qty * legs[0].price);
+        // FIX: Use the MAX notional across all legs for exposure reservation,
+        // since each leg could have a different notional value.
+        let size_fp = legs.iter()
+            .map(|l| decimal_to_fp(l.qty * l.price))
+            .max()
+            .unwrap_or(0);
         for leg in &legs {
             self.risk_manager
                 .pre_trade_check(profit_bps, size_fp, capital_fp, leg.exchange_id)
@@ -1364,25 +1369,32 @@ impl HighFrequencyExecutionEngine {
 
         // M7 FIX: Record P&L for triangular arbitrage (was missing — triangular
         // profits/losses were invisible to the daily loss limit).
-        // For a proper triangular P&L, we'd need to know which legs are buys
-        // and which are sells and compute the net.  As an approximation, sum
-        // the notional of sell legs minus buy legs.
-        let mut buy_notional = Decimal::ZERO;
-        let mut sell_notional = Decimal::ZERO;
-        for (i, result) in total_result.iter().enumerate() {
-            if result.success && result.filled_qty > Decimal::ZERO {
-                let notional = result.filled_qty * result.avg_price;
-                if legs[i].is_buy {
-                    buy_notional += notional;
-                } else {
-                    sell_notional += notional;
-                }
-            }
-        }
-        if buy_notional > Decimal::ZERO || sell_notional > Decimal::ZERO {
-            // Per-leg taker fee: use fee_schedule if available, else 10 bps fallback.
-            // M-32 fix: Compute per-leg fees using each leg's own exchange_id,
-            // not just legs[0]. This matters for cross-exchange triangular arb.
+        //
+        // IMPORTANT: In a triangular loop, legs trade different pairs.
+        // For example: USDT→BTC (buy), BTC→ETH (buy), ETH→USDT (sell).
+        // The middle leg's notional is in a different currency (BTC, not USDT).
+        // Summing all buy/sell notionals directly would mix currencies and
+        // produce a meaningless number.
+        //
+        // FIX: Only compute P&L from legs that are denominated in the same
+        // settlement currency as the first leg.  For simplicity and safety,
+        // we use the signal's profit_bps to estimate the actual P&L in
+        // the base currency (USDT) using the first leg's notional:
+        //   profit = first_leg_notional * profit_bps / 10_000
+        // This is conservative because profit_bps is the minimum threshold
+        // exceeded (actual profit may be higher).
+        let mut profit_estimate = Decimal::ZERO;
+        if legs.len() >= 3 {
+            // Use the sell leg (final leg) as the USDT-denominated reference
+            // if it sells for USDT, otherwise fall back to legs[0].
+            let usdt_leg = legs.iter().find(|l| {
+                l.symbol.ends_with("USDT") || l.symbol.ends_with("USDC")
+            }).unwrap_or(&legs[0]);
+            let usdt_notional = usdt_leg.qty * usdt_leg.price;
+            let profit_bps_dec = Decimal::from(profit_bps);
+            profit_estimate = usdt_notional * profit_bps_dec / Decimal::from(10_000u64);
+
+            // Deduct per-leg fees.
             let mut total_fee = Decimal::ZERO;
             for (i, result) in total_result.iter().enumerate() {
                 if result.success && result.filled_qty > Decimal::ZERO {
@@ -1401,8 +1413,10 @@ impl HighFrequencyExecutionEngine {
                     total_fee += notional * fee_bps / Decimal::from(10_000u64);
                 }
             }
-            let profit = sell_notional - buy_notional - total_fee;
-            let profit_cents = (profit * Decimal::from(100u64))
+            profit_estimate -= total_fee;
+        }
+        if profit_estimate > Decimal::ZERO {
+            let profit_cents = (profit_estimate * Decimal::from(100u64))
                 .round()
                 .to_i64()
                 .unwrap_or(0);
@@ -2012,7 +2026,9 @@ pub fn check_slippage(
     Ok(slippage_bps)
 }
 
-/// Convert a `Decimal` dollar value to fixed-point u64 (dollars × 1_000_000).
+/// Convert a `Decimal` dollar value to fixed-point u64 (dollars * 1_000_000).
+/// Uses the same truncation-based approach as `balance_allocator::decimal_to_fp`
+/// for consistency across the codebase.
 #[inline]
 fn decimal_to_fp(d: Decimal) -> u64 {
     if d < Decimal::ZERO {
@@ -2024,8 +2040,7 @@ fn decimal_to_fp(d: Decimal) -> u64 {
         tracing::error!(value = %d, "execution decimal_to_fp: value too large for u64, capping");
         return u64::MAX;
     }
-    let s = format!("{}", scaled);
-    s.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+    scaled.trunc().to_u64().unwrap_or(0)
 }
 
 // ===========================================================================

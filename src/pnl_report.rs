@@ -276,15 +276,6 @@ impl TradeLog {
         let total_fees = legs.leg1_fee + legs.leg2_fee + legs.leg3_fee;
         let loop_pnl = final_received - initial_cost - total_fees;
 
-        // Split P&L evenly across the three legs for per-leg reporting.
-        // M-12: Guard against division by zero (constant 3, but following the
-        // zero-division safety pattern for all profit calculations).
-        let _per_leg_pnl = if legs.leg1_quantity > Decimal::ZERO {
-            loop_pnl / Decimal::from(3)
-        } else {
-            Decimal::ZERO
-        };
-
         // Clone symbols so we can still reference them in the info! macro
         // after the original values are moved into the TradeRecords.
         let leg1_sym = legs.leg1_symbol.clone();

@@ -103,6 +103,7 @@ use subaccount::SubAccountManager;
 use coin_finder::{CoinFinder, CoinFinderConfig};
 use strategies::{ArbitrageSignal, MarketArena};
 use withdrawal::WithdrawalExecutor;
+use safety_execution::seed_order_counter;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -158,6 +159,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     println!("=== INITIALIZING HIGH-FREQUENCY TRADING ENGINES ===");
+
+    // Seed the order counter with a process-unique offset to prevent
+    // client order ID collisions during rolling deployments.
+    seed_order_counter();
 
     // ------------------------------------------------------------------
     // 1. Pin core computations to CPU Core 0

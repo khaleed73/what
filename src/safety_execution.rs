@@ -22,7 +22,30 @@ const MIN_PRICE_FLOOR: Decimal = dec!(0.01);
 const ORDER_ID_HASH_MASK: u64 = 0xFFFFFFFF;
 
 // H-3 fix: Monotonic counter to prevent client order ID collisions.
+// Initialize from nanosecond timestamp + process-ID bits to avoid
+// collisions during rolling deployments (two instances booting within
+// the same millisecond would otherwise both start at 0).
 static ORDER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// One-time bootstrap: seeds ORDER_COUNTER with a high-entropy offset
+/// derived from the process start time.  Safe to call multiple times
+/// (idempotent — only the first call sets the seed).
+pub fn seed_order_counter() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // Mix in process ID for additional uniqueness.
+    let pid_bits = (std::process::id() as u64) << 48;
+    let combined = seed.wrapping_add(pid_bits);
+    // Only set if still at the initial value (0).
+    ORDER_COUNTER.compare_exchange(
+        0, combined,
+        Ordering::Release,
+        Ordering::Relaxed,
+    ).ok();
+}
 
 // Note: uuid::Uuid is used only as a fallback for client_order_id uniqueness.
 // All exchange modules already depend on the uuid crate via their
@@ -285,7 +308,7 @@ impl SafetyExecutionEngine {
         // Check slippage — use directional logic so that favorable fills
         // (buy below limit, sell above limit) are NOT rejected.
         if payload.price > Decimal::ZERO {
-            let (price_diff, _direction) = if payload.is_buy {
+            let (price_diff, _direction) = if payload.side == "BUY" {
                 // For buys, only adverse slippage is when fill > limit.
                 let diff = result.average_price.saturating_sub(payload.price);
                 (diff, "buy")
