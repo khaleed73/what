@@ -269,24 +269,33 @@ impl TriPathFinder {
         let mut pairs = Vec::with_capacity(3);
         let mut profit_factor = Decimal::ONE;
 
-        // A → B
+        // A → B: pick the edge with the best rate (not just the first one).
         {
-            let edge = self.edges[path[0]].iter().find(|e| e.to == path[1])?;
+            let edge = self.edges[path[0]]
+                .iter()
+                .filter(|e| e.to == path[1])
+                .max_by(|a, b| a.decimal_rate.partial_cmp(&b.decimal_rate).unwrap())?;
             pairs.push(edge.pair_symbol.clone());
             // M-29: rate * (1 - fee) in Decimal — no f64 precision loss.
             profit_factor *= edge.decimal_rate * edge.decimal_fee_factor;
         }
 
-        // B → C
+        // B → C: pick the edge with the best rate.
         {
-            let edge = self.edges[path[1]].iter().find(|e| e.to == path[2])?;
+            let edge = self.edges[path[1]]
+                .iter()
+                .filter(|e| e.to == path[2])
+                .max_by(|a, b| a.decimal_rate.partial_cmp(&b.decimal_rate).unwrap())?;
             pairs.push(edge.pair_symbol.clone());
             profit_factor *= edge.decimal_rate * edge.decimal_fee_factor;
         }
 
-        // C → A
+        // C → A: pick the edge with the best rate.
         {
-            let edge = self.edges[path[2]].iter().find(|e| e.to == path[0])?;
+            let edge = self.edges[path[2]]
+                .iter()
+                .filter(|e| e.to == path[0])
+                .max_by(|a, b| a.decimal_rate.partial_cmp(&b.decimal_rate).unwrap())?;
             pairs.push(edge.pair_symbol.clone());
             profit_factor *= edge.decimal_rate * edge.decimal_fee_factor;
         }

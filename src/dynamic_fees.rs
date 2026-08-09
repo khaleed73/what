@@ -508,7 +508,7 @@ impl DynamicFeeManager {
                                         .and_then(|f| f.get(1))
                                         .and_then(|v| v.as_str())
                                         .map(bps_from_fraction_str)
-                                        .unwrap_or(maker + 16); // approximate spread
+                                        .unwrap_or(maker + 26); // conservative: Kraken taker can be up to 0.26%
                                     return Some((maker, taker));
                                 }
                             }
@@ -597,7 +597,8 @@ impl DynamicFeeManager {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            warn!(url, %status, body_preview = &body[..body.len().min(200)], "Non-success response fetching fees");
+            let preview: String = body.chars().take(200).collect();
+            warn!(url, %status, body_preview = %preview, "Non-success response fetching fees");
             return None;
         }
         resp.json().await.ok()

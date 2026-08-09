@@ -156,7 +156,8 @@ pub fn parse_execution_report_bytes(payload: &[u8]) -> Option<ExecutionReport> {
     }
 
     // A balance of exactly 0 is valid (just sold all of an asset).
-    if is_execution_report && !trade_id_str.is_empty() {
+    // Trade ID 0 is invalid (Binance trade IDs start from 1).
+    if is_execution_report && !trade_id_str.is_empty() && trade_id_str != "0" {
         Some(ExecutionReport {
             token_id,
             trade_id_str,

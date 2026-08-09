@@ -761,13 +761,16 @@ impl PrivateExchangeClient for BybitClient {
     ) -> Result<OrderResult, String> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        let pre_sign = format!("{}{}{}", timestamp, self.api_key.expose(), self.signer.api_secret.expose());
-        let signature = crate::signer::hmac_signature(&pre_sign, self.signer.api_secret.expose());
+        let recv_window = "5000";
+        let query_string = format!("orderId={}", order_id);
+        let pre_sign = format!("{}{}{}{}", timestamp, self.api_key.expose(), recv_window, query_string);
+        let signature = self.signer.generate_hmac_signature(&pre_sign);
         let url = format!("{}/v5/order/realtime?orderId={}", self.rest_url, order_id);
 
         let resp = http_client.get(&url)
             .header("X-BAPI-API-KEY", self.api_key.expose())
             .header("X-BAPI-TIMESTAMP", timestamp.to_string())
+            .header("X-BAPI-RECV-WINDOW", recv_window)
             .header("X-BAPI-SIGN", signature)
             .send().await
             .map_err(|e| format!("Bybit query_order request failed: {}", e))?;
@@ -895,13 +898,11 @@ impl PrivateExchangeClient for BybitClient {
         http_client: &reqwest::Client,
         asset: &str,
     ) -> Result<Decimal, String> {
-        let mut body_map = serde_json::Map::new();
-        body_map.insert("accountType".into(), json!("UNIFIED"));
-
         let timestamp = epoch_millis().to_string();
         let recv_window = "5000".to_string();
-        let param_str = json!(body_map).to_string();
-        let pre_sign = timestamp.clone() + self.api_key.expose() + &recv_window + &param_str;
+        // Bybit V5 GET requests: sign the query string, not JSON body.
+        let query_string = "accountType=UNIFIED";
+        let pre_sign = timestamp.clone() + self.api_key.expose() + &recv_window + query_string;
         let sign = self.signer.generate_hmac_signature(&pre_sign);
 
         let url = format!(
@@ -1074,6 +1075,7 @@ impl KucoinClient {
 
     /// Build the KC-SIGN, KC-TIMESTAMP, KC-PASSPHRASE headers that KuCoin
     /// requires for every authenticated request.
+    /// KuCoin V2 API requires Base64-encoded signatures (not hex).
     fn kc_auth_headers(
         &self,
         method: &str,
@@ -1083,7 +1085,13 @@ impl KucoinClient {
         let timestamp = epoch_millis().to_string();
         // KuCoin signature preimage: timestamp + method + path + body
         let preimage = format!("{}{}{}{}", timestamp, method, path, body);
-        let signature = self.signer.generate_hmac_signature(&preimage);
+        // KuCoin V2 requires Base64-encoded HMAC-SHA256 (not hex).
+        let key = hmac::Key::new(
+            hmac::HMAC_SHA256,
+            self.signer.api_secret.expose().as_bytes(),
+        );
+        let sig = hmac::sign(&key, preimage.as_bytes());
+        let signature = base64::engine::general_purpose::STANDARD.encode(sig.as_ref());
         // KuCoin passphrase is also signed with HMAC-SHA256 and then base64'd.
         let passphrase_sign = {
             let key = hmac::Key::new(

@@ -1883,26 +1883,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let placeholder_qty = dec!(1.0);
                                 let ticker_a = MarketTicker {
                                     ask_price: Decimal::from(signal_arena.ask_prices[idx_a].load(Ordering::Relaxed))
-                                        / Decimal::from(100_000_000u64),
+                                        / Decimal::from(ARENA_FP_SCALE),
                                     ask_qty: placeholder_qty,
                                     bid_price: Decimal::from(signal_arena.bid_prices[idx_a].load(Ordering::Relaxed))
-                                        / Decimal::from(100_000_000u64),
+                                        / Decimal::from(ARENA_FP_SCALE),
                                     bid_qty: placeholder_qty,
                                 };
                                 let ticker_b = MarketTicker {
                                     ask_price: Decimal::from(signal_arena.ask_prices[idx_b].load(Ordering::Relaxed))
-                                        / Decimal::from(100_000_000u64),
+                                        / Decimal::from(ARENA_FP_SCALE),
                                     ask_qty: placeholder_qty,
                                     bid_price: Decimal::from(signal_arena.bid_prices[idx_b].load(Ordering::Relaxed))
-                                        / Decimal::from(100_000_000u64),
+                                        / Decimal::from(ARENA_FP_SCALE),
                                     bid_qty: placeholder_qty,
                                 };
                                 let ticker_c = MarketTicker {
                                     ask_price: Decimal::from(signal_arena.ask_prices[idx_c].load(Ordering::Relaxed))
-                                        / Decimal::from(100_000_000u64),
+                                        / Decimal::from(ARENA_FP_SCALE),
                                     ask_qty: placeholder_qty,
                                     bid_price: Decimal::from(signal_arena.bid_prices[idx_c].load(Ordering::Relaxed))
-                                        / Decimal::from(100_000_000u64),
+                                        / Decimal::from(ARENA_FP_SCALE),
                                     bid_qty: placeholder_qty,
                                 };
 
@@ -1914,7 +1914,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ) / Decimal::from(10_000u64);
 
                                 // Verify the loop is mathematically profitable.
-                                let tri_capital = tri_qty * ticker_a.ask_price;
+                                let tri_capital = placeholder_qty * ticker_a.ask_price;
                                 match signal_risk_shield.verify_triangular_loop(
                                     tri_capital, &ticker_a, &ticker_b, &ticker_c, tri_fee,
                                 ) {
@@ -1968,7 +1968,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // We use A/B bid to sell A.
                                 let leg2 = OrderIntent {
                                     exchange_id: exch,
-                                    token_id: token_b,
+                                    token_id: token_a,
                                     qty: tri_qty.clone(), // same qty as leg1 output
                                     price: ticker_b.bid_price,
                                     is_buy: false, // selling token_a intermediate
@@ -1977,7 +1977,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Leg 3: Sell token_b for USDT (B/USDT bid)
                                 let leg3 = OrderIntent {
                                     exchange_id: exch,
-                                    token_id: token_c,
+                                    token_id: token_b,
                                     qty: tri_qty,
                                     price: ticker_c.bid_price,
                                     is_buy: false, // selling final asset for USDT
@@ -2473,13 +2473,5 @@ fn decimal_to_fp(d: Decimal) -> u64 {
         return 0;
     }
     let scaled = d * Decimal::from(FP_SCALE);
-    let s = format!("{}", scaled);
-    let parts: Vec<&str> = s.split('.').collect();
-    let integer_part: u64 = if parts[0].is_empty() {
-        tracing::warn!(value = %d, "decimal_to_fp: empty integer part, defaulting to 0");
-        0
-    } else {
-        parts[0].parse().unwrap_or(0)
-    };
-    integer_part
+    scaled.trunc().to_u64().unwrap_or(0)
 }

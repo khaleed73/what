@@ -138,7 +138,20 @@ impl CrossExchangeExecutor {
                 }
             },
             async {
-                if let Err(e) = &sell_valid {
+                // CRITICAL FIX: Abort sell if buy validation failed — prevent
+                // naked short from dispatching a sell without a corresponding buy.
+                if buy_valid.is_err() {
+                    LegResult {
+                        exchange_name: sell_order.exchange_name.clone(),
+                        exchange_id: sell_order.exchange_id,
+                        success: false,
+                        order_id: None,
+                        filled_quantity: Decimal::ZERO,
+                        filled_price: Decimal::ZERO,
+                        error_message: Some("buy validation failed, sell aborted".to_string()),
+                        execution_time_us: 0,
+                    }
+                } else if let Err(e) = &sell_valid {
                     LegResult {
                         exchange_name: sell_order.exchange_name.clone(),
                         exchange_id: sell_order.exchange_id,

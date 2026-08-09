@@ -113,7 +113,10 @@ impl AsyncPersistenceWorker {
 
                 // ---- periodic flush tick ----
                 _ = flush_tick.tick() => {
-                    match self.load_state() {
+                    // Use block_in_place to avoid blocking the async runtime
+                    // thread with synchronous file I/O.
+                    let current = tokio::task::block_in_place(|| self.load_state());
+                    match current {
                         Ok(current) => {
                             if let Err(err) = self.save_state(&current).await {
                                 tracing::error!(
@@ -156,7 +159,9 @@ impl AsyncPersistenceWorker {
             fs::write(&tmp_path, &json).map_err(|e| format!("write tmp failed: {}", e))?;
             // Ensure data is durable on disk before the atomic rename,
             // otherwise the OS could lose buffered writes on crash.
-            let file = std::fs::File::open(&tmp_path)
+            // Open with read-write access so sync_all() is guaranteed
+            // to flush kernel write buffers on all platforms.
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(&tmp_path)
                 .map_err(|e| format!("open for sync failed: {}", e))?;
             file.sync_all()
                 .map_err(|e| format!("sync_all failed: {}", e))?;

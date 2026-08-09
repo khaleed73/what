@@ -609,34 +609,19 @@ impl AutoCapitalRebalancer {
                     if !confirmed {
                         // All retries exhausted without confirmation.
                         // C-3 FIX: Do NOT credit. Log CRITICAL for manual investigation.
-                        // Also warn if the credit amount would have been large.
                         let gas_fp = self.gas_fee_usd.load(Ordering::Relaxed);
                         let gas_fee = Decimal::from(gas_fp) / Decimal::from(1_000_000u64);
                         let effective_gas = if gas_fee > req.amount { req.amount } else { gas_fee };
                         let net_amount = req.amount - effective_gas;
 
-                        // max_blind_credit_amount safety check
-                        let max_blind_credit_amount = Decimal::from(1_000u64); // $1000
-                        if net_amount > max_blind_credit_amount {
-                            error!(
-                                from = req.from_exchange_id,
-                                to = req.to_exchange_id,
-                                token = %req.token_symbol,
-                                unconfirmed_amount = %net_amount,
-                                max_safe = %max_blind_credit_amount,
-                                "Stage 3.5: CRITICAL — all retries exhausted for LARGE unconfirmed deposit. \
-                                 NOT crediting balance. Manual investigation required."
-                            );
-                        } else {
-                            error!(
-                                from = req.from_exchange_id,
-                                to = req.to_exchange_id,
-                                token = %req.token_symbol,
-                                unconfirmed_amount = %net_amount,
-                                "Stage 3.5: CRITICAL — all retries exhausted for unconfirmed deposit. \
-                                 NOT crediting balance. Manual investigation required."
-                            );
-                        }
+                        error!(
+                            from = req.from_exchange_id,
+                            to = req.to_exchange_id,
+                            token = %req.token_symbol,
+                            unconfirmed_amount = %net_amount,
+                            "Stage 3.5: CRITICAL — all retries exhausted for unconfirmed deposit. \
+                             NOT crediting balance. Manual investigation required."
+                        );
                         continue;
                     }
                 }
@@ -1189,7 +1174,7 @@ impl AutoCapitalRebalancer {
     }
 
     /// Returns `true` if `exchange_id` has a recorded heartbeat within
-    /// the last 30 seconds.
+    /// the last 90 seconds.
     ///
     /// * **No heartbeats recorded for ANY exchange** → returns `true`
     ///   (bootstrap grace period: don't block the very first rebalance

@@ -986,10 +986,12 @@ impl HighFrequencyExecutionEngine {
                 let a_filled = result_a.success && result_a.filled_qty > Decimal::ZERO;
                 let b_filled = result_b.success && result_b.filled_qty > Decimal::ZERO;
                 if a_filled ^ b_filled {
+                    // CRITICAL FIX: Bind filled_leg to the FILLED result (not failed),
+                    // and pass the FILLED leg's intent to fire_counter_order.
                     let (failed_leg, filled_leg) = if a_filled {
-                        ("b", &result_b as &OrderResult)
+                        ("b", &result_a as &OrderResult)
                     } else {
-                        ("a", &result_a as &OrderResult)
+                        ("a", &result_b as &OrderResult)
                     };
                     tracing::warn!(
                         failed_leg,
@@ -999,7 +1001,7 @@ impl HighFrequencyExecutionEngine {
                     self.rollback_count.fetch_add(1, Ordering::Release);
                     self.fire_counter_order(
                         pipeline,
-                        if a_filled { &leg_b } else { &leg_a },
+                        if a_filled { &leg_a } else { &leg_b },
                         filled_leg,
                     ).await;
                 }
@@ -1459,7 +1461,8 @@ impl HighFrequencyExecutionEngine {
     /// Example: `Decimal::new(5, 4)` (= 0.0005 = 5 bps) → stored as 500.
     pub fn set_slippage_tolerance(&self, tolerance: Decimal) {
         let fp = (tolerance * Decimal::from(1_000_000u64)).round().to_u64().unwrap_or(DEFAULT_SLIPPAGE_TOLERANCE_FP);
-        self.slippage_tolerance_fp.store(fp.max(1), Ordering::Release);
+        // Store as-is (allow 0 for zero-tolerance passthrough).
+        self.slippage_tolerance_fp.store(fp, Ordering::Release);
     }
 
     /// Returns the cumulative slippage-rejection counter.
@@ -1514,7 +1517,7 @@ impl HighFrequencyExecutionEngine {
             return Ok(()); // nothing to check on failed fills
         }
 
-        let max_bps = self.max_slippage_bps.load(Ordering::Relaxed);
+        let max_bps = self.max_slippage_bps.load(Ordering::Acquire);
         match check_slippage(intent.price, result.avg_price, intent.is_buy, max_bps) {
             Ok(bps) => {
                 let _ = bps; // observed slippage in bps (available for metrics)
