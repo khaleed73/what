@@ -63,6 +63,20 @@ impl ExchangeFeeSchedule {
         let fee = self.taker_fees.get(exchange_id).copied().unwrap_or(DEFAULT_TAKER_FEE_BPS);
         fee.saturating_mul(3)
     }
+
+    /// Return the taker fee in basis points for a specific exchange.
+    /// Used by the execution engine for order-level fee calculations.
+    #[inline(always)]
+    pub fn get_taker(&self, exchange_id: usize) -> Option<u64> {
+        self.taker_fees.get(exchange_id).copied()
+    }
+
+    /// Return the maker fee in basis points for a specific exchange.
+    /// Used by the execution engine for order-level fee calculations.
+    #[inline(always)]
+    pub fn get_maker(&self, exchange_id: usize) -> Option<u64> {
+        self.maker_fees.get(exchange_id).copied()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +146,16 @@ const DEFAULT_TAKER_FEE_BPS: u64 = 10;
 /// Maximum allowed ratio per step in triangular profit calculation.
 /// A step exceeding 100× indicates a data anomaly (e.g. near-zero ask).
 const MAX_RATIO_BPS_MULTIPLIER: u64 = 100;
+
+/// Sentinel price value written by the coin finder to mark a token as
+/// "present" on an exchange for cross-target discovery.  These are NOT
+/// real prices and must never be used for signal generation.  The hot-path
+/// skips any (bid, ask) pair where either value equals this constant.
+///
+/// The coin finder writes bid=1_000_000 and ask=1_000_001, so we reject
+/// any price in the range [SENTINEL_PRICE_MIN..=SENTINEL_PRICE_MAX].
+const SENTINEL_PRICE_MIN: u64 = 1_000_000;
+const SENTINEL_PRICE_MAX: u64 = 1_000_001;
 
 // ---------------------------------------------------------------------------
 // MarketArena – the core arbitrage brain
@@ -522,6 +546,16 @@ impl MarketArena {
                             let bid_j = self.bid_prices[idx_j].load(Ordering::Acquire);
                             let ask_j = self.ask_prices[idx_j].load(Ordering::Acquire);
 
+                            // Skip sentinel prices written by the coin finder
+                            // for cross-target discovery (not real market data).
+                            if (bid_i >= SENTINEL_PRICE_MIN && bid_i <= SENTINEL_PRICE_MAX)
+                                || (ask_i >= SENTINEL_PRICE_MIN && ask_i <= SENTINEL_PRICE_MAX)
+                                || (bid_j >= SENTINEL_PRICE_MIN && bid_j <= SENTINEL_PRICE_MAX)
+                                || (ask_j >= SENTINEL_PRICE_MIN && ask_j <= SENTINEL_PRICE_MAX)
+                            {
+                                continue;
+                            }
+
                             // Direction 1: buy on i, sell on j
                             if bid_j > ask_i && ask_i > 0 {
                                 let raw_spread_bps = (bid_j - ask_i).saturating_mul(BPS_SCALE) / ask_i;
@@ -635,6 +669,18 @@ impl MarketArena {
                         || ask_b == 0
                         || bid_c == 0
                         || ask_c == 0
+                    {
+                        continue;
+                    }
+
+                    // Skip sentinel prices written by the coin finder
+                    // for loop discovery (not real market data).
+                    if (bid_a >= SENTINEL_PRICE_MIN && bid_a <= SENTINEL_PRICE_MAX)
+                        || (ask_a >= SENTINEL_PRICE_MIN && ask_a <= SENTINEL_PRICE_MAX)
+                        || (bid_b >= SENTINEL_PRICE_MIN && bid_b <= SENTINEL_PRICE_MAX)
+                        || (ask_b >= SENTINEL_PRICE_MIN && ask_b <= SENTINEL_PRICE_MAX)
+                        || (bid_c >= SENTINEL_PRICE_MIN && bid_c <= SENTINEL_PRICE_MAX)
+                        || (ask_c >= SENTINEL_PRICE_MIN && ask_c <= SENTINEL_PRICE_MAX)
                     {
                         continue;
                     }

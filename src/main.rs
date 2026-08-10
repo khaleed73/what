@@ -1512,11 +1512,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the WS feed callback with the exact (exchange, token) that
             // changed.  Here we sweep all exchanges periodically
             // using the coin finder's dynamically-discovered token list.
+            // Snapshot active tokens ONCE per tick (not per exchange).
+            // The try_lock avoids blocking the async runtime; on contention
+            // we skip this tick entirely rather than cloning a stale snapshot.
+            let tokens = match signal_arena.active_tokens.try_lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => continue,
+            };
             for exch_id in 0..num_exch {
-                let tokens = match signal_arena.active_tokens.try_lock() {
-                    Ok(guard) => guard.clone(),
-                    Err(_) => continue,
-                };
                 for &token_id in &tokens {
                     let signals = signal_arena.evaluate_tick(
                         exch_id,
