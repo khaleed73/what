@@ -58,7 +58,9 @@ pub mod volatility_guard;
 pub mod tcp_optimizer;
 pub mod tri_path_finder;
 pub mod production_risk_shield;
-pub mod market_arena;
+// pub mod market_arena; — REMOVED: dead code. The live signal path uses
+// strategies::MarketArena (lock-free atomics). This RwLock-based duplicate
+// was never referenced by any live code path.
 pub mod zero_copy_parser;
 pub mod cpu_pinning;
 pub mod live_order_tracker;

@@ -483,7 +483,7 @@ async fn scan_coinbase(http: &Client, rest_url: &str, exchange_id: u16) -> Excha
                         let quote = item["quote_currency"].as_str().unwrap_or("");
                         let raw = item["id"].as_str().unwrap_or("");
 
-                        if status != "online" || tradable || base.is_empty() || quote.is_empty() {
+                        if status != "online" || !tradable || base.is_empty() || quote.is_empty() {
                             continue;
                         }
 
@@ -1307,10 +1307,12 @@ impl CoinFinder {
             self.arena.unregister_active_token(token_id);
 
             // Clean up tracking maps.
-            if let Ok(mut mc) = self.token_missing_counts.try_lock() {
+            {
+                let mut mc = self.token_missing_counts.lock().await;
                 mc.remove(&token_id);
             }
-            if let Ok(mut emc) = self.token_exchange_missing_counts.try_lock() {
+            {
+                let mut emc = self.token_exchange_missing_counts.lock().await;
                 // Remove all entries for this token across all exchanges.
                 emc.retain(|&(tid, _), _| tid != token_id);
             }
@@ -1365,7 +1367,8 @@ impl CoinFinder {
             self.arena.ask_prices[idx].store(0, Ordering::Release);
 
             // Reset the counter so we don't re-invalidate every cycle.
-            if let Ok(mut emc) = self.token_exchange_missing_counts.try_lock() {
+            {
+                let mut emc = self.token_exchange_missing_counts.lock().await;
                 // Set to threshold (not 0) so it won't re-trigger until
                 // the token re-appears and then goes missing again.
                 emc.insert((*token_id, *exch_id), tri_threshold);
@@ -1384,13 +1387,17 @@ impl CoinFinder {
             );
         }
 
-        // Rebuild targets if anything was removed — this ensures cross_targets
-        // and tri_loops reflect the newly-zeroed prices immediately rather
-        // than waiting for the next scan cycle.
+        // Rebuild cross_targets if anything was removed — this ensures
+        // cross_targets reflect the newly-zeroed prices immediately.
+        // Uses the atomic-array scanner (not presence-based) so that tokens
+        // with live WS prices but temporarily missing from the REST scan
+        // are preserved in the target list.
         if cross_removed > 0 || tri_invalidated > 0 {
             self.arena.build_cross_exchange_targets().await;
-            // tri_loops will be rebuilt at the top of the next scan_cycle
-            // since build_triangular_loops() receives fresh pair data.
+            // Note: tri_loops do not need rebuilding here because the zeroed
+            // prices (from Phase 4) naturally cause evaluate_tick to skip
+            // those loops (bid==0 || ask==0 check). tri_loops are rebuilt
+            // with fresh pair data at the top of the next scan_cycle.
         }
 
         (cross_removed, tri_invalidated)
@@ -1569,24 +1576,9 @@ impl CoinFinder {
         // (bid_prices / ask_prices) which are not touched here.
 
         // Build cross-exchange targets from the presence map.
-        // For every token on ≥ 2 exchanges, write dummy non-zero prices
-        // so that `build_cross_exchange_targets()` picks it up.
-        {
-            for (&token_id, exchanges) in &token_exchange_presence {
-                if exchanges.len() >= 2 {
-                    // Write sentinel prices so the arena's target builder
-                    // sees the token as "live" on those exchanges.
-                    for &exch in exchanges {
-                        // Use a sentinel price of 1_000_000 (1.0 in the arena's
-                        // fixed-point representation) for both bid and ask.
-                        // This is a placeholder — real prices come from WS feeds.
-                        let idx = self.arena.get_index(exch as usize, token_id as usize);
-                        self.arena.bid_prices[idx].store(1_000_000, Ordering::Release);
-                        self.arena.ask_prices[idx].store(1_000_001, Ordering::Release);
-                    }
-                }
-            }
-        }
+        // Uses the presence-based builder to avoid writing sentinel prices
+        // into the hot-path atomic arrays (which would corrupt real WS prices).
+        self.arena.build_cross_exchange_targets_from_presence(&token_exchange_presence).await;
 
         // Build per-exchange pair lists for triangular loop discovery.
         // Format: exchange_id → Vec<(base_token_id, quote_token_id)>

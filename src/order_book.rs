@@ -73,20 +73,34 @@ impl OrderBook {
     /// that is > 10× or < 0.1× the current best price on the same side is
     /// rejected as a likely corrupted WebSocket message. Removals (zero-qty)
     /// and snapshots bypass this check.
+    ///
+    /// **Sequence gap recovery**: When a gap is detected in incremental
+    /// updates, the book is cleared and the sequence is reset to the incoming
+    /// delta's ID. This prevents permanent staleness while accepting that
+    /// the book may be temporarily incomplete until the next snapshot arrives.
     pub fn apply_delta(&mut self, delta: &OrderBookDelta) {
         // Sequence gap detection for incremental (non-snapshot) updates.
         if !delta.is_snapshot {
-            if delta.last_update_id <= self.last_update_id {
+            // When last_update_id is 0, this is the first update after
+            // construction — accept it unconditionally (some exchanges
+            // use 0-based sequence numbers).
+            if self.last_update_id == 0 {
+                // Fall through to apply the delta normally.
+            } else if delta.last_update_id <= self.last_update_id {
                 // Stale or duplicate update — skip entirely
                 return;
-            }
-            if delta.last_update_id > self.last_update_id + 1 {
+            } else if delta.last_update_id > self.last_update_id + 1 {
                 warn!(
                     expected = self.last_update_id + 1,
                     got = delta.last_update_id,
-                    "sequence gap detected in orderbook delta — possible stale data"
+                    "sequence gap detected — clearing book and resetting sequence"
                 );
-                // A fresh snapshot should be requested by the caller.
+                // Clear the book and reset to the new sequence to recover.
+                // The book will be incomplete until a fresh snapshot arrives,
+                // but this prevents permanent staleness.
+                self.bids.clear();
+                self.asks.clear();
+                self.last_update_id = delta.last_update_id;
                 return;
             }
         }

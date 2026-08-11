@@ -338,8 +338,8 @@ impl LowLatencyWsListener {
                     }
 
                     warn!(exchange_id = ex, "ws stream ended, reconnecting");
-                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
                     self.arena.invalidate_exchange(ex as usize);
+                    break; // fall through to the reconnection backoff below
                 }
                 Ok(Err(e)) => {
                     consecutive_failures += 1;
@@ -353,19 +353,17 @@ impl LowLatencyWsListener {
                         self.arena.invalidate_exchange(ex as usize);
                         return;
                     }
-                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+                    warn!(
+                        exchange_id = ex,
+                        error = %e,
+                        consecutive_failures,
+                        "WS connect error, invalidating arena prices"
+                    );
                     self.arena.invalidate_exchange(ex as usize);
                     let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS) as f64;
                     let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
                     let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
-                    error!(
-                        exchange_id = ex,
-                        error = %e,
-                        consecutive_failures,
-                        delay_secs,
-                        "websocket connect error, reconnecting with jittered exponential backoff"
-                    );
                     sleep(Duration::from_secs(delay_secs.max(1))).await;
                     continue;
                 }
@@ -381,25 +379,23 @@ impl LowLatencyWsListener {
                         self.arena.invalidate_exchange(ex as usize);
                         return;
                     }
-                    tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
+                    warn!(
+                        exchange_id = ex,
+                        error = %e,
+                        consecutive_failures,
+                        "WS connect error, invalidating arena prices"
+                    );
                     self.arena.invalidate_exchange(ex as usize);
                     let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                         .min(MAX_DELAY_SECS) as f64;
                     let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
                     let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
-                    error!(
-                        exchange_id = ex,
-                        error = %e,
-                        consecutive_failures,
-                        delay_secs,
-                        "websocket connect failed, reconnecting with jittered exponential backoff"
-                    );
                     sleep(Duration::from_secs(delay_secs.max(1))).await;
                     continue;
                 }
             }
 
-            // Stream ended (not a connect failure) — use same backoff logic.
+            // Stream ended or connection dropped — invalidate, backoff, and retry.
             consecutive_failures += 1;
             if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
                 tracing::error!(
@@ -411,18 +407,15 @@ impl LowLatencyWsListener {
                 self.arena.invalidate_exchange(ex as usize);
                 return;
             }
-            tracing::error!(exchange_id = ex, "WS disconnected — invalidating arena prices");
-            self.arena.invalidate_exchange(ex as usize);
+            warn!(
+                exchange_id = ex,
+                consecutive_failures,
+                "WS disconnected, invalidating arena prices and reconnecting"
+            );
             let base_delay = (BASE_DELAY_SECS << consecutive_failures.saturating_sub(1))
                 .min(MAX_DELAY_SECS) as f64;
             let jittered = base_delay * (0.8 + 0.4 * rand::thread_rng().gen::<f64>());
             let delay_secs = jittered.min(MAX_DELAY_SECS as f64) as u64;
-            warn!(
-                exchange_id = ex,
-                consecutive_failures,
-                delay_secs,
-                "reconnecting with jittered exponential backoff"
-            );
             sleep(Duration::from_secs(delay_secs.max(1))).await;
         }
     }

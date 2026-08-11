@@ -103,10 +103,13 @@ impl TriangularExecutor {
         // Original bug: leading `all_succeeded &&` meant that when any leg
         // failed (all_succeeded = false), rollback was NEVER triggered,
         // leaving open positions on the successful legs.
+        // Uses epsilon-based comparison (1e-8) to tolerate exchange-side
+        // floating-point rounding in fill quantities.
+        let eps = dec!(0.00000001);
         let rollback_required = !all_succeeded
-            || r0.filled_quantity != legs[0].quantity
-            || r1.filled_quantity != legs[1].quantity
-            || r2.filled_quantity != legs[2].quantity;
+            || (r0.filled_quantity - legs[0].quantity).abs() > eps
+            || (r1.filled_quantity - legs[1].quantity).abs() > eps
+            || (r2.filled_quantity - legs[2].quantity).abs() > eps;
 
         TriangularResult {
             legs: [r0, r1, r2],
@@ -156,10 +159,15 @@ impl TriangularExecutor {
         if leg.quantity <= Decimal::ZERO {
             return Err(format!("[leg ex={}] Quantity must be positive", leg.exchange_id));
         }
-        if leg.quantity > Decimal::from(1000u64) {
+        // Notional value cap: reject legs whose notional exceeds $500K.
+        // This is scale-invariant — works for BTC (0.005 BTC × $100K = $500K)
+        // and SHIB (50M SHIB × $0.00001 = $500K) alike.
+        const MAX_NOTIONAL_USD: Decimal = dec!(500_000);
+        let notional = leg.quantity * leg.price;
+        if notional > MAX_NOTIONAL_USD {
             return Err(format!(
-                "[leg ex={}] Quantity {} exceeds maximum 1000",
-                leg.exchange_id, leg.quantity
+                "[leg ex={}] Notional ${} exceeds maximum ${}",
+                leg.exchange_id, notional, MAX_NOTIONAL_USD
             ));
         }
         if leg.side != "BUY" && leg.side != "SELL" {

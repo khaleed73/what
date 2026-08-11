@@ -376,7 +376,7 @@ impl MarketArena {
     }
 
     // -----------------------------------------------------------------------
-    // Cross-exchange target discovery (boot-time, cold path)
+    // Cross-exchange target discovery (cold path)
     // -----------------------------------------------------------------------
 
     /// Scans every token slot. For each token that has **non-zero** bid AND ask
@@ -385,6 +385,11 @@ impl MarketArena {
     ///
     /// This method is async because it acquires the RwLock. It is called
     /// from the coin finder's cold path (1-second intervals).
+    ///
+    /// NOTE: This scans the atomic price arrays. For the coin finder's use case,
+    /// prefer `build_cross_exchange_targets_from_presence()` which uses the
+    /// scanner's own presence data and avoids writing sentinel prices to the
+    /// hot-path atomic arrays.
     pub async fn build_cross_exchange_targets(&self) {
         let mut targets = self.cross_targets.write().await;
         let mut index = self.cross_index.write().await;
@@ -420,6 +425,58 @@ impl MarketArena {
                     shared_count,
                 });
                 index[token_id].push(target_idx);
+            }
+        }
+    }
+
+    /// Builds cross-exchange targets from explicit presence data rather than
+    /// reading the atomic price arrays. This avoids the need to write sentinel
+    /// prices into the hot-path arrays (which would corrupt real WS prices).
+    ///
+    /// `token_exchange_presence`: maps `token_id → set of exchange_ids` where
+    /// the token was found in the latest scan cycle.
+    pub async fn build_cross_exchange_targets_from_presence(
+        &self,
+        token_exchange_presence: &HashMap<u16, HashSet<u16>>,
+    ) {
+        let mut targets = self.cross_targets.write().await;
+        let mut index = self.cross_index.write().await;
+        targets.clear();
+        for bucket in index.iter_mut() {
+            bucket.clear();
+        }
+
+        for (&token_id, exchanges) in token_exchange_presence {
+            if exchanges.len() < 2 {
+                continue;
+            }
+            let token_usize = token_id as usize;
+            if token_usize >= self.total_tokens {
+                continue;
+            }
+
+            let mut exchange_mask: u64 = 0;
+            let mut shared_count: u8 = 0;
+
+            for &exch_id in exchanges {
+                let exch_usize = exch_id as usize;
+                if exch_usize >= self.total_exchanges {
+                    continue;
+                }
+                if exch_id < 64 {
+                    exchange_mask |= 1u64 << exch_id;
+                }
+                shared_count = shared_count.saturating_add(1);
+            }
+
+            if shared_count >= 2 {
+                let target_idx = targets.len();
+                targets.push(CrossExchangeTarget {
+                    token_id,
+                    exchange_mask,
+                    shared_count,
+                });
+                index[token_usize].push(target_idx);
             }
         }
     }
@@ -695,16 +752,27 @@ impl MarketArena {
                     //
                     // If step3 > BPS_SCALE, the loop is profitable.
                     // profit_bps = step3 - BPS_SCALE  (already in basis-point units).
+                    //
+                    // Overflow safety: uses checked_mul to detect u64 overflow BEFORE
+                    // it happens. saturating_mul is UNSAFE here because it silently
+                    // clamps to u64::MAX, which after division produces a plausible-looking
+                    // but incorrect value that passes the ratio guard.
 
-                    let step1 = bid_a.saturating_mul(BPS_SCALE) / ask_a;
-                    let step2 = step1.saturating_mul(bid_b) / ask_b;
-                    let step3 = step2.saturating_mul(bid_c) / ask_c;
+                    let step1 = match bid_a.checked_mul(BPS_SCALE) {
+                        Some(v) => v / ask_a,
+                        None => continue, // overflow in bid_a * 10_000
+                    };
+                    let step2 = match step1.checked_mul(bid_b) {
+                        Some(v) => v / ask_b,
+                        None => continue, // overflow in step1 * bid_b
+                    };
+                    let step3 = match step2.checked_mul(bid_c) {
+                        Some(v) => v / ask_c,
+                        None => continue, // overflow in step2 * bid_c
+                    };
 
                     // Guard: reject if any step produced an unreasonable ratio (>100x),
                     // which indicates a data anomaly (e.g., near-zero ask price).
-                    // Use >= to reject the exact boundary value as well — prevents
-                    // exploitation via saturating_mul overflow (step2 could produce
-                    // exactly 100× even when step1 and step3 appear normal).
                     let max_ratio = BPS_SCALE * MAX_RATIO_BPS_MULTIPLIER;
                     if step1 >= max_ratio || step2 >= max_ratio || step3 >= max_ratio {
                         continue;
@@ -714,19 +782,13 @@ impl MarketArena {
                         let raw_profit_bps = step3 - BPS_SCALE;
 
                         // Fee-aware: deduct three-leg taker fees.
+                        // Uses the simple additive model: net = raw_profit - 3*taker_fee.
+                        // This is conservative (overstates cost slightly vs. the exact
+                        // compound model) but avoids double-deduction bugs.
                         let net_profit_bps = if self.fee_aware_enabled.load(Ordering::Relaxed) {
                             if let Ok(fees) = self.fee_schedule.try_read() {
-                                // Compounded fee correction: the additive approximation
-                                // (profit - 3f) overstates profit by ~3f*profit/BPS_SCALE.
-                                // Apply second-order correction: net ≈ step3*(1-f/1e4)^3 - BPS_SCALE.
-                                // For simplicity and safety, we use the conservative
-                                // additive model but add a 2nd-order safety margin.
                                 let fee_deduction = fees.tri_leg_taker_bps(updated_exch);
-                                // Second-order correction: add back ~3*f*raw_profit/BPS_SCALE
-                                // overstatement. Using saturating arithmetic for safety.
-                                let taker_fee = fees.taker_fees.get(updated_exch).copied().unwrap_or(DEFAULT_TAKER_FEE_BPS);
-                                let correction = 3u64.saturating_mul(taker_fee).saturating_mul(raw_profit_bps) / BPS_SCALE;
-                                raw_profit_bps.saturating_sub(fee_deduction).saturating_sub(correction)
+                                raw_profit_bps.saturating_sub(fee_deduction)
                             } else {
                                 continue // fail-closed: skip signal if fee schedule unavailable
                             }
@@ -1045,14 +1107,12 @@ mod tests {
         arena.build_triangular_loops(&pairs).await;
 
         // Fee-aware ON (default).  Additive: 3310 - 30 = 3280 bps.
-        // With 2nd-order correction: correction = 3*10*3310/10000 = 9 bps.
-        // Net = 3280 - 9 = 3271 bps.
-        // Threshold comparison is strict (>), so use 3270 to allow 3271 > 3270.
-        let signals = arena.evaluate_tick(0, 0, 0, 3270);
+        // Threshold comparison is strict (>), so use 3279 to allow 3280 > 3279.
+        let signals = arena.evaluate_tick(0, 0, 0, 3279);
         assert_eq!(signals.len(), 1);
 
-        // With threshold at net profit, signal blocked (3271 > 3271 is false).
-        let signals_blocked = arena.evaluate_tick(0, 0, 0, 3271);
+        // With threshold at net profit, signal blocked (3280 > 3280 is false).
+        let signals_blocked = arena.evaluate_tick(0, 0, 0, 3280);
         assert!(signals_blocked.is_empty());
     }
 

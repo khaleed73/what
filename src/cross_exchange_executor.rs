@@ -120,7 +120,10 @@ impl CrossExchangeExecutor {
                         std::time::Duration::from_secs(5),
                         dispatch_fn(buy_order.clone()),
                     ).await {
-                        Ok(r) => r,
+                        Ok(mut r) => {
+                            r.execution_time_us = start.elapsed().as_micros() as u64;
+                            r
+                        }
                         Err(_) => LegResult {
                             exchange_name: buy_order.exchange_name.clone(),
                             exchange_id: buy_order.exchange_id,
@@ -129,12 +132,9 @@ impl CrossExchangeExecutor {
                             filled_quantity: Decimal::ZERO,
                             filled_price: Decimal::ZERO,
                             error_message: Some("buy leg timed out (5s)".to_string()),
-                            execution_time_us: start.elapsed().as_micros() as u64,
+                            execution_time_us: 5_000_000, // sentinel: 5s timeout
                         },
                     };
-                    let mut r = result;
-                    r.execution_time_us = start.elapsed().as_micros() as u64;
-                    r
                 }
             },
             async {
@@ -168,7 +168,10 @@ impl CrossExchangeExecutor {
                         std::time::Duration::from_secs(5),
                         dispatch_fn(sell_order.clone()),
                     ).await {
-                        Ok(r) => r,
+                        Ok(mut r) => {
+                            r.execution_time_us = start.elapsed().as_micros() as u64;
+                            r
+                        }
                         Err(_) => LegResult {
                             exchange_name: sell_order.exchange_name.clone(),
                             exchange_id: sell_order.exchange_id,
@@ -177,12 +180,9 @@ impl CrossExchangeExecutor {
                             filled_quantity: Decimal::ZERO,
                             filled_price: Decimal::ZERO,
                             error_message: Some("sell leg timed out (5s)".to_string()),
-                            execution_time_us: start.elapsed().as_micros() as u64,
+                            execution_time_us: 5_000_000, // sentinel: 5s timeout
                         },
                     };
-                    let mut r = result;
-                    r.execution_time_us = start.elapsed().as_micros() as u64;
-                    r
                 }
             },
         );
@@ -228,9 +228,12 @@ impl CrossExchangeExecutor {
         if order.quantity <= Decimal::ZERO {
             return Err("Quantity must be positive".to_string());
         }
-        // M-4: Maximum quantity guard — prevent enormous orders from bugs upstream.
-        if order.quantity > Decimal::from(1000u64) {
-            return Err(format!("Quantity {} exceeds maximum 1000", order.quantity));
+        // M-4: Maximum notional value guard — prevent enormous orders from bugs upstream.
+        // Uses notional (qty * price) instead of raw quantity for scale invariance.
+        const MAX_NOTIONAL_USD: Decimal = dec!(500_000);
+        let notional = order.quantity * order.price;
+        if notional > MAX_NOTIONAL_USD {
+            return Err(format!("Notional ${} exceeds maximum ${}", notional, MAX_NOTIONAL_USD));
         }
         if order.side != "BUY" && order.side != "SELL" {
             return Err(format!("Invalid side: {}", order.side));

@@ -1287,7 +1287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let bt_config = backtest::BacktestConfig {
             initial_capital: dec!(100_000),
             max_position_pct: config.risk.max_single_position_pct,
-            taker_fee_bps: config.friction_protections.default_taker_fee_pct.to_u64().unwrap_or(10),
+            taker_fee_bps: (config.friction_protections.default_taker_fee_pct * Decimal::from(10_000u64)).to_u64().unwrap_or(10),
             min_spread_bps: min_cross_bps,
             data_file: args[2].clone(),
         };

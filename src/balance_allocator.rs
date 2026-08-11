@@ -197,13 +197,22 @@ impl LocalCapitalAllocator {
 
     // ---- atomic helpers ----
 
+    /// Returns the flat-array index for `(exchange_id, token_id)`.
+    /// Returns `None` if either ID is out of range, allowing callers to
+    /// gracefully handle invalid indices without panicking the process.
     #[inline]
-    fn idx(&self, exchange_id: usize, token_id: usize) -> usize {
-        // Defensive: clamp instead of assert to prevent process panic
-        // on out-of-bounds indices from malformed data.
-        let ex = exchange_id.min(self.total_exchanges.saturating_sub(1));
-        let tk = token_id.min(self.total_tokens.saturating_sub(1));
-        ex * self.total_tokens + tk
+    fn idx(&self, exchange_id: usize, token_id: usize) -> Option<usize> {
+        if exchange_id >= self.total_exchanges || token_id >= self.total_tokens {
+            tracing::warn!(
+                exchange_id,
+                token_id,
+                total_exchanges = self.total_exchanges,
+                total_tokens = self.total_tokens,
+                "balance_allocator: index out of bounds — operation skipped"
+            );
+            return None;
+        }
+        Some(exchange_id * self.total_tokens + token_id)
     }
 
     /// Stores `balance` for `(exchange_id, token_id)` using a release store.
@@ -215,22 +224,29 @@ impl LocalCapitalAllocator {
         balance: Decimal,
     ) {
         let fp = decimal_to_fp(balance);
-        self.balances[self.idx(exchange_id, token_id)].store(fp, Ordering::Release);
+        if let Some(idx) = self.idx(exchange_id, token_id) {
+            self.balances[idx].store(fp, Ordering::Release);
+        }
     }
 
     /// Reads the balance for `(exchange_id, token_id)` with an acquire load
     /// and converts it back to `Decimal`.
     pub fn get_balance_atomic(&self, exchange_id: usize, token_id: usize) -> Decimal {
-        let fp = self.balances[self.idx(exchange_id, token_id)].load(Ordering::Acquire);
-        fp_to_decimal(fp)
+        match self.idx(exchange_id, token_id) {
+            Some(idx) => fp_to_decimal(self.balances[idx].load(Ordering::Acquire)),
+            None => Decimal::ZERO,
+        }
     }
 
     /// Sums the balance of `token_id` across **all** exchanges.
     pub fn get_total_balance(&self, token_id: usize) -> Decimal {
         let mut total_fp: u64 = 0;
+        if token_id >= self.total_tokens {
+            return Decimal::ZERO;
+        }
         for exchange_id in 0..self.total_exchanges {
             total_fp = total_fp.saturating_add(
-                self.balances[self.idx(exchange_id, token_id)].load(Ordering::Acquire),
+                self.balances[exchange_id * self.total_tokens + token_id].load(Ordering::Acquire),
             );
         }
         fp_to_decimal(total_fp)
@@ -261,10 +277,11 @@ impl LocalCapitalAllocator {
         let matching = self.filter_by_category(category_mask);
         let mut total_fp: u64 = 0;
         for &tid in &matching {
-            total_fp = total_fp.saturating_add(
-                self.balances[self.idx(exchange_id, tid as usize)]
-                    .load(Ordering::Acquire),
-            );
+            if let Some(idx) = self.idx(exchange_id, tid as usize) {
+                total_fp = total_fp.saturating_add(
+                    self.balances[idx].load(Ordering::Acquire),
+                );
+            }
         }
         fp_to_decimal(total_fp)
     }
@@ -275,7 +292,10 @@ impl LocalCapitalAllocator {
     pub fn fetch_sub_balance(&self, exchange_id: usize, token_id: usize, amount: Decimal) {
         let fp = decimal_to_fp(amount);
         if fp == 0 { return; }
-        let idx = self.idx(exchange_id, token_id);
+        let idx = match self.idx(exchange_id, token_id) {
+            Some(i) => i,
+            None => return,
+        };
         // Use compare-and-swap loop to prevent wrapping underflow.
         // If the balance would go below zero, skip the subtraction and log.
         let _ = self.balances[idx].fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
@@ -289,8 +309,9 @@ impl LocalCapitalAllocator {
     pub fn fetch_add_balance(&self, exchange_id: usize, token_id: usize, amount: Decimal) {
         let fp = decimal_to_fp(amount);
         if fp == 0 { return; }
-        let idx = self.idx(exchange_id, token_id);
-        self.balances[idx].fetch_add(fp, Ordering::SeqCst);
+        if let Some(idx) = self.idx(exchange_id, token_id) {
+            self.balances[idx].fetch_add(fp, Ordering::SeqCst);
+        }
     }
 
     /// Returns the available balance of a specific token on a specific exchange.
